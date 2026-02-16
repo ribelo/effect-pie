@@ -1,0 +1,29 @@
+{
+  "name": "effect-pi",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare": "effect-language-service patch",
+    "check": "tsgo -p tsconfig.check.json --noEmit",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint . --fix",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "test": "bun test",
+    "effect:diagnostics": "bunx effect-language-service diagnostics --project tsconfig.json --format pretty --progress",
+    "gate": "bun run check && bun run effect:diagnostics && bun run lint && bun run format:check && bun run test"
+  },
+  "dependencies": {
+    "@effect/ai-anthropic": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-anthropic@fe2cab2",
+    "@effect/ai-openai": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-openai@fe2cab2",
+    "@effect/platform-bun": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/platform-bun@fe2cab2",
+    "effect": "https://pkg.pr.new/Effect-TS/effect-smol/effect@fe2cab2"
+  },
+  "devDependencies": {
+    "@effect/language-service": "^0.71.0",
+    "@types/bun": "latest",
+    "oxfmt": "^0.26.0",
+    "oxlint": "^1.41.0",
+    "typescript": "^5.9.3"
+  }
+}
