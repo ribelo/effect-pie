@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
+import { BUNDLED_OPENWAKEWORD_ASSET_DIR, EFFECT_PI_OPENWAKEWORD_DATA_DIR } from "../paths.js";
 import {
   OPENWAKEWORD_RUNTIME_PACKAGE,
   OPENWAKEWORD_RUNTIME_VERSION,
@@ -24,7 +25,7 @@ export type WakewordAssetOptions = {
   readonly validateFeatureModels?: boolean;
 };
 
-const defaultRootDir = path.join(process.cwd(), "assets", "openwakeword");
+const defaultRootDir = EFFECT_PI_OPENWAKEWORD_DATA_DIR;
 
 const ensureReadableFile = (filePath: string): Effect.Effect<void, WakewordAssetError> =>
   Effect.tryPromise({
@@ -168,12 +169,91 @@ const validateRuntimePin = (
       ),
   });
 
+const copyFileIfExists = async (sourcePath: string, targetPath: string): Promise<void> => {
+  try {
+    const stat = await fs.stat(sourcePath);
+    if (!stat.isFile()) {
+      return;
+    }
+  } catch {
+    return;
+  }
+
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await fs.copyFile(sourcePath, targetPath);
+};
+
+const ensureDefaultAssetRoot = (targetRootDir: string): Effect.Effect<void, WakewordAssetError> =>
+  Effect.tryPromise({
+    try: async () => {
+      const targetManifestPath = path.join(targetRootDir, "manifest.json");
+      const sourceManifestPath = path.join(BUNDLED_OPENWAKEWORD_ASSET_DIR, "manifest.json");
+
+      const targetManifestExists = await fs
+        .access(targetManifestPath)
+        .then(() => true)
+        .catch(() => false);
+
+      if (targetManifestExists) {
+        return;
+      }
+
+      const sourceManifestExists = await fs
+        .access(sourceManifestPath)
+        .then(() => true)
+        .catch(() => false);
+
+      if (!sourceManifestExists) {
+        return;
+      }
+
+      await fs.mkdir(targetRootDir, { recursive: true });
+      await fs.copyFile(sourceManifestPath, targetManifestPath);
+
+      await copyFileIfExists(
+        path.join(BUNDLED_OPENWAKEWORD_ASSET_DIR, "melspectrogram.onnx"),
+        path.join(targetRootDir, "melspectrogram.onnx"),
+      );
+      await copyFileIfExists(
+        path.join(BUNDLED_OPENWAKEWORD_ASSET_DIR, "embedding_model.onnx"),
+        path.join(targetRootDir, "embedding_model.onnx"),
+      );
+
+      const sourceWakewordsDir = path.join(BUNDLED_OPENWAKEWORD_ASSET_DIR, "wakewords");
+      const targetWakewordsDir = path.join(targetRootDir, "wakewords");
+      await fs.mkdir(targetWakewordsDir, { recursive: true });
+
+      const sourceEntries = await fs
+        .readdir(sourceWakewordsDir)
+        .catch(() => [] as ReadonlyArray<string>);
+
+      for (const entry of sourceEntries) {
+        const sourcePath = path.join(sourceWakewordsDir, entry);
+        const targetPath = path.join(targetWakewordsDir, entry);
+
+        await copyFileIfExists(sourcePath, targetPath);
+      }
+    },
+    catch: (cause) =>
+      new WakewordAssetError(
+        `Failed to initialize default wakeword data directory at ${targetRootDir}`,
+        {
+          cause,
+        },
+      ),
+  });
+
 export const resolveWakewordAssets = (
   options: WakewordAssetOptions = {},
 ): Effect.Effect<ResolvedWakewordAssets, WakewordAssetError> =>
   Effect.gen(function* () {
+    const usingDefaultRoot = options.rootDir === undefined;
     const rootDir = path.resolve(options.rootDir ?? defaultRootDir);
     const manifestPath = path.join(rootDir, "manifest.json");
+
+    if (usingDefaultRoot) {
+      yield* ensureDefaultAssetRoot(rootDir);
+    }
 
     const manifest = yield* readManifest(manifestPath);
 

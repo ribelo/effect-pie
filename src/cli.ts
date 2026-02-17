@@ -26,6 +26,7 @@ import {
   WakewordTrainingError,
   writePcmWavFile,
 } from "./wakeword/training.js";
+import { EFFECT_PI_WAKEWORD_CONFIG_DIR } from "./paths.js";
 import { layer as pulseLayer, PulseAudioClient } from "./pulse/client.js";
 import { PA_SAMPLE_FORMAT, type SourceInfo } from "./pulse/defs.js";
 import { createRecordStream } from "./pulse/stream.js";
@@ -248,7 +249,10 @@ const writeCalibrationSnapshot = (
   snapshot: WakewordCalibrationSnapshot,
 ): Effect.Effect<void, WakewordTrainingError> =>
   Effect.tryPromise({
-    try: () => writeNodeFile(calibrationPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8"),
+    try: async () => {
+      await mkdirNode(path.dirname(calibrationPath), { recursive: true });
+      await writeNodeFile(calibrationPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+    },
     catch: (cause) =>
       new WakewordTrainingError(`Failed to write calibration snapshot at ${calibrationPath}`, {
         cause,
@@ -369,8 +373,11 @@ const writeDetectionTuningSnapshot = (
       }),
   });
 
-const detectionTuningPathFor = (assetRootDir: string, modelName: string): string =>
-  path.join(assetRootDir, "training", modelName, "detection-tuning.json");
+const detectionTuningPathFor = (modelName: string): string =>
+  path.join(EFFECT_PI_WAKEWORD_CONFIG_DIR, modelName, "detection-tuning.json");
+
+const calibrationPathFor = (modelName: string): string =>
+  path.join(EFFECT_PI_WAKEWORD_CONFIG_DIR, modelName, "calibration.json");
 
 const summarizeScores = (
   scores: ReadonlyArray<number>,
@@ -1351,7 +1358,7 @@ const wakewordCommand = Command.make(
     ),
     noAutoTune: Flag.boolean("no-auto-tune").pipe(
       Flag.withDescription(
-        "Disable loading saved tuning from training/<model>/detection-tuning.json",
+        "Disable loading saved tuning from $XDG_CONFIG_HOME/effect-pi/wakeword/<model>/detection-tuning.json",
       ),
     ),
     scoreEvery: positiveIntegerFlag(
@@ -1415,9 +1422,7 @@ const wakewordCommand = Command.make(
       const modelNames = Object.keys(assets.wakewordModelPaths);
       const tuningModelName = modelNames.length === 1 ? modelNames[0] : undefined;
       const tuningPath =
-        tuningModelName === undefined
-          ? undefined
-          : detectionTuningPathFor(assets.rootDir, tuningModelName);
+        tuningModelName === undefined ? undefined : detectionTuningPathFor(tuningModelName);
 
       const tuningSnapshot =
         config.noAutoTune || tuningPath === undefined
@@ -1731,7 +1736,7 @@ const wakewordTuneCommand = Command.make(
       );
 
       if (!config.noSave) {
-        const tuningPath = detectionTuningPathFor(assets.rootDir, modelName);
+        const tuningPath = detectionTuningPathFor(modelName);
 
         yield* writeDetectionTuningSnapshot(tuningPath, {
           schemaVersion: 1,
@@ -1810,7 +1815,9 @@ const wakewordTrainCommand = Command.make(
     source: optionalSourceFlag,
     assetRoot: Flag.string("asset-root").pipe(
       Flag.optional,
-      Flag.withDescription("Root openWakeWord asset directory (default: assets/openwakeword)"),
+      Flag.withDescription(
+        "Root openWakeWord asset directory (default: $XDG_DATA_HOME/effect-pi/openwakeword)",
+      ),
     ),
     datasetRoot: Flag.string("dataset-root").pipe(
       Flag.optional,
@@ -1821,7 +1828,9 @@ const wakewordTrainCommand = Command.make(
       Flag.withDescription("Override trained wakeword model output directory"),
     ),
     register: Flag.boolean("register").pipe(
-      Flag.withDescription("Add generated model filename to assets/openwakeword/manifest.json"),
+      Flag.withDescription(
+        "Add generated model filename to $XDG_DATA_HOME/effect-pi/openwakeword/manifest.json",
+      ),
     ),
   },
   (config) =>
@@ -1876,7 +1885,7 @@ const wakewordTrainCommand = Command.make(
 
       const requestedSourceName = Option.isSome(config.source) ? config.source.value : undefined;
       const autoCalibrate = !config.noAutoCalibrate;
-      const calibrationPath = `${plan.workspaceDir}/calibration.json`;
+      const calibrationPath = calibrationPathFor(plan.modelName);
 
       const client = yield* PulseAudioClient;
       yield* client.connect();

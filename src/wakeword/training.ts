@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
+import { EFFECT_PI_OPENWAKEWORD_DATA_DIR } from "../paths.js";
 import {
   OPENWAKEWORD_MEL_BINS,
   OPENWAKEWORD_MEL_WINDOW_FRAMES,
@@ -178,9 +179,7 @@ export const makeWakewordTrainingPlan = (
     );
   }
 
-  const assetRootDir = path.resolve(
-    options.assetRootDir ?? path.join(process.cwd(), "assets", "openwakeword"),
-  );
+  const assetRootDir = path.resolve(options.assetRootDir ?? EFFECT_PI_OPENWAKEWORD_DATA_DIR);
 
   const datasetRootDir = path.resolve(
     options.datasetRootDir ?? path.join(assetRootDir, "training"),

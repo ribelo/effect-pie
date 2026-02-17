@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 
+import { EFFECT_PI_OPENWAKEWORD_DATA_DIR } from "../src/paths.ts";
+
 type InstallConfig = {
   readonly outputDir: string;
   readonly melspectrogramUrl: string;
@@ -10,7 +12,7 @@ type InstallConfig = {
   readonly embeddingSha256: string;
 };
 
-const defaultOutputDir = path.resolve(process.cwd(), "assets", "openwakeword");
+const defaultOutputDir = path.resolve(EFFECT_PI_OPENWAKEWORD_DATA_DIR);
 
 const defaultMelspectrogramUrl =
   "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx";
@@ -23,7 +25,7 @@ Usage:
   bun run scripts/install-openwakeword-feature-models.ts \\
     --melspectrogram-sha256 <sha256> \\
     --embedding-sha256 <sha256> \\
-    [--output-dir assets/openwakeword] \\
+    [--output-dir $XDG_DATA_HOME/effect-pi/openwakeword] \\
     [--melspectrogram-url <url>] \\
     [--embedding-url <url>]
 

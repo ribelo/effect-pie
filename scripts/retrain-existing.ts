@@ -2,12 +2,13 @@ import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import * as Effect from "effect/Effect";
 
+import { EFFECT_PI_OPENWAKEWORD_DATA_DIR } from "../src/paths.ts";
 import { validateWakewordAssets } from "../src/wakeword/assets.ts";
 import { loadWakewordFeatureSessions } from "../src/wakeword/onnx.ts";
 import { saveTrainedWakewordModel, trainLinearWakewordModel } from "../src/wakeword/training.ts";
 
 const modelName = process.argv[2] ?? "ok_pie";
-const assetRoot = path.resolve(process.cwd(), "assets", "openwakeword");
+const assetRoot = path.resolve(process.env.EFFECT_PI_ASSET_ROOT ?? EFFECT_PI_OPENWAKEWORD_DATA_DIR);
 const workspace = path.join(assetRoot, "training", modelName);
 
 const readWavPcm = async (filePath: string): Promise<Uint8Array> => {

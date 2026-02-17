@@ -8,7 +8,7 @@ effect-pi is a TypeScript/Effect 4.0 port of PIE (Personal Intelligence Engine).
 
 ```
 effect-pi/
-├── assets/openwakeword/       # openWakeWord model manifest and ONNX assets
+├── assets/openwakeword/       # bundled fallback assets for local/dev bootstrap
 ├── src/
 │   ├── cli.ts                 # CLI entrypoint (record + wakeword commands)
 │   ├── pulse/                 # PulseAudio native protocol client and stream wrappers
@@ -42,7 +42,7 @@ effect-pi/
 - `effect-pi sources` lists available PulseAudio capture sources.
 - `effect-pi meter` prints live RMS / peak levels for input verification and threshold tuning.
 - `effect-pi wakeword` runs live wakeword scoring/trigger telemetry from PulseAudio.
-- `effect-pi wakeword-train` runs best-effort capture setup (auto source probing, auto noise/speech calibration, adaptive speech threshold retries), collects positive/negative clips from PulseAudio, trains a lightweight wakeword scoring model, saves it under `assets/openwakeword/wakewords/`, can register it in the manifest, and persists calibration snapshots in the training workspace for reuse.
+- `effect-pi wakeword-train` runs best-effort capture setup (auto source probing, auto noise/speech calibration, adaptive speech threshold retries), collects positive/negative clips from PulseAudio, trains a lightweight wakeword scoring model, saves data under `$XDG_DATA_HOME/effect-pi/openwakeword/`, updates the XDG manifest when requested, and persists calibration snapshots in `$XDG_CONFIG_HOME/effect-pi/wakeword/`.
 - Wakeword feature extraction now requires real ONNX feature models (`melspectrogram.onnx`, `embedding_model.onnx`) and `onnxruntime-web@1.22.0`; placeholder/fallback feature paths are rejected.
 
 ## Data Flow

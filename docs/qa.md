@@ -18,11 +18,11 @@
 
 ## Wakeword Runtime
 
-| Decision                              | Rationale                                                                                                                 |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| openWakeWord model stack              | Python-free wakeword path in Bun with melspectrogram + embedding models and wakeword scoring (`.onnx` or trained `.json`) |
-| Runtime pin: `onnxruntime-web@1.22.0` | Keep inference runtime deterministic and Bun-compatible                                                                   |
-| Asset layout in `assets/openwakeword` | Stable model discovery and startup validation with actionable failures                                                    |
+| Decision                              | Rationale                                                                                                                        |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| openWakeWord model stack              | Python-free wakeword path in Bun with melspectrogram + embedding models and wakeword scoring (`.onnx` or trained `.json`)        |
+| Runtime pin: `onnxruntime-web@1.22.0` | Keep inference runtime deterministic and Bun-compatible                                                                          |
+| XDG storage layout                    | Runtime data lives under `$XDG_DATA_HOME/effect-pi/openwakeword`, tuning/calibration under `$XDG_CONFIG_HOME/effect-pi/wakeword` |
 
 ## Verification Workflow
 
@@ -31,6 +31,7 @@
 - Check live input level / RMS for threshold tuning: `bun run cli -- meter --duration 10 --source <source-name>`
 - Install real feature models first (required): `bun run wakeword:install-feature-models --melspectrogram-sha256 <sha256> --embedding-sha256 <sha256>`
 - Recommended one-command training (auto source + auto RMS calibration + adaptive retries): `bun run cli -- wakeword-train --name hey_jarvis --register`
+- Automatic trigger tuning (writes config snapshot used by `wakeword`): `bun run cli -- wakeword-tune --model hey_jarvis.json`
 - Auto source probe + calibration are now sequential and interactive: press Enter to start each capture step, then press Enter again to stop/confirm.
 - Optional manual tuning overrides: `--source`, `--speech-rms`, `--speech-chunks`, `--pre-roll-ms`, `--max-wait-seconds`, `--no-auto-calibrate`, `--recalibrate`
 - Validate wakeword assets only: `bun run cli -- wakeword --duration 1 --score-every 1`
