@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-02-17T14:27:48.969Z",
+  "sourceName": "alsa_input.usb-Anker_PowerConf_C200_Anker_PowerConf_C200_ACNV9P1F06200276-02.analog-stereo",
+  "modelName": "ok_pie",
+  "modelFile": "ok_pie.json",
+  "trigger": {
+    "threshold": 0.08,
+    "smoothingWindow": 1,
+    "consecutiveFrames": 1,
+    "cooldownMs": 900
+  },
+  "metrics": {
+    "silenceP99": 0.000002865265327844439,
+    "negativeP99": 0.05595331349895538,
+    "positiveP90": 0.3026306745928837,
+    "positiveEstimatedPhrases": 4,
+    "positiveTriggers": 4,
+    "negativeTriggers": 0,
+    "silenceTriggers": 0
+  }
+}

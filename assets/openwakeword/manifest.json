@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "runtime": {
+    "package": "onnxruntime-web",
+    "version": "1.22.0"
+  },
+  "models": {
+    "melspectrogram": "melspectrogram.onnx",
+    "embedding": "embedding_model.onnx",
+    "wakewords": ["default.json", "ok_pie.json"]
+  }
+}

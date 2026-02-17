@@ -38,6 +38,9 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 .bun/
 .tmp/
 
+# reference repos
+.reference/
+
 # beads runtime locks
 .beads/*.lock
 .beads/*.startlock

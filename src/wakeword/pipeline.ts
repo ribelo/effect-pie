@@ -1,0 +1,338 @@
+import * as Effect from "effect/Effect";
+
+import {
+  OPENWAKEWORD_FEATURE_HISTORY_FRAMES,
+  OPENWAKEWORD_LOOKBACK_SAMPLES,
+  OPENWAKEWORD_MEL_BINS,
+  OPENWAKEWORD_MEL_HISTORY_FRAMES,
+  OPENWAKEWORD_MEL_WINDOW_FRAMES,
+  OPENWAKEWORD_PCM_BYTES_PER_SAMPLE,
+  OPENWAKEWORD_PCM_FRAME_SAMPLES,
+  OPENWAKEWORD_SAMPLE_RATE,
+  type WakewordScoreFrame,
+} from "./defs.js";
+import { type OnnxSession, type WakewordModelSessions, type WakewordRuntimeError } from "./onnx.js";
+
+export class WakewordPipelineError extends Error {
+  constructor(message: string, options?: { readonly cause?: unknown }) {
+    super(message, { cause: options?.cause });
+    this.name = "WakewordPipelineError";
+  }
+}
+
+export type WakewordPipelineConfig = {
+  readonly sampleRate?: number;
+  readonly frameSamples?: number;
+  readonly melBins?: number;
+  readonly melWindowFrames?: number;
+  readonly melHistoryFrames?: number;
+  readonly featureHistoryFrames?: number;
+  readonly lookbackSamples?: number;
+  readonly defaultWakewordInputFrames?: number;
+};
+
+export type WakewordPipeline = {
+  readonly feedPcmChunk: (
+    chunk: Uint8Array,
+  ) => Effect.Effect<ReadonlyArray<WakewordScoreFrame>, WakewordPipelineError>;
+  readonly feedPcmSamples: (
+    samples: Int16Array,
+  ) => Effect.Effect<ReadonlyArray<WakewordScoreFrame>, WakewordPipelineError>;
+  readonly getFeatureFrameCount: Effect.Effect<number>;
+  readonly reset: Effect.Effect<void>;
+};
+
+type PipelineState = {
+  byteRemainder: Uint8Array;
+  sampleRemainder: Int16Array;
+  rawSampleBuffer: Array<number>;
+  melBuffer: Array<Float32Array>;
+  featureBuffer: Array<Float32Array>;
+  totalProcessedSamples: number;
+};
+
+type ResolvedPipelineConfig = {
+  readonly sampleRate: number;
+  readonly frameSamples: number;
+  readonly melBins: number;
+  readonly melWindowFrames: number;
+  readonly melHistoryFrames: number;
+  readonly featureHistoryFrames: number;
+  readonly lookbackSamples: number;
+  readonly defaultWakewordInputFrames: number;
+};
+
+const resolveConfig = (config: WakewordPipelineConfig): ResolvedPipelineConfig => ({
+  sampleRate: config.sampleRate ?? OPENWAKEWORD_SAMPLE_RATE,
+  frameSamples: config.frameSamples ?? OPENWAKEWORD_PCM_FRAME_SAMPLES,
+  melBins: config.melBins ?? OPENWAKEWORD_MEL_BINS,
+  melWindowFrames: config.melWindowFrames ?? OPENWAKEWORD_MEL_WINDOW_FRAMES,
+  melHistoryFrames: config.melHistoryFrames ?? OPENWAKEWORD_MEL_HISTORY_FRAMES,
+  featureHistoryFrames: config.featureHistoryFrames ?? OPENWAKEWORD_FEATURE_HISTORY_FRAMES,
+  lookbackSamples: config.lookbackSamples ?? OPENWAKEWORD_LOOKBACK_SAMPLES,
+  defaultWakewordInputFrames: config.defaultWakewordInputFrames ?? 16,
+});
+
+const makeInitialMelBuffer = (frames: number, bins: number): Array<Float32Array> =>
+  Array.from({ length: frames }, () => Float32Array.from({ length: bins }, () => 1));
+
+const toFrameMatrix = (data: Float32Array, featureCount: number): Array<Float32Array> => {
+  if (featureCount <= 0) {
+    return [];
+  }
+
+  const frameCount = Math.floor(data.length / featureCount);
+  const frames: Array<Float32Array> = [];
+
+  for (let frame = 0; frame < frameCount; frame += 1) {
+    const start = frame * featureCount;
+    const row = data.slice(start, start + featureCount);
+    frames.push(row);
+  }
+
+  return frames;
+};
+
+const flattenMatrix = (rows: ReadonlyArray<Float32Array>): Float32Array => {
+  if (rows.length === 0) {
+    return new Float32Array();
+  }
+
+  const width = rows[0]?.length ?? 0;
+  const data = new Float32Array(rows.length * width);
+
+  let offset = 0;
+  for (const row of rows) {
+    data.set(row, offset);
+    offset += row.length;
+  }
+
+  return data;
+};
+
+const trimArrayInPlace = <A>(target: Array<A>, maxLength: number): void => {
+  if (target.length <= maxLength) {
+    return;
+  }
+  target.splice(0, target.length - maxLength);
+};
+
+const toPcmSamples = (bytes: Uint8Array): Int16Array => {
+  const sampleCount = Math.floor(bytes.length / OPENWAKEWORD_PCM_BYTES_PER_SAMPLE);
+  const view = new DataView(
+    bytes.buffer,
+    bytes.byteOffset,
+    sampleCount * OPENWAKEWORD_PCM_BYTES_PER_SAMPLE,
+  );
+
+  const samples = new Int16Array(sampleCount);
+  for (let index = 0; index < sampleCount; index += 1) {
+    samples[index] = view.getInt16(index * OPENWAKEWORD_PCM_BYTES_PER_SAMPLE, true);
+  }
+
+  return samples;
+};
+
+const concatInt16 = (left: Int16Array, right: Int16Array): Int16Array => {
+  if (left.length === 0) {
+    return right;
+  }
+  if (right.length === 0) {
+    return left;
+  }
+
+  const out = new Int16Array(left.length + right.length);
+  out.set(left, 0);
+  out.set(right, left.length);
+  return out;
+};
+
+const runSession = (
+  session: OnnxSession,
+  inputData: Float32Array,
+  inputDims: ReadonlyArray<number>,
+): Effect.Effect<Float32Array, WakewordPipelineError> =>
+  session
+    .run({
+      data: inputData,
+      dims: inputDims,
+    })
+    .pipe(
+      Effect.map((output) => output.data),
+      Effect.mapError(
+        (cause: WakewordRuntimeError) =>
+          new WakewordPipelineError("Wakeword ONNX inference failed", {
+            cause,
+          }),
+      ),
+    );
+
+const transformMelspectrogram = (data: Float32Array): Float32Array => {
+  const transformed = new Float32Array(data.length);
+  for (let index = 0; index < data.length; index += 1) {
+    transformed[index] = data[index] / 10 + 2;
+  }
+  return transformed;
+};
+
+export const makeWakewordPipeline = (
+  models: WakewordModelSessions,
+  config: WakewordPipelineConfig = {},
+): Effect.Effect<WakewordPipeline> =>
+  Effect.sync(() => {
+    const resolved = resolveConfig(config);
+
+    const state: PipelineState = {
+      byteRemainder: new Uint8Array(),
+      sampleRemainder: new Int16Array(),
+      rawSampleBuffer: [],
+      melBuffer: makeInitialMelBuffer(resolved.melWindowFrames, resolved.melBins),
+      featureBuffer: [],
+      totalProcessedSamples: 0,
+    };
+
+    const feedPcmChunk = (
+      chunk: Uint8Array,
+    ): Effect.Effect<ReadonlyArray<WakewordScoreFrame>, WakewordPipelineError> =>
+      Effect.gen(function* () {
+        const merged =
+          state.byteRemainder.length === 0
+            ? chunk
+            : Uint8Array.from([...state.byteRemainder, ...chunk]);
+
+        const alignedLength = merged.length - (merged.length % OPENWAKEWORD_PCM_BYTES_PER_SAMPLE);
+        const aligned = merged.slice(0, alignedLength);
+        state.byteRemainder = merged.slice(alignedLength);
+
+        if (aligned.length === 0) {
+          return [];
+        }
+
+        return yield* feedPcmSamples(toPcmSamples(aligned));
+      });
+
+    const feedPcmSamples = (
+      incoming: Int16Array,
+    ): Effect.Effect<ReadonlyArray<WakewordScoreFrame>, WakewordPipelineError> =>
+      Effect.gen(function* () {
+        const mergedSamples = concatInt16(state.sampleRemainder, incoming);
+        const processableSamples =
+          mergedSamples.length - (mergedSamples.length % resolved.frameSamples);
+
+        state.sampleRemainder = mergedSamples.slice(processableSamples);
+
+        if (processableSamples === 0) {
+          return [];
+        }
+
+        const nextSamples = mergedSamples.slice(0, processableSamples);
+        const scoreFrames: Array<WakewordScoreFrame> = [];
+
+        for (let offset = 0; offset < nextSamples.length; offset += resolved.frameSamples) {
+          const frameChunk = nextSamples.slice(offset, offset + resolved.frameSamples);
+
+          for (const sample of frameChunk) {
+            state.rawSampleBuffer.push(sample);
+          }
+
+          const maxRawSamples = resolved.sampleRate * 10;
+          trimArrayInPlace(state.rawSampleBuffer, maxRawSamples);
+
+          state.totalProcessedSamples += resolved.frameSamples;
+
+          const bufferedInput = state.rawSampleBuffer.slice(
+            Math.max(
+              0,
+              state.rawSampleBuffer.length - resolved.frameSamples - resolved.lookbackSamples,
+            ),
+          );
+
+          const melInput = Float32Array.from(bufferedInput);
+          const melOutput = yield* runSession(models.melspectrogram, melInput, [
+            1,
+            melInput.length,
+          ]);
+          const transformed = transformMelspectrogram(melOutput);
+          const melFrames = toFrameMatrix(transformed, resolved.melBins);
+
+          state.melBuffer.push(...melFrames);
+          trimArrayInPlace(state.melBuffer, resolved.melHistoryFrames);
+
+          const melWindow = state.melBuffer.slice(-resolved.melWindowFrames);
+          if (melWindow.length !== resolved.melWindowFrames) {
+            continue;
+          }
+
+          const embeddingInput = flattenMatrix(melWindow);
+          const embeddingOutput = yield* runSession(models.embedding, embeddingInput, [
+            1,
+            resolved.melWindowFrames,
+            resolved.melBins,
+            1,
+          ]);
+
+          const embeddingVector =
+            embeddingOutput.length === 0 ? new Float32Array() : embeddingOutput;
+          if (embeddingVector.length === 0) {
+            continue;
+          }
+
+          state.featureBuffer.push(embeddingVector);
+          trimArrayInPlace(state.featureBuffer, resolved.featureHistoryFrames);
+
+          const scores: Record<string, number> = {};
+
+          for (const [name, model] of Object.entries(models.wakewords)) {
+            const requiredFrames = model.requiredFrames ?? resolved.defaultWakewordInputFrames;
+            if (state.featureBuffer.length < requiredFrames) {
+              continue;
+            }
+
+            const featureWindow = state.featureBuffer.slice(
+              state.featureBuffer.length - requiredFrames,
+            );
+            const actualFeatureSize = featureWindow[0]?.length ?? 0;
+
+            if (
+              model.expectedFeatureSize !== undefined &&
+              model.expectedFeatureSize !== actualFeatureSize
+            ) {
+              continue;
+            }
+
+            const score = yield* model.score(featureWindow).pipe(
+              Effect.mapError(
+                (cause: WakewordRuntimeError) =>
+                  new WakewordPipelineError("Wakeword scoring model inference failed", {
+                    cause,
+                  }),
+              ),
+            );
+
+            scores[name] = score;
+          }
+
+          scoreFrames.push({
+            timestampMs: (state.totalProcessedSamples / resolved.sampleRate) * 1000,
+            sampleIndex: state.totalProcessedSamples,
+            scores,
+          });
+        }
+
+        return scoreFrames;
+      });
+
+    return {
+      feedPcmChunk,
+      feedPcmSamples,
+      getFeatureFrameCount: Effect.sync(() => state.featureBuffer.length),
+      reset: Effect.sync(() => {
+        state.byteRemainder = new Uint8Array();
+        state.sampleRemainder = new Int16Array();
+        state.rawSampleBuffer = [];
+        state.melBuffer = makeInitialMelBuffer(resolved.melWindowFrames, resolved.melBins);
+        state.featureBuffer = [];
+        state.totalProcessedSamples = 0;
+      }),
+    };
+  });

@@ -40,11 +40,13 @@ Gate runs: `check -> effect:diagnostics -> lint -> format:check -> test`
 Uses beads (`bd`) for task tracking.
 
 ### Definition of Ready (DoR)
+
 - Clear acceptance criteria
 - Dependencies identified
 - Sized to a few hours of work
 
 ### Definition of Done (DoD)
+
 - Code compiles and passes gate
 - Tests cover the change
 - Beads issue updated/closed

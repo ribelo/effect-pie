@@ -11,13 +11,16 @@
     "format:check": "oxfmt --check .",
     "test": "bun test",
     "effect:diagnostics": "bunx effect-language-service diagnostics --project tsconfig.json --format pretty --progress",
+    "cli": "bun run src/cli.ts",
+    "wakeword:install-feature-models": "bun run scripts/install-openwakeword-feature-models.ts",
     "gate": "bun run check && bun run effect:diagnostics && bun run lint && bun run format:check && bun run test"
   },
   "dependencies": {
     "@effect/ai-anthropic": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-anthropic@fe2cab2",
     "@effect/ai-openai": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-openai@fe2cab2",
     "@effect/platform-bun": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/platform-bun@fe2cab2",
-    "effect": "https://pkg.pr.new/Effect-TS/effect-smol/effect@fe2cab2"
+    "effect": "https://pkg.pr.new/Effect-TS/effect-smol/effect@fe2cab2",
+    "onnxruntime-web": "1.22.0"
   },
   "devDependencies": {
     "@effect/language-service": "^0.71.0",
