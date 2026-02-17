@@ -39,9 +39,12 @@ const ensureReadableFile = (filePath: string): Effect.Effect<void, WakewordAsset
       }
     },
     catch: (cause) =>
-      new WakewordAssetError(`Missing or invalid model asset: ${filePath}`, {
-        cause,
-      }),
+      new WakewordAssetError(
+        `Missing or invalid model asset: ${filePath}. Install required feature models with 'bun run wakeword:install-feature-models --melspectrogram-sha256 <sha256> --embedding-sha256 <sha256>'.`,
+        {
+          cause,
+        },
+      ),
   });
 
 const FEATURE_PLACEHOLDER_MARKER = "effect-pi placeholder feature model file";

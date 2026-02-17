@@ -1,22 +1,16 @@
-# openWakeWord Assets
+# openWakeWord Bundled Bootstrap Assets
 
-This directory must contain real openWakeWord feature models.
+Runtime wakeword data now lives in XDG directories:
 
-Required files from `manifest.json`:
+- Data: `$XDG_DATA_HOME/effect-pi/openwakeword` (fallback `~/.local/share/effect-pi/openwakeword`)
+- Config: `$XDG_CONFIG_HOME/effect-pi/wakeword` (fallback `~/.config/effect-pi/wakeword`)
 
-- `melspectrogram.onnx`
-- `embedding_model.onnx`
-- `wakewords/<name>.onnx` or `wakewords/<name>.json` for each configured wakeword model
+This repository directory is only a bundled bootstrap source for defaults.
+Do not store personal training data or custom wakewords here.
 
 Runtime pin:
 
 - `onnxruntime-web@1.22.0`
-
-## Important
-
-- Placeholder feature files are not accepted anymore.
-- Training and live detection now fail fast when feature models are placeholders/invalid.
-- There is no TypeScript feature-extractor fallback in runtime paths.
 
 ## Install Real Feature Models
 

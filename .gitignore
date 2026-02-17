@@ -46,3 +46,10 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 .beads/*.startlock
 .beads/*.sock
 .beads/sync-state.json
+
+# wakeword runtime artifacts (use XDG paths instead)
+assets/openwakeword/*.onnx
+assets/openwakeword/training/
+assets/openwakeword/wakewords/*.onnx
+assets/openwakeword/wakewords/*.json
+!assets/openwakeword/wakewords/default.json

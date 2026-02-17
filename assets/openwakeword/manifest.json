@@ -7,6 +7,6 @@
   "models": {
     "melspectrogram": "melspectrogram.onnx",
     "embedding": "embedding_model.onnx",
-    "wakewords": ["default.json", "ok_pie.json"]
+    "wakewords": ["default.json"]
   }
 }
