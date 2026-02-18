@@ -19,6 +19,7 @@
     "@effect/ai-anthropic": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-anthropic@fe2cab2",
     "@effect/ai-openai": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-openai@fe2cab2",
     "@effect/platform-bun": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/platform-bun@fe2cab2",
+    "dbus-next": "^0.10.2",
     "effect": "https://pkg.pr.new/Effect-TS/effect-smol/effect@fe2cab2",
     "onnxruntime-web": "1.22.0"
   },

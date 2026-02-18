@@ -1,5 +1,7 @@
 import { BunRuntime } from "@effect/platform-bun";
 import * as BunServices from "@effect/platform-bun/BunServices";
+import * as dbusNext from "dbus-next";
+import type { Message as DbusMessage, MessageBus } from "dbus-next";
 import { Console, Effect, Fiber, Option, Ref, Stream } from "effect";
 import * as Deferred from "effect/Deferred";
 import { Command, Flag } from "effect/unstable/cli";
@@ -26,10 +28,16 @@ import {
   WakewordTrainingError,
   writePcmWavFile,
 } from "./wakeword/training.js";
-import { EFFECT_PI_WAKEWORD_CONFIG_DIR } from "./paths.js";
+import { EFFECT_PI_DATA_DIR, EFFECT_PI_WAKEWORD_CONFIG_DIR } from "./paths.js";
 import { layer as pulseLayer, PulseAudioClient } from "./pulse/client.js";
 import { PA_SAMPLE_FORMAT, type SourceInfo } from "./pulse/defs.js";
 import { createRecordStream } from "./pulse/stream.js";
+import {
+  closeGlobalShortcutSession,
+  monitorPortalSignals,
+  setupGlobalShortcutSession,
+} from "./wayland/globalShortcuts.js";
+import { typeTextInFocusedApp } from "./input/textInjection.js";
 
 const positiveIntegerFlag = (name: string, description: string, defaultValue: number) =>
   Flag.integer(name).pipe(
@@ -94,6 +102,199 @@ const concatChunks = (chunks: ReadonlyArray<Uint8Array>): Uint8Array => {
 
   return out;
 };
+
+const { Message, MessageType, sessionBus } = dbusNext;
+
+const A11Y_MANAGER_SERVICE = "org.freedesktop.a11y.Manager";
+const A11Y_MANAGER_PATH = "/org/freedesktop/a11y/Manager";
+const A11Y_KEYBOARD_INTERFACE = "org.freedesktop.a11y.KeyboardMonitor";
+const A11Y_DBUS_CONNECT_TIMEOUT_MS = 5000;
+
+type KeyboardMonitorKeyEvent = {
+  readonly released: boolean;
+  readonly state: number;
+  readonly keysym: number;
+  readonly unichar: number;
+  readonly keycode: number;
+};
+
+class PttKeyboardError extends Error {
+  constructor(message: string, options?: { readonly cause?: unknown }) {
+    super(message, options?.cause === undefined ? undefined : { cause: options.cause });
+    this.name = "PttKeyboardError";
+  }
+}
+
+const connectKeyboardMonitorBus = (): Effect.Effect<MessageBus, PttKeyboardError, never> =>
+  Effect.tryPromise({
+    try: async () => {
+      const bus = sessionBus();
+
+      await new Promise<void>((resolve, reject) => {
+        let finished = false;
+
+        const finish = (callback: () => void): void => {
+          if (finished) {
+            return;
+          }
+
+          finished = true;
+          bus.off("connect", onConnect);
+          bus.off("error", onError);
+          clearTimeout(timeout);
+          callback();
+        };
+
+        const onConnect = (): void => {
+          finish(resolve);
+        };
+
+        const onError = (error: unknown): void => {
+          finish(() => {
+            reject(error);
+          });
+        };
+
+        const timeout = setTimeout(() => {
+          finish(() => {
+            reject(
+              new PttKeyboardError(
+                `Timed out connecting to session D-Bus after ${A11Y_DBUS_CONNECT_TIMEOUT_MS} ms`,
+              ),
+            );
+          });
+        }, A11Y_DBUS_CONNECT_TIMEOUT_MS);
+
+        bus.on("connect", onConnect);
+        bus.on("error", onError);
+
+        const sender = (bus as MessageBus & { readonly name?: unknown }).name;
+        if (typeof sender === "string" && sender.length > 0) {
+          finish(resolve);
+        }
+      });
+
+      return bus;
+    },
+    catch: (cause) =>
+      cause instanceof PttKeyboardError
+        ? cause
+        : new PttKeyboardError("Failed to connect to session D-Bus", { cause }),
+  });
+
+const callKeyboardMonitorMethod = (
+  bus: MessageBus,
+  member: "WatchKeyboard" | "UnwatchKeyboard",
+): Effect.Effect<void, PttKeyboardError, never> =>
+  Effect.tryPromise({
+    try: async () => {
+      const reply = await bus.call(
+        new Message({
+          destination: A11Y_MANAGER_SERVICE,
+          path: A11Y_MANAGER_PATH,
+          interface: A11Y_KEYBOARD_INTERFACE,
+          member,
+        }),
+      );
+
+      if (reply === null) {
+        throw new PttKeyboardError(`No D-Bus reply received for ${member}`);
+      }
+
+      if (reply.type === MessageType.ERROR) {
+        const detail =
+          reply.body.length > 0 && typeof reply.body[0] === "string"
+            ? reply.body[0]
+            : "Unknown D-Bus error";
+        throw new PttKeyboardError(
+          `${member} failed: ${reply.errorName ?? "<unknown>"} :: ${detail}`,
+        );
+      }
+
+      if (reply.type !== MessageType.METHOD_RETURN) {
+        throw new PttKeyboardError(
+          `${member} returned unexpected D-Bus message type ${reply.type}`,
+        );
+      }
+    },
+    catch: (cause) =>
+      cause instanceof PttKeyboardError
+        ? cause
+        : new PttKeyboardError(`Failed to call ${member}`, { cause }),
+  });
+
+const parseKeyboardMonitorSignal = (message: DbusMessage): KeyboardMonitorKeyEvent | undefined => {
+  if (message.type !== MessageType.SIGNAL) {
+    return undefined;
+  }
+
+  if (
+    message.interface !== A11Y_KEYBOARD_INTERFACE ||
+    message.member !== "KeyEvent" ||
+    message.body.length < 5
+  ) {
+    return undefined;
+  }
+
+  const [released, state, keysym, unichar, keycode] = message.body;
+
+  if (
+    typeof released !== "boolean" ||
+    typeof state !== "number" ||
+    typeof keysym !== "number" ||
+    typeof unichar !== "number" ||
+    typeof keycode !== "number"
+  ) {
+    return undefined;
+  }
+
+  return {
+    released,
+    state,
+    keysym,
+    unichar,
+    keycode,
+  };
+};
+
+const makePttClipPath = (outputDir: string): string => {
+  const now = new Date();
+  const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
+    now.getDate(),
+  ).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(
+    now.getMinutes(),
+  ).padStart(2, "0")}-${String(now.getSeconds()).padStart(2, "0")}-${String(
+    now.getMilliseconds(),
+  ).padStart(3, "0")}`;
+
+  return path.join(outputDir, `ptt-${stamp}.wav`);
+};
+
+class AsyncEventQueue<T> {
+  private readonly values: Array<T> = [];
+  private readonly waiters: Array<(value: T) => void> = [];
+
+  push(value: T): void {
+    const waiter = this.waiters.shift();
+    if (waiter !== undefined) {
+      waiter(value);
+      return;
+    }
+
+    this.values.push(value);
+  }
+
+  take(): Promise<T> {
+    const value = this.values.shift();
+    if (value !== undefined) {
+      return Promise.resolve(value);
+    }
+
+    return new Promise<T>((resolve) => {
+      this.waiters.push(resolve);
+    });
+  }
+}
 
 class NoSpeechDetectedError extends Error {
   readonly observedMaxRms: number;
@@ -1148,6 +1349,303 @@ const meterCommand = Command.make(
   Command.withDescription("Print live input RMS/peak to verify microphone level and threshold"),
 );
 
+const pttPortalCommand = Command.make(
+  "ptt-portal",
+  {
+    shortcut: Flag.string("shortcut").pipe(
+      Flag.withDescription("Shortcut accelerator in portal syntax"),
+      Flag.withDefault("<Ctrl><Super>space"),
+    ),
+    id: Flag.string("id").pipe(
+      Flag.withDescription("Portal shortcut id"),
+      Flag.withDefault("push_to_talk"),
+    ),
+    description: Flag.string("description").pipe(
+      Flag.withDescription("Shortcut description shown by desktop portal"),
+      Flag.withDefault("effect-pi push-to-talk"),
+    ),
+    parentWindow: Flag.string("parent-window").pipe(
+      Flag.withDescription("Parent window id (leave empty for headless CLI)"),
+      Flag.withDefault(""),
+    ),
+  },
+  (config) =>
+    Effect.gen(function* () {
+      const session = yield* setupGlobalShortcutSession({
+        parentWindow: config.parentWindow,
+        shortcut: {
+          id: config.id,
+          description: config.description,
+          preferredTrigger: config.shortcut,
+        },
+      });
+
+      yield* Console.log(`PTT shortcut id: ${session.shortcut.id}`);
+      yield* Console.log(`Preferred trigger: ${session.shortcut.preferredTrigger}`);
+      yield* Console.log(`CreateSession request handle: ${session.createRequestHandle}`);
+      yield* Console.log(`BindShortcuts request handle: ${session.bindRequestHandle}`);
+      yield* Console.log(`Session handle: ${session.sessionHandle}`);
+      yield* Console.log(
+        'Portal monitor started. Look for Member="Activated" and Member="Deactivated". Press Ctrl+C to stop.',
+      );
+
+      return yield* monitorPortalSignals().pipe(
+        Effect.ensuring(closeGlobalShortcutSession(session.sessionHandle).pipe(Effect.ignore)),
+      );
+    }),
+).pipe(Command.withDescription("Spike command for xdg-desktop-portal GlobalShortcuts capture"));
+
+const pttCommand = Command.make(
+  "ptt",
+  {
+    keycode: Flag.integer("keycode").pipe(
+      Flag.optional,
+      Flag.withDescription("Hardware keycode to use as push-to-talk trigger (learned if omitted)"),
+      Flag.filter(
+        (value) => Option.isNone(value) || value.value > 0,
+        () => "--keycode must be greater than 0",
+      ),
+    ),
+    keysym: Flag.integer("keysym").pipe(
+      Flag.optional,
+      Flag.withDescription("XKB keysym to use as trigger (alternative to --keycode)"),
+      Flag.filter(
+        (value) => Option.isNone(value) || value.value > 0,
+        () => "--keysym must be greater than 0",
+      ),
+    ),
+    source: optionalSourceFlag,
+    outputDir: Flag.string("output-dir").pipe(
+      Flag.withDescription("Directory where captured PTT WAV clips will be saved"),
+      Flag.withDefault(path.join(EFFECT_PI_DATA_DIR, "ptt-clips")),
+    ),
+    minDurationMs: positiveIntegerFlag(
+      "min-duration-ms",
+      "Ignore clips shorter than this many milliseconds",
+      120,
+    ),
+    sampleRate: positiveIntegerFlag("sample-rate", "PCM sample rate for capture", 16000),
+    fragmentSize: positiveIntegerFlag(
+      "fragment-size",
+      "PulseAudio record fragment size in bytes",
+      4096,
+    ),
+  },
+  (config) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const keyboardBus = yield* connectKeyboardMonitorBus();
+
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            keyboardBus.disconnect();
+          }).pipe(Effect.ignore),
+        );
+
+        yield* callKeyboardMonitorMethod(keyboardBus, "WatchKeyboard");
+        yield* Effect.addFinalizer(() =>
+          callKeyboardMonitorMethod(keyboardBus, "UnwatchKeyboard").pipe(Effect.ignore),
+        );
+
+        const eventQueue = new AsyncEventQueue<KeyboardMonitorKeyEvent>();
+
+        const onMessage = (message: DbusMessage): void => {
+          const event = parseKeyboardMonitorSignal(message);
+          if (event !== undefined) {
+            eventQueue.push(event);
+          }
+        };
+
+        keyboardBus.on("message", onMessage);
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            keyboardBus.off("message", onMessage);
+          }).pipe(Effect.ignore),
+        );
+
+        const triggerRef = yield* Ref.make<
+          | {
+              readonly keycode: number;
+              readonly keysym: number;
+            }
+          | undefined
+        >(
+          Option.isSome(config.keycode)
+            ? {
+                keycode: config.keycode.value,
+                keysym: Option.isSome(config.keysym) ? config.keysym.value : 0,
+              }
+            : Option.isSome(config.keysym)
+              ? {
+                  keycode: 0,
+                  keysym: config.keysym.value,
+                }
+              : undefined,
+        );
+
+        if (Option.isNone(config.keycode) && Option.isNone(config.keysym)) {
+          yield* Console.log(
+            "PTT key not configured. Press the key you want to use for push-to-talk to learn it now.",
+          );
+
+          while (true) {
+            const event = yield* Effect.promise(() => eventQueue.take());
+            if (event.released) {
+              continue;
+            }
+
+            yield* Ref.set(triggerRef, {
+              keycode: event.keycode,
+              keysym: event.keysym,
+            });
+
+            yield* Console.log(
+              `Learned trigger key: keycode=${event.keycode} keysym=${event.keysym} (use --keycode ${event.keycode} for a stable binding)`,
+            );
+            break;
+          }
+        }
+
+        const trigger = yield* Ref.get(triggerRef);
+        if (trigger === undefined) {
+          return yield* Effect.fail(
+            new PttKeyboardError(
+              "No push-to-talk key configured. Use --keycode/--keysym or learn one.",
+            ),
+          );
+        }
+
+        const captureActiveRef = yield* Ref.make(false);
+        const captureChunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([]);
+        const captureStartedAtRef = yield* Ref.make<number | undefined>(undefined);
+
+        const recordOptions: {
+          sampleFormat: typeof PA_SAMPLE_FORMAT.S16LE;
+          sampleRate: number;
+          channels: 1;
+          fragmentSize: number;
+          sourceName?: string;
+        } = {
+          sampleFormat: PA_SAMPLE_FORMAT.S16LE,
+          sampleRate: config.sampleRate,
+          channels: 1,
+          fragmentSize: config.fragmentSize,
+        };
+
+        if (Option.isSome(config.source)) {
+          recordOptions.sourceName = config.source.value;
+        }
+
+        yield* createRecordStream(recordOptions).pipe(
+          Stream.runForEach((chunk) =>
+            Effect.gen(function* () {
+              const active = yield* Ref.get(captureActiveRef);
+              if (!active) {
+                return;
+              }
+
+              const copied = chunk.slice();
+              yield* Ref.update(captureChunksRef, (chunks) => {
+                const next = chunks.slice();
+                next.push(copied);
+                return next;
+              });
+            }),
+          ),
+          Effect.forkDetach,
+        );
+
+        yield* Console.log(
+          `PTT armed. Hold keycode=${trigger.keycode} keysym=${trigger.keysym} to record. Clips -> ${config.outputDir}. Press Ctrl+C to stop.`,
+        );
+
+        while (true) {
+          const event = yield* Effect.promise(() => eventQueue.take());
+
+          const keycodeMatches = trigger.keycode > 0 && event.keycode === trigger.keycode;
+          const keysymMatches = trigger.keysym > 0 && event.keysym === trigger.keysym;
+
+          if (!keycodeMatches && !keysymMatches) {
+            continue;
+          }
+
+          if (!event.released) {
+            const alreadyActive = yield* Ref.get(captureActiveRef);
+            if (alreadyActive) {
+              continue;
+            }
+
+            yield* Ref.set(captureChunksRef, []);
+            yield* Ref.set(captureStartedAtRef, Date.now());
+            yield* Ref.set(captureActiveRef, true);
+            continue;
+          }
+
+          const wasActive = yield* Ref.get(captureActiveRef);
+          if (!wasActive) {
+            continue;
+          }
+
+          yield* Ref.set(captureActiveRef, false);
+
+          const startedAt = yield* Ref.get(captureStartedAtRef);
+          yield* Ref.set(captureStartedAtRef, undefined);
+
+          const durationMs = startedAt === undefined ? 0 : Date.now() - startedAt;
+          const chunks = yield* Ref.get(captureChunksRef);
+          yield* Ref.set(captureChunksRef, []);
+
+          if (durationMs < config.minDurationMs) {
+            yield* Console.log(
+              `[ptt] Ignored short clip (${durationMs}ms < ${config.minDurationMs}ms)`,
+            );
+            continue;
+          }
+
+          const pcmBytes = concatChunks(chunks);
+          if (pcmBytes.length === 0) {
+            yield* Console.log("[ptt] Ignored empty clip");
+            continue;
+          }
+
+          const outputPath = makePttClipPath(config.outputDir);
+          yield* writePcmWavFile(outputPath, pcmBytes, config.sampleRate).pipe(
+            Effect.mapError(
+              (cause: WakewordTrainingError) =>
+                new PttKeyboardError(
+                  `Failed to write PTT clip at ${outputPath}: ${cause.message}`,
+                  {
+                    cause,
+                  },
+                ),
+            ),
+          );
+
+          const seconds = (durationMs / 1000).toFixed(2);
+          yield* Console.log(`[ptt] Saved ${outputPath} (${seconds}s)`);
+        }
+      }),
+    ),
+).pipe(
+  Command.withDescription(
+    "Experimental keyboard-monitor push-to-talk: hold key to capture audio and save clips as WAV",
+  ),
+);
+
+const typeCommand = Command.make(
+  "type",
+  {
+    text: Flag.string("text").pipe(Flag.withDescription("Text to type into the focused app")),
+  },
+  (config) =>
+    Effect.gen(function* () {
+      const result = yield* typeTextInFocusedApp(config.text);
+      yield* Console.log(
+        `Typed ${config.text.length} characters with ${result.backend} (${result.sessionType})`,
+      );
+    }),
+).pipe(Command.withDescription("Spike command that types text via wtype/xdotool based on session"));
+
 type AutoCalibrationResult = {
   readonly sourceName: string;
   readonly noiseRmsP95: number;
@@ -2152,6 +2650,9 @@ const rootCommand = Command.make("effect-pi").pipe(
     recordCommand,
     sourcesCommand,
     meterCommand,
+    pttPortalCommand,
+    pttCommand,
+    typeCommand,
     wakewordCommand,
     wakewordTuneCommand,
     wakewordTrainCommand,

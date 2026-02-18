@@ -11,12 +11,17 @@ effect-pi/
 ├── assets/openwakeword/       # bundled fallback assets for local/dev bootstrap
 ├── src/
 │   ├── cli.ts                 # CLI entrypoint (record + wakeword commands)
+│   ├── desktop/               # Desktop session detection helpers
+│   ├── input/                 # Text injection orchestration
 │   ├── pulse/                 # PulseAudio native protocol client and stream wrappers
-│   └── wakeword/              # openWakeWord asset validation, ONNX runtime, pipeline, trigger
+│   ├── wakeword/              # openWakeWord asset validation, ONNX runtime, pipeline, trigger
+│   ├── wayland/               # Wayland typing/portal integration
+│   └── x11/                   # X11 typing integration
 ├── test/                      # Unit + integration tests
 ├── docs/
 │   ├── architecture.md
-│   └── qa.md
+│   ├── qa.md
+│   └── wayland-ptt-wtype.md
 ├── AGENTS.md
 ├── package.json
 ├── tsconfig.json
@@ -41,6 +46,8 @@ effect-pi/
 - `effect-pi record` captures raw PCM audio.
 - `effect-pi sources` lists available PulseAudio capture sources.
 - `effect-pi meter` prints live RMS / peak levels for input verification and threshold tuning.
+- `effect-pi ptt-portal` registers a GlobalShortcuts portal binding and prints activation/deactivation monitor events.
+- `effect-pi type` sends text to the focused app and auto-selects backend (`wtype` for Wayland, `xdotool` for X11).
 - `effect-pi wakeword` runs live wakeword scoring/trigger telemetry from PulseAudio.
 - `effect-pi wakeword-train` runs best-effort capture setup (auto source probing, auto noise/speech calibration, adaptive speech threshold retries), collects positive/negative clips from PulseAudio, trains a lightweight wakeword scoring model, saves data under `$XDG_DATA_HOME/effect-pi/openwakeword/`, updates the XDG manifest when requested, and persists calibration snapshots in `$XDG_CONFIG_HOME/effect-pi/wakeword/`.
 - Wakeword feature extraction now requires real ONNX feature models (`melspectrogram.onnx`, `embedding_model.onnx`) and `onnxruntime-web@1.22.0`; placeholder/fallback feature paths are rejected.

@@ -35,7 +35,10 @@
 - Auto source probe + calibration are now sequential and interactive: press Enter to start each capture step, then press Enter again to stop/confirm.
 - Optional manual tuning overrides: `--source`, `--speech-rms`, `--speech-chunks`, `--pre-roll-ms`, `--max-wait-seconds`, `--no-auto-calibrate`, `--recalibrate`
 - Validate wakeword assets only: `bun run cli -- wakeword --duration 1 --score-every 1`
+- Probe Wayland portal PTT capture: `bun run cli -- ptt-portal --shortcut "<Ctrl><Super>space"`
+- Probe Linux text output (auto backend: Wayland=`wtype`, X11=`xdotool`): `bun run cli -- type --text "effect pi spike"`
 - Record raw PCM for local troubleshooting: `bun run cli -- record --duration 3 --output /tmp/sample.pcm`
+- Wayland prerequisites and limits: `docs/wayland-ptt-wtype.md`
 
 ## Open Questions
 
