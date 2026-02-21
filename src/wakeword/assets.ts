@@ -1,3 +1,4 @@
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -10,12 +11,10 @@ import {
   type WakewordAssetManifest,
 } from "./defs.js";
 
-export class WakewordAssetError extends Error {
-  constructor(message: string, options?: { readonly cause?: unknown }) {
-    super(message, { cause: options?.cause });
-    this.name = "WakewordAssetError";
-  }
-}
+export class WakewordAssetError extends Data.TaggedError("WakewordAssetError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 
 export type WakewordAssetOptions = {
   readonly rootDir?: string;
@@ -32,19 +31,17 @@ const ensureReadableFile = (filePath: string): Effect.Effect<void, WakewordAsset
     try: async () => {
       const stat = await fs.stat(filePath);
       if (!stat.isFile()) {
-        throw new Error("path is not a file");
+        throw new WakewordAssetError({ message: "path is not a file" });
       }
       if (stat.size === 0) {
-        throw new Error("file is empty");
+        throw new WakewordAssetError({ message: "file is empty" });
       }
     },
     catch: (cause) =>
-      new WakewordAssetError(
-        `Missing or invalid model asset: ${filePath}. Install required feature models with 'bun run wakeword:install-feature-models --melspectrogram-sha256 <sha256> --embedding-sha256 <sha256>'.`,
-        {
-          cause,
-        },
-      ),
+      new WakewordAssetError({
+        message: `Missing or invalid model asset: ${filePath}. Install required feature models with 'bun run wakeword:install-feature-models --melspectrogram-sha256 <sha256> --embedding-sha256 <sha256>'.`,
+        cause,
+      }),
   });
 
 const FEATURE_PLACEHOLDER_MARKER = "effect-pi placeholder feature model file";
@@ -58,28 +55,28 @@ const ensureRealFeatureOnnxFile = (
     try: async () => {
       const stat = await fs.stat(filePath);
       if (!stat.isFile()) {
-        throw new Error("path is not a file");
+        throw new WakewordAssetError({ message: "path is not a file" });
       }
 
       if (stat.size < MIN_FEATURE_MODEL_BYTES) {
-        throw new Error(
-          `feature model is too small (${stat.size} bytes). Real ONNX model is required`,
-        );
+        throw new WakewordAssetError({
+          message: `feature model is too small (${stat.size} bytes). Real ONNX model is required`,
+        });
       }
 
       const raw = await fs.readFile(filePath);
       const preview = raw.subarray(0, 256).toString("utf8").toLowerCase();
       if (preview.includes(FEATURE_PLACEHOLDER_MARKER)) {
-        throw new Error("feature model placeholder marker detected");
+        throw new WakewordAssetError({
+          message: "feature model placeholder marker detected",
+        });
       }
     },
     catch: (cause) =>
-      new WakewordAssetError(
-        `Invalid ${label} feature model at ${filePath}. Install real openWakeWord ONNX feature models before training or detection.`,
-        {
-          cause,
-        },
-      ),
+      new WakewordAssetError({
+        message: `Invalid ${label} feature model at ${filePath}. Install real openWakeWord ONNX feature models before training or detection.`,
+        cause,
+      }),
   });
 
 const normalizeWakewordModelName = (entry: string): string => {
@@ -110,9 +107,9 @@ const readManifest = (
       const parsed = JSON.parse(raw) as WakewordAssetManifest;
 
       if (parsed.schemaVersion !== 1) {
-        throw new Error(
-          `Unsupported wakeword manifest schema version: ${String(parsed.schemaVersion)}`,
-        );
+        throw new WakewordAssetError({
+          message: `Unsupported wakeword manifest schema version: ${String(parsed.schemaVersion)}`,
+        });
       }
 
       if (
@@ -122,13 +119,16 @@ const readManifest = (
         typeof parsed.models?.embedding !== "string" ||
         !Array.isArray(parsed.models?.wakewords)
       ) {
-        throw new Error("Wakeword manifest is missing required keys");
+        throw new WakewordAssetError({
+          message: "Wakeword manifest is missing required keys",
+        });
       }
 
       return parsed;
     },
     catch: (cause) =>
-      new WakewordAssetError(`Failed to read wakeword manifest at ${manifestPath}`, {
+      new WakewordAssetError({
+        message: `Failed to read wakeword manifest at ${manifestPath}`,
         cause,
       }),
   });
@@ -143,9 +143,9 @@ const validateRuntimePin = (
         runtimePackage !== OPENWAKEWORD_RUNTIME_PACKAGE ||
         runtimeVersion !== OPENWAKEWORD_RUNTIME_VERSION
       ) {
-        throw new Error(
-          `Expected runtime ${OPENWAKEWORD_RUNTIME_PACKAGE}@${OPENWAKEWORD_RUNTIME_VERSION}, got ${runtimePackage}@${runtimeVersion}`,
-        );
+        throw new WakewordAssetError({
+          message: `Expected runtime ${OPENWAKEWORD_RUNTIME_PACKAGE}@${OPENWAKEWORD_RUNTIME_VERSION}, got ${runtimePackage}@${runtimeVersion}`,
+        });
       }
 
       const packageJsonPath = path.join(
@@ -158,18 +158,16 @@ const validateRuntimePin = (
       const pkg = JSON.parse(raw) as { readonly version?: string };
 
       if (pkg.version !== runtimeVersion) {
-        throw new Error(
-          `Installed ${runtimePackage} version ${pkg.version ?? "<unknown>"} does not match required ${runtimeVersion}`,
-        );
+        throw new WakewordAssetError({
+          message: `Installed ${runtimePackage} version ${pkg.version ?? "<unknown>"} does not match required ${runtimeVersion}`,
+        });
       }
     },
     catch: (cause) =>
-      new WakewordAssetError(
-        `Wakeword runtime validation failed. Install ${runtimePackage}@${runtimeVersion} with bun before starting wakeword detection.`,
-        {
-          cause,
-        },
-      ),
+      new WakewordAssetError({
+        message: `Wakeword runtime validation failed. Install ${runtimePackage}@${runtimeVersion} with bun before starting wakeword detection.`,
+        cause,
+      }),
   });
 
 const copyFileIfExists = async (sourcePath: string, targetPath: string): Promise<void> => {
@@ -238,12 +236,10 @@ const ensureDefaultAssetRoot = (targetRootDir: string): Effect.Effect<void, Wake
       }
     },
     catch: (cause) =>
-      new WakewordAssetError(
-        `Failed to initialize default wakeword data directory at ${targetRootDir}`,
-        {
-          cause,
-        },
-      ),
+      new WakewordAssetError({
+        message: `Failed to initialize default wakeword data directory at ${targetRootDir}`,
+        cause,
+      }),
   });
 
 export const resolveWakewordAssets = (
@@ -266,9 +262,9 @@ export const resolveWakewordAssets = (
         : manifest.models.wakewords;
 
     if ((options.validateWakewordModels ?? true) && wakewordEntries.length === 0) {
-      return yield* Effect.fail(
-        new WakewordAssetError("Wakeword manifest does not declare any wakeword model files"),
-      );
+      return yield* new WakewordAssetError({
+        message: "Wakeword manifest does not declare any wakeword model files",
+      });
     }
 
     const wakewordModelPairs = wakewordEntries.map(

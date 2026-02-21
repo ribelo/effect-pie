@@ -1,3 +1,4 @@
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -10,12 +11,10 @@ import {
 } from "./defs.js";
 import { type WakewordFeatureSessions, type WakewordRuntimeError } from "./onnx.js";
 
-export class WakewordTrainingError extends Error {
-  constructor(message: string, options?: { readonly cause?: unknown }) {
-    super(message, { cause: options?.cause });
-    this.name = "WakewordTrainingError";
-  }
-}
+export class WakewordTrainingError extends Data.TaggedError("WakewordTrainingError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 
 export type WakewordTrainingPlan = {
   readonly modelName: string;
@@ -174,9 +173,9 @@ export const makeWakewordTrainingPlan = (
   const modelName = sanitizeModelName(options.name);
 
   if (modelName.length === 0) {
-    throw new WakewordTrainingError(
-      "Invalid wakeword model name. Use letters, numbers, hyphen, or underscore.",
-    );
+    throw new WakewordTrainingError({
+      message: "Invalid wakeword model name. Use letters, numbers, hyphen, or underscore.",
+    });
   }
 
   const assetRootDir = path.resolve(options.assetRootDir ?? EFFECT_PI_OPENWAKEWORD_DATA_DIR);
@@ -280,7 +279,8 @@ export const initializeWakewordTrainingWorkspace = (
       }
     },
     catch: (cause) =>
-      new WakewordTrainingError("Failed to initialize wakeword training workspace", {
+      new WakewordTrainingError({
+        message: "Failed to initialize wakeword training workspace",
         cause,
       }),
   });
@@ -309,7 +309,9 @@ export const registerWakewordModelInManifest = (
 
       const wakewords = manifest.models?.wakewords;
       if (!Array.isArray(wakewords)) {
-        throw new Error("manifest models.wakewords must be an array");
+        throw new WakewordTrainingError({
+          message: "manifest models.wakewords must be an array",
+        });
       }
 
       const alreadyPresent = wakewords.includes(modelFileName);
@@ -322,12 +324,10 @@ export const registerWakewordModelInManifest = (
       return true;
     },
     catch: (cause) =>
-      new WakewordTrainingError(
-        `Failed to update wakeword manifest at ${manifestPath} with ${modelFileName}`,
-        {
-          cause,
-        },
-      ),
+      new WakewordTrainingError({
+        message: `Failed to update wakeword manifest at ${manifestPath} with ${modelFileName}`,
+        cause,
+      }),
   });
 
 export const writePcmWavFile = (
@@ -368,7 +368,8 @@ export const writePcmWavFile = (
       await fs.writeFile(outputPath, wavData);
     },
     catch: (cause) =>
-      new WakewordTrainingError(`Failed to write WAV file ${outputPath}`, {
+      new WakewordTrainingError({
+        message: `Failed to write WAV file ${outputPath}`,
         cause,
       }),
   });
@@ -402,7 +403,8 @@ const clipEmbeddingFromPcm = (
         Effect.map((output) => transformMelspectrogram(output.data)),
         Effect.mapError(
           (cause: WakewordRuntimeError) =>
-            new WakewordTrainingError("Failed to run melspectrogram model during training", {
+            new WakewordTrainingError({
+              message: "Failed to run melspectrogram model during training",
               cause,
             }),
         ),
@@ -410,9 +412,9 @@ const clipEmbeddingFromPcm = (
 
     const melFrames = toFrameMatrix(mel, OPENWAKEWORD_MEL_BINS);
     if (melFrames.length === 0) {
-      return yield* Effect.fail(
-        new WakewordTrainingError("Training clip is too short to produce melspectrogram frames"),
-      );
+      return yield* new WakewordTrainingError({
+        message: "Training clip is too short to produce melspectrogram frames",
+      });
     }
 
     const embeddings: Array<Float32Array> = [];
@@ -429,7 +431,8 @@ const clipEmbeddingFromPcm = (
           Effect.map((output) => output.data),
           Effect.mapError(
             (cause: WakewordRuntimeError) =>
-              new WakewordTrainingError("Failed to run embedding model during training", {
+              new WakewordTrainingError({
+                message: "Failed to run embedding model during training",
                 cause,
               }),
           ),
@@ -457,7 +460,8 @@ const clipEmbeddingFromPcm = (
           Effect.map((output) => output.data),
           Effect.mapError(
             (cause: WakewordRuntimeError) =>
-              new WakewordTrainingError("Failed to run embedding model during training", {
+              new WakewordTrainingError({
+                message: "Failed to run embedding model during training",
                 cause,
               }),
           ),
@@ -479,15 +483,15 @@ export const trainLinearWakewordModel = (
 ): Effect.Effect<TrainedLinearWakewordModel, WakewordTrainingError> =>
   Effect.gen(function* () {
     if (options.positiveClips.length < 3) {
-      return yield* Effect.fail(
-        new WakewordTrainingError("Need at least 3 positive clips to train wakeword model"),
-      );
+      return yield* new WakewordTrainingError({
+        message: "Need at least 3 positive clips to train wakeword model",
+      });
     }
 
     if (options.negativeClips.length < 3) {
-      return yield* Effect.fail(
-        new WakewordTrainingError("Need at least 3 negative clips to train wakeword model"),
-      );
+      return yield* new WakewordTrainingError({
+        message: "Need at least 3 negative clips to train wakeword model",
+      });
     }
 
     const positiveEmbeddings: Array<Float32Array> = [];
@@ -505,7 +509,9 @@ export const trainLinearWakewordModel = (
     const negativeCenter = averageVectors(negativeEmbeddings);
 
     if (positiveCenter.length === 0 || negativeCenter.length === 0) {
-      return yield* Effect.fail(new WakewordTrainingError("Failed to compute training embeddings"));
+      return yield* new WakewordTrainingError({
+        message: "Failed to compute training embeddings",
+      });
     }
 
     const weights = new Float32Array(positiveCenter.length);
@@ -550,7 +556,8 @@ export const saveTrainedWakewordModel = (
       await fs.writeFile(outputPath, `${JSON.stringify(model, null, 2)}\n`, "utf8");
     },
     catch: (cause) =>
-      new WakewordTrainingError(`Failed to save trained wakeword model to ${outputPath}`, {
+      new WakewordTrainingError({
+        message: `Failed to save trained wakeword model to ${outputPath}`,
         cause,
       }),
   });

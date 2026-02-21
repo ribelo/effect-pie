@@ -17,6 +17,8 @@ Validate two pieces independently before STT wiring:
 - Desktop portal backend with GlobalShortcuts support (varies by desktop/version)
 - `busctl` available in `PATH`
 - `wtype` available for Wayland typing
+- `wl-copy` optional for clipboard edge-case mode on Wayland
+- `wl-paste` optional for restoring previous clipboard after paste
 - `xdotool` available for X11 typing
 
 ## Commands
@@ -31,6 +33,19 @@ Type text into the currently focused field (backend auto-detected):
 
 ```bash
 bun run cli -- type --text "hello from effect-pi"
+```
+
+Wayland injection mode (optional):
+
+```bash
+# Default: auto (direct wtype, clipboard only for quote-heavy text)
+EFFECT_PI_WAYLAND_INJECTION_MODE=auto bun run cli -- type --text "don't break apostrophes"
+
+# Force clipboard for all text
+EFFECT_PI_WAYLAND_INJECTION_MODE=clipboard bun run cli -- type --text "hello"
+
+# Force direct wtype key typing
+EFFECT_PI_WAYLAND_INJECTION_MODE=direct bun run cli -- type --text "hello"
 ```
 
 ## Manual Validation
@@ -48,4 +63,4 @@ bun run cli -- type --text "hello from effect-pi"
 - GlobalShortcuts availability depends on portal backend and desktop version.
 - The spike currently uses raw `busctl monitor` output for activation visibility.
 - `wtype` and `xdotool` both depend on having a live graphical session and focused input field.
-- No STT pipeline integration yet; this is only trigger/input feasibility.
+- STT integration is now available via `ptt-transcribe` and `ptt-translate`; this document focuses only on portal/input wiring checks.

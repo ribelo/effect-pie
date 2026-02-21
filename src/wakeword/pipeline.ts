@@ -1,3 +1,4 @@
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 
 import {
@@ -13,12 +14,10 @@ import {
 } from "./defs.js";
 import { type OnnxSession, type WakewordModelSessions, type WakewordRuntimeError } from "./onnx.js";
 
-export class WakewordPipelineError extends Error {
-  constructor(message: string, options?: { readonly cause?: unknown }) {
-    super(message, { cause: options?.cause });
-    this.name = "WakewordPipelineError";
-  }
-}
+export class WakewordPipelineError extends Data.TaggedError("WakewordPipelineError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 
 export type WakewordPipelineConfig = {
   readonly sampleRate?: number;
@@ -161,7 +160,8 @@ const runSession = (
       Effect.map((output) => output.data),
       Effect.mapError(
         (cause: WakewordRuntimeError) =>
-          new WakewordPipelineError("Wakeword ONNX inference failed", {
+          new WakewordPipelineError({
+            message: "Wakeword ONNX inference failed",
             cause,
           }),
       ),
@@ -303,7 +303,8 @@ export const makeWakewordPipeline = (
             const score = yield* model.score(featureWindow).pipe(
               Effect.mapError(
                 (cause: WakewordRuntimeError) =>
-                  new WakewordPipelineError("Wakeword scoring model inference failed", {
+                  new WakewordPipelineError({
+                    message: "Wakeword scoring model inference failed",
                     cause,
                   }),
               ),

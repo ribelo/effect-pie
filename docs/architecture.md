@@ -46,10 +46,24 @@ effect-pi/
 - `effect-pi record` captures raw PCM audio.
 - `effect-pi sources` lists available PulseAudio capture sources.
 - `effect-pi meter` prints live RMS / peak levels for input verification and threshold tuning.
+- `effect-pi` (no subcommand) runs combined assistant mode: wakeword (`ok_pie`) transcription + PTT transcription + PTT translation.
 - `effect-pi ptt-portal` registers a GlobalShortcuts portal binding and prints activation/deactivation monitor events.
+- `effect-pi ptt-transcribe` records push-to-talk audio and transcribes with OpenRouter (model from `$XDG_CONFIG_HOME/effect-pi/stt.json`).
+- `effect-pi ptt-translate` records push-to-talk audio and performs single-pass transcription+translation with OpenRouter (model from `$XDG_CONFIG_HOME/effect-pi/stt.json`).
+- Default combined assistant mode binds PTT keysyms `F9` (transcribe) and `F10` (translate).
+- `effect-pi stt-interactive` runs an Enter-to-start / Enter-to-stop transcription loop using OpenRouter streaming responses and types streamed deltas with `wtype`.
 - `effect-pi type` sends text to the focused app and auto-selects backend (`wtype` for Wayland, `xdotool` for X11).
 - `effect-pi wakeword` runs live wakeword scoring/trigger telemetry from PulseAudio.
 - `effect-pi wakeword-train` runs best-effort capture setup (auto source probing, auto noise/speech calibration, adaptive speech threshold retries), collects positive/negative clips from PulseAudio, trains a lightweight wakeword scoring model, saves data under `$XDG_DATA_HOME/effect-pi/openwakeword/`, updates the XDG manifest when requested, and persists calibration snapshots in `$XDG_CONFIG_HOME/effect-pi/wakeword/`.
+- STT model and language routing for `ptt-transcribe` and `ptt-translate` is configured in `$XDG_CONFIG_HOME/effect-pi/stt.json` (auto-created on first run) with defaults:
+  - transcription model: `mistralai/voxtral-small-24b-2507`
+  - translation model: `google/gemini-3-flash-preview`
+  - transcription language: `English`
+  - translation source language: `English`
+  - translation target language: `English`
+  - wakeword dictation trailing silence: `3` seconds
+  - wakeword dictation max capture: `45` seconds
+  - wakeword dictation speech RMS threshold: `0.01`
 - Wakeword feature extraction now requires real ONNX feature models (`melspectrogram.onnx`, `embedding_model.onnx`) and `onnxruntime-web@1.22.0`; placeholder/fallback feature paths are rejected.
 
 ## Data Flow

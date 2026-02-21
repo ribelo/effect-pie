@@ -1,3 +1,4 @@
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
@@ -15,12 +16,10 @@ import {
 import { type WakewordPipeline } from "./pipeline.js";
 import { type WakewordTriggerMachine } from "./trigger.js";
 
-export class WakewordLiveError extends Error {
-  constructor(message: string, options?: { readonly cause?: unknown }) {
-    super(message, { cause: options?.cause });
-    this.name = "WakewordLiveError";
-  }
-}
+export class WakewordLiveError extends Data.TaggedError("WakewordLiveError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 
 export type WakewordTelemetryEvent =
   | {
@@ -58,7 +57,8 @@ export const createWakewordTelemetryStream = (
       yield* client.connect().pipe(
         Effect.mapError(
           (cause) =>
-            new WakewordLiveError("Failed to connect to PulseAudio for wakeword telemetry", {
+            new WakewordLiveError({
+              message: "Failed to connect to PulseAudio for wakeword telemetry",
               cause,
             }),
         ),
@@ -73,7 +73,8 @@ export const createWakewordTelemetryStream = (
             const scoreFrames = yield* config.pipeline.feedPcmChunk(chunk).pipe(
               Effect.mapError(
                 (cause) =>
-                  new WakewordLiveError("Wakeword pipeline failed while processing audio", {
+                  new WakewordLiveError({
+                    message: "Wakeword pipeline failed while processing audio",
                     cause,
                   }),
               ),
@@ -102,7 +103,8 @@ export const createWakewordTelemetryStream = (
           Queue.shutdown(queue).pipe(
             Effect.andThen(
               Effect.logError(
-                new WakewordLiveError("Wakeword live stream failed", {
+                new WakewordLiveError({
+                  message: "Wakeword live stream failed",
                   cause,
                 }),
               ),

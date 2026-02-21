@@ -1,14 +1,13 @@
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { promises as fs } from "node:fs";
 
 import { type ResolvedWakewordAssets } from "./defs.js";
 
-export class WakewordRuntimeError extends Error {
-  constructor(message: string, options?: { readonly cause?: unknown }) {
-    super(message, { cause: options?.cause });
-    this.name = "WakewordRuntimeError";
-  }
-}
+export class WakewordRuntimeError extends Data.TaggedError("WakewordRuntimeError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 
 export type OnnxTensorData = {
   readonly data: Float32Array;
@@ -92,7 +91,9 @@ const flattenMatrix = (rows: ReadonlyArray<Float32Array>): Float32Array => {
 const readOutputTensor = (outputs: Record<string, unknown>, outputName: string): OrtTensor => {
   const output = (outputs[outputName] ?? Object.values(outputs)[0]) as OrtTensor | undefined;
   if (!output?.data) {
-    throw new Error(`Model did not produce tensor output '${outputName}'`);
+    throw new WakewordRuntimeError({
+      message: `Model did not produce tensor output '${outputName}'`,
+    });
   }
   return output;
 };
@@ -101,12 +102,10 @@ const loadOrtModule = (runtimePackage: string): Effect.Effect<OrtModule, Wakewor
   Effect.tryPromise({
     try: () => import(runtimePackage) as Promise<OrtModule>,
     catch: (cause) =>
-      new WakewordRuntimeError(
-        `Unable to load ONNX runtime package '${runtimePackage}'. Run bun install and ensure runtime assets are pinned.`,
-        {
-          cause,
-        },
-      ),
+      new WakewordRuntimeError({
+        message: `Unable to load ONNX runtime package '${runtimePackage}'. Run bun install and ensure runtime assets are pinned.`,
+        cause,
+      }),
   });
 
 const makeSession = (
@@ -123,7 +122,9 @@ const makeSession = (
       const outputName = session.outputNames?.[0];
 
       if (!inputName || !outputName) {
-        throw new Error(`Could not inspect ONNX model IO metadata for ${modelPath}`);
+        throw new WakewordRuntimeError({
+          message: `Could not inspect ONNX model IO metadata for ${modelPath}`,
+        });
       }
 
       const inputDims = session.inputMetadata?.[inputName]?.dimensions ?? [];
@@ -139,7 +140,9 @@ const makeSession = (
               const output = readOutputTensor(outputs, outputName);
               const outputData = output.data;
               if (!outputData) {
-                throw new Error(`Model output '${outputName}' is missing tensor data`);
+                throw new WakewordRuntimeError({
+                  message: `Model output '${outputName}' is missing tensor data`,
+                });
               }
 
               const data = toFloat32Array(outputData);
@@ -150,14 +153,16 @@ const makeSession = (
               };
             },
             catch: (cause) =>
-              new WakewordRuntimeError(`ONNX inference failed for model ${modelPath}`, {
+              new WakewordRuntimeError({
+                message: `ONNX inference failed for model ${modelPath}`,
                 cause,
               }),
           }),
       } satisfies OnnxSession;
     },
     catch: (cause) =>
-      new WakewordRuntimeError(`Failed to initialize ONNX model session for ${modelPath}`, {
+      new WakewordRuntimeError({
+        message: `Failed to initialize ONNX model session for ${modelPath}`,
         cause,
       }),
   });
@@ -170,20 +175,20 @@ const makeFeatureSessionsWithOrt = (
     const melspectrogram = yield* makeSession(ort, assets.melspectrogramModelPath).pipe(
       Effect.mapError(
         (cause) =>
-          new WakewordRuntimeError(
-            `Failed to initialize melspectrogram model '${assets.melspectrogramModelPath}'. Ensure real ONNX feature models are installed (not placeholders).`,
-            { cause },
-          ),
+          new WakewordRuntimeError({
+            message: `Failed to initialize melspectrogram model '${assets.melspectrogramModelPath}'. Ensure real ONNX feature models are installed (not placeholders).`,
+            cause,
+          }),
       ),
     );
 
     const embedding = yield* makeSession(ort, assets.embeddingModelPath).pipe(
       Effect.mapError(
         (cause) =>
-          new WakewordRuntimeError(
-            `Failed to initialize embedding model '${assets.embeddingModelPath}'. Ensure real ONNX feature models are installed (not placeholders).`,
-            { cause },
-          ),
+          new WakewordRuntimeError({
+            message: `Failed to initialize embedding model '${assets.embeddingModelPath}'. Ensure real ONNX feature models are installed (not placeholders).`,
+            cause,
+          }),
       ),
     );
 
@@ -248,7 +253,9 @@ const loadLinearWakewordModel = (
             !Number.isFinite(parsed.logitScale) ||
             parsed.logitScale <= 0))
       ) {
-        throw new Error("Invalid linear wakeword model format");
+        throw new WakewordRuntimeError({
+          message: "Invalid linear wakeword model format",
+        });
       }
 
       const weights = Float32Array.from(parsed.weights);
@@ -262,9 +269,9 @@ const loadLinearWakewordModel = (
           Effect.sync(() => {
             const featureCount = featureWindow[0]?.length ?? 0;
             if (featureCount !== parsed.featureSize) {
-              throw new WakewordRuntimeError(
-                `Linear wakeword model feature mismatch: expected ${parsed.featureSize}, got ${featureCount}`,
-              );
+              throw new WakewordRuntimeError({
+                message: `Linear wakeword model feature mismatch: expected ${parsed.featureSize}, got ${featureCount}`,
+              });
             }
 
             const mean = new Float32Array(parsed.featureSize);
@@ -288,7 +295,8 @@ const loadLinearWakewordModel = (
       } satisfies WakewordScoringModel;
     },
     catch: (cause) =>
-      new WakewordRuntimeError(`Failed to load linear wakeword model at ${modelPath}`, {
+      new WakewordRuntimeError({
+        message: `Failed to load linear wakeword model at ${modelPath}`,
         cause,
       }),
   });
@@ -300,10 +308,10 @@ export const loadWakewordFeatureSessions = (
     const ort = yield* loadOrtModule(assets.runtimePackage).pipe(
       Effect.mapError(
         (cause) =>
-          new WakewordRuntimeError(
-            `Wakeword feature models require runtime '${assets.runtimePackage}@${assets.runtimeVersion}'. Install it before training or detection.`,
-            { cause },
-          ),
+          new WakewordRuntimeError({
+            message: `Wakeword feature models require runtime '${assets.runtimePackage}@${assets.runtimeVersion}'. Install it before training or detection.`,
+            cause,
+          }),
       ),
     );
 
@@ -317,10 +325,10 @@ export const loadWakewordModelSessions = (
     const ort = yield* loadOrtModule(assets.runtimePackage).pipe(
       Effect.mapError(
         (cause) =>
-          new WakewordRuntimeError(
-            `Wakeword detection requires runtime '${assets.runtimePackage}@${assets.runtimeVersion}' and real ONNX feature models.`,
-            { cause },
-          ),
+          new WakewordRuntimeError({
+            message: `Wakeword detection requires runtime '${assets.runtimePackage}@${assets.runtimeVersion}' and real ONNX feature models.`,
+            cause,
+          }),
       ),
     );
 
@@ -341,11 +349,9 @@ export const loadWakewordModelSessions = (
         continue;
       }
 
-      return yield* Effect.fail(
-        new WakewordRuntimeError(
-          `Unsupported wakeword model format for ${modelPath}. Supported extensions: .onnx, .json`,
-        ),
-      );
+      return yield* new WakewordRuntimeError({
+        message: `Unsupported wakeword model format for ${modelPath}. Supported extensions: .onnx, .json`,
+      });
     }
 
     return {

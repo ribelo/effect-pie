@@ -1,4 +1,5 @@
 import * as BunSocket from "@effect/platform-bun/BunSocket";
+import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -41,17 +42,11 @@ import {
 } from "./defs.js";
 import { decodePacketHeader } from "./protocol.js";
 
-export class PulseAudioClientError extends Error {
+export class PulseAudioClientError extends Data.TaggedError("PulseAudioClientError")<{
+  readonly message: string;
   readonly code?: number;
-
-  constructor(message: string, options?: { readonly code?: number; readonly cause?: unknown }) {
-    super(message, { cause: options?.cause });
-    this.name = "PulseAudioClientError";
-    if (options?.code !== undefined) {
-      this.code = options.code;
-    }
-  }
-}
+  readonly cause?: unknown;
+}> {}
 
 export type ConnectOptions = {
   readonly socketPath?: string;
@@ -94,11 +89,15 @@ const isErrnoException = (cause: unknown): cause is NodeJS.ErrnoException =>
 
 const loadCookie = Effect.tryPromise({
   try: () => fs.readFile(PA_DEFAULT_COOKIE_PATH),
-  catch: (cause) => cause,
+  catch: (cause) =>
+    new PulseAudioClientError({
+      message: "failed to load PulseAudio authentication cookie",
+      cause,
+    }),
 }).pipe(
   Effect.catchIf(
-    (cause) => isErrnoException(cause) && cause.code === "ENOENT",
-    () => Effect.succeed(undefined),
+    (error) => isErrnoException(error.cause) && error.cause.code === "ENOENT",
+    () => Effect.void.pipe(Effect.as(undefined as Uint8Array | undefined)),
   ),
 );
 
@@ -137,8 +136,8 @@ const processCommandPacket = (connection: Connection, payload: Uint8Array): void
     const code = parseErrorCode(envelope.body);
     const error =
       code === null
-        ? new PulseAudioClientError("PulseAudio command failed")
-        : new PulseAudioClientError("PulseAudio command failed", { code });
+        ? new PulseAudioClientError({ message: "PulseAudio command failed" })
+        : new PulseAudioClientError({ message: "PulseAudio command failed", code });
 
     Deferred.doneUnsafe(pending, Effect.fail(error));
     return;
@@ -147,7 +146,9 @@ const processCommandPacket = (connection: Connection, payload: Uint8Array): void
   Deferred.doneUnsafe(
     pending,
     Effect.fail(
-      new PulseAudioClientError(`unsupported PulseAudio response type: ${envelope.type}`),
+      new PulseAudioClientError({
+        message: `unsupported PulseAudio response type: ${envelope.type}`,
+      }),
     ),
   );
 };
@@ -222,7 +223,8 @@ const makeConnection = (
       Scope.provide(scope),
       Effect.mapError(
         (cause) =>
-          new PulseAudioClientError(`failed to connect to PulseAudio socket at ${socketPath}`, {
+          new PulseAudioClientError({
+            message: `failed to connect to PulseAudio socket at ${socketPath}`,
             cause,
           }),
       ),
@@ -247,7 +249,9 @@ const makeConnection = (
         Scope.provide(scope),
         Effect.ensuring(
           Effect.gen(function* () {
-            const disconnected = new PulseAudioClientError("PulseAudio connection closed");
+            const disconnected = new PulseAudioClientError({
+              message: "PulseAudio connection closed",
+            });
             failPendingUnsafe(connection, disconnected);
             yield* shutdownRecordQueues(connection);
             yield* Ref.update(stateRef, (current) => (current === connection ? null : current));
@@ -272,7 +276,7 @@ const make = (defaults: PulseAudioClientConfig) =>
       yield* Ref.set(stateRef, null);
       failPendingUnsafe(
         current,
-        new PulseAudioClientError("PulseAudio connection closed by client"),
+        new PulseAudioClientError({ message: "PulseAudio connection closed by client" }),
       );
       yield* shutdownRecordQueues(current);
       yield* Scope.close(current.scope, Exit.void);
@@ -280,7 +284,7 @@ const make = (defaults: PulseAudioClientConfig) =>
 
     const getConnection = Effect.flatMap(Ref.get(stateRef), (current) =>
       current === null
-        ? Effect.fail(new PulseAudioClientError("PulseAudio client is not connected"))
+        ? Effect.fail(new PulseAudioClientError({ message: "PulseAudio client is not connected" }))
         : Effect.succeed(current),
     );
 
@@ -295,11 +299,10 @@ const make = (defaults: PulseAudioClientConfig) =>
         const writeResult = yield* connection.writer(packet.bytes).pipe(Effect.exit);
         if (Exit.isFailure(writeResult)) {
           connection.pending.delete(packet.tag);
-          return yield* Effect.fail(
-            new PulseAudioClientError("failed to send command to PulseAudio", {
-              cause: writeResult.cause,
-            }),
-          );
+          return yield* new PulseAudioClientError({
+            message: "failed to send command to PulseAudio",
+            cause: writeResult.cause,
+          });
         }
 
         return yield* Deferred.await(pending).pipe(
@@ -307,9 +310,9 @@ const make = (defaults: PulseAudioClientConfig) =>
             duration: `${connection.requestTimeoutMs} millis`,
             onTimeout: () =>
               Effect.fail(
-                new PulseAudioClientError(
-                  `timed out waiting for PulseAudio response to tag ${packet.tag}`,
-                ),
+                new PulseAudioClientError({
+                  message: `timed out waiting for PulseAudio response to tag ${packet.tag}`,
+                }),
               ),
           }),
           Effect.onExit(() =>
@@ -331,7 +334,8 @@ const make = (defaults: PulseAudioClientConfig) =>
         const parsed = yield* Effect.try({
           try: () => parser(payload),
           catch: (cause) =>
-            new PulseAudioClientError("failed to parse PulseAudio response", {
+            new PulseAudioClientError({
+              message: "failed to parse PulseAudio response",
               cause,
             }),
         });
@@ -362,7 +366,10 @@ const make = (defaults: PulseAudioClientConfig) =>
             Effect.try({
               try: () => parseAuthResponse(payload),
               catch: (cause) =>
-                new PulseAudioClientError("failed to parse auth response", { cause }),
+                new PulseAudioClientError({
+                  message: "failed to parse auth response",
+                  cause,
+                }),
             }),
           ),
         );
@@ -372,7 +379,10 @@ const make = (defaults: PulseAudioClientConfig) =>
           catch: (cause) =>
             cause instanceof PulseAudioClientError
               ? cause
-              : new PulseAudioClientError("incompatible PulseAudio protocol", { cause }),
+              : new PulseAudioClientError({
+                  message: "incompatible PulseAudio protocol",
+                  cause,
+                }),
         });
 
         connection.protocolVersion = authVersion;
@@ -383,7 +393,10 @@ const make = (defaults: PulseAudioClientConfig) =>
             Effect.try({
               try: () => parseSetClientNameResponse(payload),
               catch: (cause) =>
-                new PulseAudioClientError("failed to parse set-client-name response", { cause }),
+                new PulseAudioClientError({
+                  message: "failed to parse set-client-name response",
+                  cause,
+                }),
             }),
           ),
           Effect.asVoid,

@@ -2,7 +2,7 @@ import { BunRuntime } from "@effect/platform-bun";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import * as dbusNext from "dbus-next";
 import type { Message as DbusMessage, MessageBus } from "dbus-next";
-import { Console, Effect, Fiber, Option, Ref, Stream } from "effect";
+import { Console, Data, Effect, Fiber, Layer, Option, Ref, Stream } from "effect";
 import * as Deferred from "effect/Deferred";
 import { Command, Flag } from "effect/unstable/cli";
 import { mkdir as mkdirNode, readFile, writeFile as writeNodeFile } from "node:fs/promises";
@@ -37,7 +37,19 @@ import {
   monitorPortalSignals,
   setupGlobalShortcutSession,
 } from "./wayland/globalShortcuts.js";
-import { typeTextInFocusedApp } from "./input/textInjection.js";
+import { normalizeTextForInjection, typeTextInFocusedApp } from "./input/textInjection.js";
+import { typeTextWithWtype, WtypeError } from "./wayland/wtype.js";
+import {
+  loadSttRuntimeConfig,
+  STT_CONFIG_PATH,
+  type SttRuntimeConfig,
+  SttConfigError,
+} from "./stt/config.js";
+import {
+  OpenRouterSttError,
+  transcribeAndTranslatePcmWithOpenRouter,
+  transcribePcmWithOpenRouter,
+} from "./stt/openrouter.js";
 
 const positiveIntegerFlag = (name: string, description: string, defaultValue: number) =>
   Flag.integer(name).pipe(
@@ -118,12 +130,10 @@ type KeyboardMonitorKeyEvent = {
   readonly keycode: number;
 };
 
-class PttKeyboardError extends Error {
-  constructor(message: string, options?: { readonly cause?: unknown }) {
-    super(message, options?.cause === undefined ? undefined : { cause: options.cause });
-    this.name = "PttKeyboardError";
-  }
-}
+class PttKeyboardError extends Data.TaggedError("PttKeyboardError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 
 const connectKeyboardMonitorBus = (): Effect.Effect<MessageBus, PttKeyboardError, never> =>
   Effect.tryPromise({
@@ -158,9 +168,9 @@ const connectKeyboardMonitorBus = (): Effect.Effect<MessageBus, PttKeyboardError
         const timeout = setTimeout(() => {
           finish(() => {
             reject(
-              new PttKeyboardError(
-                `Timed out connecting to session D-Bus after ${A11Y_DBUS_CONNECT_TIMEOUT_MS} ms`,
-              ),
+              new PttKeyboardError({
+                message: `Timed out connecting to session D-Bus after ${A11Y_DBUS_CONNECT_TIMEOUT_MS} ms`,
+              }),
             );
           });
         }, A11Y_DBUS_CONNECT_TIMEOUT_MS);
@@ -179,7 +189,7 @@ const connectKeyboardMonitorBus = (): Effect.Effect<MessageBus, PttKeyboardError
     catch: (cause) =>
       cause instanceof PttKeyboardError
         ? cause
-        : new PttKeyboardError("Failed to connect to session D-Bus", { cause }),
+        : new PttKeyboardError({ message: "Failed to connect to session D-Bus", cause }),
   });
 
 const callKeyboardMonitorMethod = (
@@ -198,7 +208,7 @@ const callKeyboardMonitorMethod = (
       );
 
       if (reply === null) {
-        throw new PttKeyboardError(`No D-Bus reply received for ${member}`);
+        throw new PttKeyboardError({ message: `No D-Bus reply received for ${member}` });
       }
 
       if (reply.type === MessageType.ERROR) {
@@ -206,21 +216,21 @@ const callKeyboardMonitorMethod = (
           reply.body.length > 0 && typeof reply.body[0] === "string"
             ? reply.body[0]
             : "Unknown D-Bus error";
-        throw new PttKeyboardError(
-          `${member} failed: ${reply.errorName ?? "<unknown>"} :: ${detail}`,
-        );
+        throw new PttKeyboardError({
+          message: `${member} failed: ${reply.errorName ?? "<unknown>"} :: ${detail}`,
+        });
       }
 
       if (reply.type !== MessageType.METHOD_RETURN) {
-        throw new PttKeyboardError(
-          `${member} returned unexpected D-Bus message type ${reply.type}`,
-        );
+        throw new PttKeyboardError({
+          message: `${member} returned unexpected D-Bus message type ${reply.type}`,
+        });
       }
     },
     catch: (cause) =>
       cause instanceof PttKeyboardError
         ? cause
-        : new PttKeyboardError(`Failed to call ${member}`, { cause }),
+        : new PttKeyboardError({ message: `Failed to call ${member}`, cause }),
   });
 
 const parseKeyboardMonitorSignal = (message: DbusMessage): KeyboardMonitorKeyEvent | undefined => {
@@ -296,17 +306,16 @@ class AsyncEventQueue<T> {
   }
 }
 
-class NoSpeechDetectedError extends Error {
+class NoSpeechDetectedError extends Data.TaggedError("NoSpeechDetectedError")<{
+  readonly message: string;
   readonly observedMaxRms: number;
   readonly threshold: number;
+}> {}
 
-  constructor(message: string, observedMaxRms: number, threshold: number) {
-    super(message);
-    this.name = "NoSpeechDetectedError";
-    this.observedMaxRms = observedMaxRms;
-    this.threshold = threshold;
-  }
-}
+class CliError extends Data.TaggedError("CliError")<{
+  readonly message: string;
+  readonly cause?: unknown;
+}> {}
 
 const pcmRms = (chunk: Uint8Array): number => {
   const sampleCount = Math.floor(chunk.length / 2);
@@ -455,7 +464,8 @@ const writeCalibrationSnapshot = (
       await writeNodeFile(calibrationPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
     },
     catch: (cause) =>
-      new WakewordTrainingError(`Failed to write calibration snapshot at ${calibrationPath}`, {
+      new WakewordTrainingError({
+        message: `Failed to write calibration snapshot at ${calibrationPath}`,
         cause,
       }),
   });
@@ -569,7 +579,8 @@ const writeDetectionTuningSnapshot = (
       await writeNodeFile(tuningPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
     },
     catch: (cause) =>
-      new WakewordTrainingError(`Failed to write wakeword tuning snapshot at ${tuningPath}`, {
+      new WakewordTrainingError({
+        message: `Failed to write wakeword tuning snapshot at ${tuningPath}`,
         cause,
       }),
   });
@@ -792,6 +803,21 @@ const evaluateTriggerTuning = (config: {
   );
 };
 
+const drainPendingStdin = Effect.sync(() => {
+  if (!process.stdin.readable) {
+    return;
+  }
+
+  try {
+    let chunk = process.stdin.read();
+    while (chunk !== null) {
+      chunk = process.stdin.read();
+    }
+  } catch {
+    // best-effort stdin drain to avoid replaying injected text into readline prompts
+  }
+});
+
 const waitForEnter = (message: string): Effect.Effect<void, WakewordTrainingError> =>
   Effect.tryPromise({
     try: async () => {
@@ -806,7 +832,8 @@ const waitForEnter = (message: string): Effect.Effect<void, WakewordTrainingErro
       }
     },
     catch: (cause) =>
-      new WakewordTrainingError(`Failed to read terminal input for prompt: ${message}`, {
+      new WakewordTrainingError({
+        message: `Failed to read terminal input for prompt: ${message}`,
         cause,
       }),
   });
@@ -857,7 +884,9 @@ const collectAudioMetricsInteractive = (config: {
     yield* Fiber.interrupt(fiber);
 
     if (rmsValues.length === 0) {
-      return yield* Effect.fail(new Error("No audio captured while collecting metrics"));
+      return yield* new CliError({
+        message: "No audio captured while collecting metrics",
+      });
     }
 
     return {
@@ -890,9 +919,9 @@ const collectWakewordScoresInteractive = (config: {
     const pipeline = yield* makeWakewordPipeline(config.sessions).pipe(
       Effect.mapError(
         (cause: WakewordPipelineError) =>
-          new WakewordTrainingError(
-            `Failed to initialize wakeword pipeline for tuning: ${cause.message}`,
-          ),
+          new WakewordTrainingError({
+            message: `Failed to initialize wakeword pipeline for tuning: ${cause.message}`,
+          }),
       ),
     );
 
@@ -913,16 +942,14 @@ const collectWakewordScoresInteractive = (config: {
     const fiber = yield* createRecordStream(recordOptions).pipe(
       Stream.runForEach((chunk) =>
         Effect.gen(function* () {
-          const scoreFrames = yield* pipeline
-            .feedPcmChunk(chunk)
-            .pipe(
-              Effect.mapError(
-                (cause: WakewordPipelineError) =>
-                  new WakewordTrainingError(
-                    `Wakeword pipeline failed while collecting tuning scores: ${cause.message}`,
-                  ),
-              ),
-            );
+          const scoreFrames = yield* pipeline.feedPcmChunk(chunk).pipe(
+            Effect.mapError(
+              (cause: WakewordPipelineError) =>
+                new WakewordTrainingError({
+                  message: `Wakeword pipeline failed while collecting tuning scores: ${cause.message}`,
+                }),
+            ),
+          );
 
           totalScoreFrames += scoreFrames.length;
 
@@ -949,23 +976,21 @@ const collectWakewordScoresInteractive = (config: {
 
     if (frames.length === 0) {
       if (totalScoreFrames === 0) {
-        return yield* Effect.fail(new Error("No wakeword score frames captured during tuning"));
+        return yield* new CliError({
+          message: "No wakeword score frames captured during tuning",
+        });
       }
 
       const observed = [...observedModelNames].sort();
       if (observed.length > 0) {
-        return yield* Effect.fail(
-          new Error(
-            `Model '${config.modelName}' produced no scores during tuning. Observed models: ${observed.join(", ")}. Use --model to tune an observed model.`,
-          ),
-        );
+        return yield* new CliError({
+          message: `Model '${config.modelName}' produced no scores during tuning. Observed models: ${observed.join(", ")}. Use --model to tune an observed model.`,
+        });
       }
 
-      return yield* Effect.fail(
-        new Error(
-          `Model '${config.modelName}' produced no scores during tuning. This usually means the model input shape does not match current wakeword features.`,
-        ),
-      );
+      return yield* new CliError({
+        message: `Model '${config.modelName}' produced no scores during tuning. This usually means the model input shape does not match current wakeword features.`,
+      });
     }
 
     return frames;
@@ -1031,11 +1056,11 @@ const recordVoiceActivatedClip = (config: {
             yield* Deferred.complete(
               completion,
               Effect.fail(
-                new NoSpeechDetectedError(
-                  `No speech detected within ${config.maxWaitSeconds.toFixed(1)}s (max RMS ${observedMaxRms.toFixed(4)} < threshold ${config.speechRmsThreshold.toFixed(4)})`,
+                new NoSpeechDetectedError({
+                  message: `No speech detected within ${config.maxWaitSeconds.toFixed(1)}s (max RMS ${observedMaxRms.toFixed(4)} < threshold ${config.speechRmsThreshold.toFixed(4)})`,
                   observedMaxRms,
-                  config.speechRmsThreshold,
-                ),
+                  threshold: config.speechRmsThreshold,
+                }),
               ),
             );
             return;
@@ -1085,11 +1110,11 @@ const recordVoiceActivatedClip = (config: {
           Ref.get(maxObservedRmsRef).pipe(
             Effect.flatMap((observedMaxRms) =>
               Effect.fail(
-                new NoSpeechDetectedError(
-                  `Recording timed out before collecting voice clip (max RMS ${observedMaxRms.toFixed(4)} < threshold ${config.speechRmsThreshold.toFixed(4)})`,
+                new NoSpeechDetectedError({
+                  message: `Recording timed out before collecting voice clip (max RMS ${observedMaxRms.toFixed(4)} < threshold ${config.speechRmsThreshold.toFixed(4)})`,
                   observedMaxRms,
-                  config.speechRmsThreshold,
-                ),
+                  threshold: config.speechRmsThreshold,
+                }),
               ),
             ),
           ),
@@ -1141,10 +1166,118 @@ const recordPcmClip = (config: {
 
     const chunks = yield* Ref.get(chunksRef);
     if (chunks.length === 0) {
-      return yield* Effect.fail(new Error("No audio captured for training clip"));
+      return yield* new CliError({
+        message: "No audio captured for training clip",
+      });
     }
 
     return concatChunks(chunks);
+  });
+
+const recordPcmUntilTrailingSilence = (config: {
+  readonly silenceSeconds: number;
+  readonly maxSeconds: number;
+  readonly speechRmsThreshold: number;
+  readonly fragmentSize: number;
+  readonly sampleRate: number;
+  readonly channels: number;
+  readonly sourceName?: string;
+}): Effect.Effect<Uint8Array, NoSpeechDetectedError | CliError, PulseAudioClient> =>
+  Effect.gen(function* () {
+    const bytesPerSecond = config.sampleRate * config.channels * 2;
+    const chunkDurationSeconds = config.fragmentSize / bytesPerSecond;
+    const silenceChunksTarget = Math.max(
+      1,
+      Math.ceil(config.silenceSeconds / chunkDurationSeconds),
+    );
+
+    const completion = yield* Deferred.make<Uint8Array, NoSpeechDetectedError | CliError>();
+    const chunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([]);
+    const seenSpeechRef = yield* Ref.make(false);
+    const silenceChunksRef = yield* Ref.make(0);
+    const maxObservedRmsRef = yield* Ref.make(0);
+
+    const recordOptions: {
+      sampleSpec: {
+        format: PA_SAMPLE_FORMAT;
+        channels: number;
+        rate: number;
+      };
+      fragmentSize: number;
+      sourceName?: string;
+    } = {
+      sampleSpec: {
+        format: PA_SAMPLE_FORMAT.S16LE,
+        channels: config.channels,
+        rate: config.sampleRate,
+      },
+      fragmentSize: config.fragmentSize,
+    };
+
+    if (config.sourceName !== undefined) {
+      recordOptions.sourceName = config.sourceName;
+    }
+
+    const recorderFiber = yield* createRecordStream(recordOptions).pipe(
+      Stream.runForEach((chunk) =>
+        Effect.gen(function* () {
+          const copied = chunk.slice();
+          yield* Ref.update(chunksRef, (chunks) => [...chunks, copied]);
+
+          const rms = pcmRms(copied);
+          yield* Ref.update(maxObservedRmsRef, (current) => (rms > current ? rms : current));
+
+          if (rms >= config.speechRmsThreshold) {
+            yield* Ref.set(seenSpeechRef, true);
+            yield* Ref.set(silenceChunksRef, 0);
+            return;
+          }
+
+          const seenSpeech = yield* Ref.get(seenSpeechRef);
+          if (!seenSpeech) {
+            return;
+          }
+
+          const silenceChunks = yield* Ref.updateAndGet(silenceChunksRef, (value) => value + 1);
+          if (silenceChunks >= silenceChunksTarget) {
+            const chunks = yield* Ref.get(chunksRef);
+            yield* Deferred.complete(completion, Effect.succeed(concatChunks(chunks)));
+          }
+        }),
+      ),
+      Effect.forkDetach,
+    );
+
+    const result = yield* Deferred.await(completion).pipe(
+      Effect.timeoutOrElse({
+        duration: `${Math.ceil(config.maxSeconds + 2)} seconds`,
+        onTimeout: () =>
+          Effect.gen(function* () {
+            const chunks = yield* Ref.get(chunksRef);
+            const seenSpeech = yield* Ref.get(seenSpeechRef);
+
+            if (seenSpeech && chunks.length > 0) {
+              return concatChunks(chunks);
+            }
+
+            const observed = yield* Ref.get(maxObservedRmsRef);
+            return yield* new NoSpeechDetectedError({
+              message: `No speech detected before timeout (${config.maxSeconds.toFixed(1)}s, max RMS ${observed.toFixed(4)} < threshold ${config.speechRmsThreshold.toFixed(4)})`,
+              observedMaxRms: observed,
+              threshold: config.speechRmsThreshold,
+            });
+          }),
+      }),
+      Effect.ensuring(Fiber.interrupt(recorderFiber)),
+    );
+
+    if (result.length === 0) {
+      return yield* new CliError({
+        message: "No audio captured for wakeword dictation",
+      });
+    }
+
+    return result;
   });
 
 const recordCommand = Command.make(
@@ -1207,7 +1340,9 @@ const recordCommand = Command.make(
 
         const byteCount = yield* Ref.get(byteCountRef);
         if (byteCount <= 0) {
-          return yield* Effect.fail(new Error("No audio data received from PulseAudio"));
+          return yield* new CliError({
+            message: "No audio data received from PulseAudio",
+          });
         }
 
         if (Option.isSome(config.output)) {
@@ -1216,7 +1351,11 @@ const recordCommand = Command.make(
           const data = concatChunks(chunks);
           yield* Effect.tryPromise({
             try: () => writeNodeFile(outputPath, data),
-            catch: (cause) => new Error(`Failed to write output file: ${String(cause)}`),
+            catch: (cause) =>
+              new CliError({
+                message: `Failed to write output file: ${String(cause)}`,
+                cause,
+              }),
           });
         }
 
@@ -1395,25 +1534,242 @@ const pttPortalCommand = Command.make(
     }),
 ).pipe(Command.withDescription("Spike command for xdg-desktop-portal GlobalShortcuts capture"));
 
+type PttTriggerBinding = {
+  readonly keycode: number;
+  readonly keysym: number;
+};
+
+type PttCapturedClip = {
+  readonly durationMs: number;
+  readonly pcmBytes: Uint8Array;
+};
+
+type KeyboardMonitorPttConfig = {
+  readonly keycode: Option.Option<number>;
+  readonly keysym: Option.Option<number>;
+  readonly source: Option.Option<string>;
+  readonly minDurationMs: number;
+  readonly sampleRate: number;
+  readonly fragmentSize: number;
+  readonly logPrefix: string;
+  readonly armedMessage: (trigger: PttTriggerBinding) => string;
+  readonly onClip: (clip: PttCapturedClip) => Effect.Effect<void, PttKeyboardError>;
+};
+
+const pttKeycodeFlag = Flag.integer("keycode").pipe(
+  Flag.optional,
+  Flag.withDescription("Hardware keycode to use as push-to-talk trigger (learned if omitted)"),
+  Flag.filter(
+    (value) => Option.isNone(value) || value.value > 0,
+    () => "--keycode must be greater than 0",
+  ),
+);
+
+const pttKeysymFlag = Flag.integer("keysym").pipe(
+  Flag.optional,
+  Flag.withDescription("XKB keysym to use as trigger (alternative to --keycode)"),
+  Flag.filter(
+    (value) => Option.isNone(value) || value.value > 0,
+    () => "--keysym must be greater than 0",
+  ),
+);
+
+const toPttKeyboardError = (message: string, cause: unknown): PttKeyboardError =>
+  new PttKeyboardError({
+    message,
+    cause,
+  });
+
+const runKeyboardMonitorPtt = (
+  config: KeyboardMonitorPttConfig,
+): Effect.Effect<never, PttKeyboardError, PulseAudioClient> =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const keyboardBus = yield* connectKeyboardMonitorBus();
+
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          keyboardBus.disconnect();
+        }).pipe(Effect.ignore),
+      );
+
+      yield* callKeyboardMonitorMethod(keyboardBus, "WatchKeyboard");
+      yield* Effect.addFinalizer(() =>
+        callKeyboardMonitorMethod(keyboardBus, "UnwatchKeyboard").pipe(Effect.ignore),
+      );
+
+      const eventQueue = new AsyncEventQueue<KeyboardMonitorKeyEvent>();
+
+      const onMessage = (message: DbusMessage): void => {
+        const event = parseKeyboardMonitorSignal(message);
+        if (event !== undefined) {
+          eventQueue.push(event);
+        }
+      };
+
+      keyboardBus.on("message", onMessage);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          keyboardBus.off("message", onMessage);
+        }).pipe(Effect.ignore),
+      );
+
+      const triggerRef = yield* Ref.make<PttTriggerBinding | undefined>(
+        Option.isSome(config.keycode)
+          ? {
+              keycode: config.keycode.value,
+              keysym: Option.isSome(config.keysym) ? config.keysym.value : 0,
+            }
+          : Option.isSome(config.keysym)
+            ? {
+                keycode: 0,
+                keysym: config.keysym.value,
+              }
+            : undefined,
+      );
+
+      if (Option.isNone(config.keycode) && Option.isNone(config.keysym)) {
+        yield* Console.log(
+          "PTT key not configured. Press the key you want to use for push-to-talk to learn it now.",
+        );
+
+        while (true) {
+          const event = yield* Effect.promise(() => eventQueue.take());
+          if (event.released) {
+            continue;
+          }
+
+          yield* Ref.set(triggerRef, {
+            keycode: event.keycode,
+            keysym: event.keysym,
+          });
+
+          yield* Console.log(
+            `Learned trigger key: keycode=${event.keycode} keysym=${event.keysym} (use --keycode ${event.keycode} for a stable binding)`,
+          );
+          break;
+        }
+      }
+
+      const trigger = yield* Ref.get(triggerRef);
+      if (trigger === undefined) {
+        return yield* new PttKeyboardError({
+          message: "No push-to-talk key configured. Use --keycode/--keysym or learn one.",
+        });
+      }
+
+      const captureActiveRef = yield* Ref.make(false);
+      const captureChunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([]);
+      const captureStartedAtRef = yield* Ref.make<number | undefined>(undefined);
+
+      const recordOptions: {
+        sampleFormat: typeof PA_SAMPLE_FORMAT.S16LE;
+        sampleRate: number;
+        channels: 1;
+        fragmentSize: number;
+        sourceName?: string;
+      } = {
+        sampleFormat: PA_SAMPLE_FORMAT.S16LE,
+        sampleRate: config.sampleRate,
+        channels: 1,
+        fragmentSize: config.fragmentSize,
+      };
+
+      if (Option.isSome(config.source)) {
+        recordOptions.sourceName = config.source.value;
+      }
+
+      const recordFiber = yield* createRecordStream(recordOptions).pipe(
+        Stream.runForEach((chunk) =>
+          Effect.gen(function* () {
+            const active = yield* Ref.get(captureActiveRef);
+            if (!active) {
+              return;
+            }
+
+            const copied = chunk.slice();
+            yield* Ref.update(captureChunksRef, (chunks) => {
+              const next = chunks.slice();
+              next.push(copied);
+              return next;
+            });
+          }),
+        ),
+        Effect.forkDetach,
+      );
+
+      yield* Effect.addFinalizer(() => Fiber.interrupt(recordFiber).pipe(Effect.ignore));
+
+      yield* Console.log(config.armedMessage(trigger));
+
+      while (true) {
+        const event = yield* Effect.promise(() => eventQueue.take());
+
+        const keycodeMatches = trigger.keycode > 0 && event.keycode === trigger.keycode;
+        const keysymMatches = trigger.keysym > 0 && event.keysym === trigger.keysym;
+
+        if (!keycodeMatches && !keysymMatches) {
+          continue;
+        }
+
+        if (!event.released) {
+          const alreadyActive = yield* Ref.get(captureActiveRef);
+          if (alreadyActive) {
+            continue;
+          }
+
+          yield* Ref.set(captureChunksRef, []);
+          yield* Ref.set(captureStartedAtRef, Date.now());
+          yield* Ref.set(captureActiveRef, true);
+          yield* Console.log(`[${config.logPrefix}] Capturing... release key to stop`);
+          continue;
+        }
+
+        const wasActive = yield* Ref.get(captureActiveRef);
+        if (!wasActive) {
+          continue;
+        }
+
+        yield* Ref.set(captureActiveRef, false);
+
+        const startedAt = yield* Ref.get(captureStartedAtRef);
+        yield* Ref.set(captureStartedAtRef, undefined);
+
+        const durationMs = startedAt === undefined ? 0 : Date.now() - startedAt;
+        const chunks = yield* Ref.get(captureChunksRef);
+        yield* Ref.set(captureChunksRef, []);
+
+        const capturedBytes = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        yield* Console.log(
+          `[${config.logPrefix}] Capture stopped (${durationMs}ms, ${capturedBytes} bytes)`,
+        );
+
+        if (durationMs < config.minDurationMs) {
+          yield* Console.log(
+            `[${config.logPrefix}] Ignored short clip (${durationMs}ms < ${config.minDurationMs}ms)`,
+          );
+          continue;
+        }
+
+        const pcmBytes = concatChunks(chunks);
+        if (pcmBytes.length === 0) {
+          yield* Console.log(`[${config.logPrefix}] Ignored empty clip`);
+          continue;
+        }
+
+        yield* config.onClip({
+          durationMs,
+          pcmBytes,
+        });
+      }
+    }),
+  );
+
 const pttCommand = Command.make(
   "ptt",
   {
-    keycode: Flag.integer("keycode").pipe(
-      Flag.optional,
-      Flag.withDescription("Hardware keycode to use as push-to-talk trigger (learned if omitted)"),
-      Flag.filter(
-        (value) => Option.isNone(value) || value.value > 0,
-        () => "--keycode must be greater than 0",
-      ),
-    ),
-    keysym: Flag.integer("keysym").pipe(
-      Flag.optional,
-      Flag.withDescription("XKB keysym to use as trigger (alternative to --keycode)"),
-      Flag.filter(
-        (value) => Option.isNone(value) || value.value > 0,
-        () => "--keysym must be greater than 0",
-      ),
-    ),
+    keycode: pttKeycodeFlag,
+    keysym: pttKeysymFlag,
     source: optionalSourceFlag,
     outputDir: Flag.string("output-dir").pipe(
       Flag.withDescription("Directory where captured PTT WAV clips will be saved"),
@@ -1424,7 +1780,7 @@ const pttCommand = Command.make(
       "Ignore clips shorter than this many milliseconds",
       120,
     ),
-    sampleRate: positiveIntegerFlag("sample-rate", "PCM sample rate for capture", 16000),
+    sampleRate: positiveIntegerFlag("sample-rate", "PCM sample rate for capture", 16_000),
     fragmentSize: positiveIntegerFlag(
       "fragment-size",
       "PulseAudio record fragment size in bytes",
@@ -1432,92 +1788,293 @@ const pttCommand = Command.make(
     ),
   },
   (config) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const keyboardBus = yield* connectKeyboardMonitorBus();
-
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            keyboardBus.disconnect();
-          }).pipe(Effect.ignore),
-        );
-
-        yield* callKeyboardMonitorMethod(keyboardBus, "WatchKeyboard");
-        yield* Effect.addFinalizer(() =>
-          callKeyboardMonitorMethod(keyboardBus, "UnwatchKeyboard").pipe(Effect.ignore),
-        );
-
-        const eventQueue = new AsyncEventQueue<KeyboardMonitorKeyEvent>();
-
-        const onMessage = (message: DbusMessage): void => {
-          const event = parseKeyboardMonitorSignal(message);
-          if (event !== undefined) {
-            eventQueue.push(event);
-          }
-        };
-
-        keyboardBus.on("message", onMessage);
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            keyboardBus.off("message", onMessage);
-          }).pipe(Effect.ignore),
-        );
-
-        const triggerRef = yield* Ref.make<
-          | {
-              readonly keycode: number;
-              readonly keysym: number;
-            }
-          | undefined
-        >(
-          Option.isSome(config.keycode)
-            ? {
-                keycode: config.keycode.value,
-                keysym: Option.isSome(config.keysym) ? config.keysym.value : 0,
-              }
-            : Option.isSome(config.keysym)
-              ? {
-                  keycode: 0,
-                  keysym: config.keysym.value,
-                }
-              : undefined,
-        );
-
-        if (Option.isNone(config.keycode) && Option.isNone(config.keysym)) {
-          yield* Console.log(
-            "PTT key not configured. Press the key you want to use for push-to-talk to learn it now.",
-          );
-
-          while (true) {
-            const event = yield* Effect.promise(() => eventQueue.take());
-            if (event.released) {
-              continue;
-            }
-
-            yield* Ref.set(triggerRef, {
-              keycode: event.keycode,
-              keysym: event.keysym,
-            });
-
-            yield* Console.log(
-              `Learned trigger key: keycode=${event.keycode} keysym=${event.keysym} (use --keycode ${event.keycode} for a stable binding)`,
-            );
-            break;
-          }
-        }
-
-        const trigger = yield* Ref.get(triggerRef);
-        if (trigger === undefined) {
-          return yield* Effect.fail(
-            new PttKeyboardError(
-              "No push-to-talk key configured. Use --keycode/--keysym or learn one.",
+    runKeyboardMonitorPtt({
+      keycode: config.keycode,
+      keysym: config.keysym,
+      source: config.source,
+      minDurationMs: config.minDurationMs,
+      sampleRate: config.sampleRate,
+      fragmentSize: config.fragmentSize,
+      logPrefix: "ptt",
+      armedMessage: (trigger) =>
+        `PTT armed. Hold keycode=${trigger.keycode} keysym=${trigger.keysym} to record. Clips -> ${config.outputDir}. Press Ctrl+C to stop.`,
+      onClip: (clip) =>
+        Effect.gen(function* () {
+          const outputPath = makePttClipPath(config.outputDir);
+          yield* writePcmWavFile(outputPath, clip.pcmBytes, config.sampleRate).pipe(
+            Effect.mapError((cause: WakewordTrainingError) =>
+              toPttKeyboardError(
+                `Failed to write PTT clip at ${outputPath}: ${cause.message}`,
+                cause,
+              ),
             ),
           );
-        }
 
-        const captureActiveRef = yield* Ref.make(false);
-        const captureChunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([]);
-        const captureStartedAtRef = yield* Ref.make<number | undefined>(undefined);
+          const seconds = (clip.durationMs / 1000).toFixed(2);
+          yield* Console.log(`[ptt] Saved ${outputPath} (${seconds}s)`);
+        }),
+    }),
+).pipe(
+  Command.withDescription(
+    "Experimental keyboard-monitor push-to-talk: hold key to capture audio and save clips as WAV",
+  ),
+);
+
+const pttTranscribeCommand = Command.make(
+  "ptt-transcribe",
+  {
+    keycode: pttKeycodeFlag,
+    keysym: pttKeysymFlag,
+    source: optionalSourceFlag,
+    minDurationMs: positiveIntegerFlag(
+      "min-duration-ms",
+      "Ignore clips shorter than this many milliseconds",
+      120,
+    ),
+    sampleRate: positiveIntegerFlag("sample-rate", "PCM sample rate for capture", 16_000),
+    fragmentSize: positiveIntegerFlag(
+      "fragment-size",
+      "PulseAudio record fragment size in bytes",
+      4096,
+    ),
+    inject: Flag.boolean("inject").pipe(
+      Flag.withDescription("Type transcript into focused app using wtype/xdotool"),
+    ),
+  },
+  (config) =>
+    Effect.gen(function* () {
+      const sttConfig = yield* loadSttRuntimeConfig().pipe(
+        Effect.mapError((cause: SttConfigError) =>
+          toPttKeyboardError(`Failed to load STT config: ${cause.message}`, cause),
+        ),
+      );
+
+      const transcriptionModel = sttConfig.openrouter.transcriptionModel;
+      const transcriptionLanguage = sttConfig.openrouter.transcriptionLanguage;
+
+      yield* Console.log(
+        `[ptt-transcribe] Model: ${transcriptionModel} (config: ${STT_CONFIG_PATH})`,
+      );
+      yield* Console.log(`[ptt-transcribe] Language: ${transcriptionLanguage}`);
+
+      return yield* runKeyboardMonitorPtt({
+        keycode: config.keycode,
+        keysym: config.keysym,
+        source: config.source,
+        minDurationMs: config.minDurationMs,
+        sampleRate: config.sampleRate,
+        fragmentSize: config.fragmentSize,
+        logPrefix: "ptt-transcribe",
+        armedMessage: (trigger) =>
+          `PTT transcribe armed. Hold keycode=${trigger.keycode} keysym=${trigger.keysym} to dictate. Press Ctrl+C to stop.`,
+        onClip: (clip) =>
+          Effect.gen(function* () {
+            const transcript = yield* transcribePcmWithOpenRouter({
+              model: transcriptionModel,
+              pcmBytes: clip.pcmBytes,
+              sampleRate: config.sampleRate,
+              language: transcriptionLanguage,
+            }).pipe(
+              Effect.mapError((cause: OpenRouterSttError) =>
+                toPttKeyboardError(`STT request failed: ${cause.message}`, cause),
+              ),
+            );
+
+            const text = transcript.trim();
+            if (text.length === 0) {
+              yield* Console.log("[ptt-transcribe] Ignored empty transcript");
+              return;
+            }
+
+            yield* Console.log(`[ptt-transcribe] ${text}`);
+
+            if (!config.inject) {
+              return;
+            }
+
+            const result = yield* typeTextInFocusedApp(text).pipe(
+              Effect.mapError((cause) =>
+                toPttKeyboardError(
+                  cause instanceof Error
+                    ? `Failed to inject transcript text: ${cause.message}`
+                    : "Failed to inject transcript text",
+                  cause,
+                ),
+              ),
+            );
+
+            yield* Console.log(
+              `[ptt-transcribe] Typed ${result.text.length} chars with ${result.backend} (${result.sessionType})`,
+            );
+          }),
+      });
+    }),
+).pipe(
+  Command.withDescription(
+    "Push-to-talk transcription via OpenRouter (model configured in $XDG_CONFIG_HOME/effect-pi/stt.json)",
+  ),
+);
+
+const pttTranslateCommand = Command.make(
+  "ptt-translate",
+  {
+    keycode: pttKeycodeFlag,
+    keysym: pttKeysymFlag,
+    source: optionalSourceFlag,
+    minDurationMs: positiveIntegerFlag(
+      "min-duration-ms",
+      "Ignore clips shorter than this many milliseconds",
+      120,
+    ),
+    sampleRate: positiveIntegerFlag("sample-rate", "PCM sample rate for capture", 16_000),
+    fragmentSize: positiveIntegerFlag(
+      "fragment-size",
+      "PulseAudio record fragment size in bytes",
+      4096,
+    ),
+    targetLanguage: Flag.string("target-language").pipe(
+      Flag.optional,
+      Flag.withDescription("Target language for translated output (defaults from STT config)"),
+    ),
+    inject: Flag.boolean("inject").pipe(
+      Flag.withDescription("Type translated text into focused app using wtype/xdotool"),
+    ),
+  },
+  (config) =>
+    Effect.gen(function* () {
+      const sttConfig = yield* loadSttRuntimeConfig().pipe(
+        Effect.mapError((cause: SttConfigError) =>
+          toPttKeyboardError(`Failed to load STT config: ${cause.message}`, cause),
+        ),
+      );
+
+      const translationModel = sttConfig.openrouter.translationModel;
+      const sourceLanguage = sttConfig.openrouter.translationSourceLanguage;
+      const targetLanguage = Option.isSome(config.targetLanguage)
+        ? config.targetLanguage.value
+        : sttConfig.openrouter.translationTargetLanguage;
+
+      yield* Console.log(`[ptt-translate] Model: ${translationModel} (config: ${STT_CONFIG_PATH})`);
+      yield* Console.log(`[ptt-translate] Source language: ${sourceLanguage}`);
+      yield* Console.log(`[ptt-translate] Target language: ${targetLanguage}`);
+
+      return yield* runKeyboardMonitorPtt({
+        keycode: config.keycode,
+        keysym: config.keysym,
+        source: config.source,
+        minDurationMs: config.minDurationMs,
+        sampleRate: config.sampleRate,
+        fragmentSize: config.fragmentSize,
+        logPrefix: "ptt-translate",
+        armedMessage: (trigger) =>
+          `PTT translate armed. Hold keycode=${trigger.keycode} keysym=${trigger.keysym} to dictate. ${sourceLanguage} -> ${targetLanguage}. Press Ctrl+C to stop.`,
+        onClip: (clip) =>
+          Effect.gen(function* () {
+            const translated = yield* transcribeAndTranslatePcmWithOpenRouter({
+              model: translationModel,
+              pcmBytes: clip.pcmBytes,
+              sampleRate: config.sampleRate,
+              sourceLanguage,
+              targetLanguage,
+            }).pipe(
+              Effect.mapError((cause: OpenRouterSttError) =>
+                toPttKeyboardError(`STT+translation request failed: ${cause.message}`, cause),
+              ),
+            );
+
+            const text = translated.trim();
+            if (text.length === 0) {
+              yield* Console.log("[ptt-translate] Ignored empty translation");
+              return;
+            }
+
+            yield* Console.log(`[ptt-translate] ${text}`);
+
+            if (!config.inject) {
+              return;
+            }
+
+            const result = yield* typeTextInFocusedApp(text).pipe(
+              Effect.mapError((cause) =>
+                toPttKeyboardError(
+                  cause instanceof Error
+                    ? `Failed to inject translated text: ${cause.message}`
+                    : "Failed to inject translated text",
+                  cause,
+                ),
+              ),
+            );
+
+            yield* Console.log(
+              `[ptt-translate] Typed ${result.text.length} chars with ${result.backend} (${result.sessionType})`,
+            );
+          }),
+      });
+    }),
+).pipe(
+  Command.withDescription(
+    "Push-to-talk transcription + translation via OpenRouter (model configured in $XDG_CONFIG_HOME/effect-pi/stt.json)",
+  ),
+);
+
+const sttInteractiveCommand = Command.make(
+  "stt-interactive",
+  {
+    source: optionalSourceFlag,
+    minDurationMs: positiveIntegerFlag(
+      "min-duration-ms",
+      "Ignore clips shorter than this many milliseconds",
+      120,
+    ),
+    sampleRate: positiveIntegerFlag("sample-rate", "PCM sample rate for capture", 16_000),
+    fragmentSize: positiveIntegerFlag(
+      "fragment-size",
+      "PulseAudio record fragment size in bytes",
+      4096,
+    ),
+    noType: Flag.boolean("no-type").pipe(
+      Flag.withDescription("Disable typing streamed deltas via wtype"),
+    ),
+  },
+  (config) =>
+    Effect.gen(function* () {
+      const sttConfig = yield* loadSttRuntimeConfig().pipe(
+        Effect.mapError(
+          (cause: SttConfigError) =>
+            new CliError({
+              message: `Failed to load STT config: ${cause.message}`,
+              cause,
+            }),
+        ),
+      );
+
+      const transcriptionModel = sttConfig.openrouter.transcriptionModel;
+      const transcriptionLanguage = sttConfig.openrouter.transcriptionLanguage;
+
+      yield* Console.log(
+        `[stt-interactive] Ready. Model=${transcriptionModel}, language=${transcriptionLanguage}. Press Enter to start, Enter to stop, Ctrl+C to exit.`,
+      );
+
+      if (!config.noType) {
+        yield* Console.log(
+          "[stt-interactive] Streaming deltas will be typed with wtype into the currently focused Wayland window.",
+        );
+      }
+
+      while (true) {
+        yield* drainPendingStdin;
+
+        yield* waitForEnter("[stt-interactive] Press Enter to start listening").pipe(
+          Effect.mapError(
+            (cause: WakewordTrainingError) =>
+              new CliError({
+                message: cause.message,
+                cause,
+              }),
+          ),
+        );
+
+        const chunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([]);
 
         const recordOptions: {
           sampleFormat: typeof PA_SAMPLE_FORMAT.S16LE;
@@ -1536,101 +2093,605 @@ const pttCommand = Command.make(
           recordOptions.sourceName = config.source.value;
         }
 
-        yield* createRecordStream(recordOptions).pipe(
-          Stream.runForEach((chunk) =>
-            Effect.gen(function* () {
-              const active = yield* Ref.get(captureActiveRef);
-              if (!active) {
-                return;
-              }
-
-              const copied = chunk.slice();
-              yield* Ref.update(captureChunksRef, (chunks) => {
-                const next = chunks.slice();
-                next.push(copied);
-                return next;
-              });
-            }),
-          ),
+        const recordFiber = yield* createRecordStream(recordOptions).pipe(
+          Stream.runForEach((chunk) => Ref.update(chunksRef, (chunks) => [...chunks, chunk])),
           Effect.forkDetach,
         );
 
-        yield* Console.log(
-          `PTT armed. Hold keycode=${trigger.keycode} keysym=${trigger.keysym} to record. Clips -> ${config.outputDir}. Press Ctrl+C to stop.`,
+        yield* waitForEnter("[stt-interactive] Listening... Press Enter to stop").pipe(
+          Effect.mapError(
+            (cause: WakewordTrainingError) =>
+              new CliError({
+                message: cause.message,
+                cause,
+              }),
+          ),
         );
 
-        while (true) {
-          const event = yield* Effect.promise(() => eventQueue.take());
+        yield* Fiber.interrupt(recordFiber);
 
-          const keycodeMatches = trigger.keycode > 0 && event.keycode === trigger.keycode;
-          const keysymMatches = trigger.keysym > 0 && event.keysym === trigger.keysym;
+        const chunks = yield* Ref.get(chunksRef);
+        const pcmBytes = concatChunks(chunks);
 
-          if (!keycodeMatches && !keysymMatches) {
-            continue;
+        if (pcmBytes.length === 0) {
+          yield* Console.log("[stt-interactive] Ignored empty capture");
+          continue;
+        }
+
+        const durationMs = Math.round((pcmBytes.length / 2 / config.sampleRate) * 1000);
+        if (durationMs < config.minDurationMs) {
+          yield* Console.log(
+            `[stt-interactive] Ignored short capture (${durationMs}ms < ${config.minDurationMs}ms)`,
+          );
+          continue;
+        }
+
+        const transcript = yield* transcribePcmWithOpenRouter({
+          model: transcriptionModel,
+          pcmBytes,
+          sampleRate: config.sampleRate,
+          language: transcriptionLanguage,
+          ...(config.noType
+            ? {}
+            : {
+                onDelta: (delta: string) =>
+                  typeTextWithWtype(delta).pipe(
+                    Effect.mapError(
+                      (cause: WtypeError) =>
+                        new OpenRouterSttError({
+                          message: `Failed typing streamed delta with wtype: ${cause.message}`,
+                          cause,
+                        }),
+                    ),
+                  ),
+              }),
+        }).pipe(
+          Effect.mapError(
+            (cause: OpenRouterSttError) =>
+              new CliError({
+                message: `Streaming STT failed: ${cause.message}`,
+                cause,
+              }),
+          ),
+        );
+
+        yield* Console.log("");
+        yield* Console.log(`[stt-interactive] Transcript: ${transcript}`);
+      }
+    }),
+).pipe(
+  Command.withDescription(
+    "Interactive STT test loop (Enter start/stop, OpenRouter streaming, optional wtype delta typing)",
+  ),
+);
+
+const DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE = "ok_pie.json";
+const DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM = 65478;
+const DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM = 65479;
+const DEFAULT_ASSISTANT_SAMPLE_RATE = 16_000;
+const DEFAULT_ASSISTANT_WAKEWORD_FRAGMENT_SIZE = 1024;
+const DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE = 4096;
+const DEFAULT_ASSISTANT_MIN_DURATION_MS = 120;
+
+const normalizeWakewordModelName = (modelName: string): string =>
+  modelName.endsWith(".json") ? modelName.slice(0, -".json".length) : modelName;
+
+const resolveDefaultSourceName = (): Effect.Effect<string, CliError, PulseAudioClient> =>
+  Effect.gen(function* () {
+    const client = yield* PulseAudioClient;
+
+    yield* client.connect().pipe(
+      Effect.mapError(
+        (cause) =>
+          new CliError({
+            message: "Failed to connect to PulseAudio",
+            cause,
+          }),
+      ),
+    );
+
+    const serverInfo = yield* client.getServerInfo.pipe(
+      Effect.mapError(
+        (cause) =>
+          new CliError({
+            message: "Failed to resolve default PulseAudio source",
+            cause,
+          }),
+      ),
+      Effect.ensuring(client.disconnect),
+    );
+
+    if (serverInfo.defaultSource.length === 0) {
+      return yield* new CliError({
+        message: "PulseAudio did not return a default capture source",
+      });
+    }
+
+    return serverInfo.defaultSource;
+  });
+
+const runAssistantWakewordTranscribeLoop = (config: {
+  readonly sourceName: string;
+  readonly sttConfig: SttRuntimeConfig;
+  readonly pttActiveRef: Ref.Ref<boolean>;
+}): Effect.Effect<void, CliError, PulseAudioClient> =>
+  Effect.gen(function* () {
+    const assets = yield* validateWakewordAssets({
+      wakewordModels: [DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE],
+    }).pipe(
+      Effect.mapError(
+        (cause: WakewordAssetError) =>
+          new CliError({
+            message: `Wakeword assets are invalid: ${cause.message}`,
+            cause,
+          }),
+      ),
+    );
+
+    const sessions = yield* loadWakewordModelSessions(assets).pipe(
+      Effect.mapError(
+        (cause: WakewordRuntimeError) =>
+          new CliError({
+            message: `Failed to initialize wakeword model sessions: ${cause.message}`,
+            cause,
+          }),
+      ),
+    );
+
+    const pipeline = yield* makeWakewordPipeline(sessions).pipe(
+      Effect.mapError(
+        (cause: WakewordPipelineError) =>
+          new CliError({
+            message: `Failed to initialize wakeword inference pipeline: ${cause.message}`,
+            cause,
+          }),
+      ),
+    );
+
+    const modelNames = Object.keys(assets.wakewordModelPaths);
+    const selectedModelName =
+      modelNames.find((name) => normalizeWakewordModelName(name) === "ok_pie") ?? modelNames[0];
+
+    if (selectedModelName === undefined) {
+      return yield* new CliError({
+        message: "No wakeword models are available",
+      });
+    }
+
+    const normalizedModelName = normalizeWakewordModelName(selectedModelName);
+    const tuningPath = detectionTuningPathFor(normalizedModelName);
+    const calibrationPath = calibrationPathFor(normalizedModelName);
+
+    const tuningSnapshot = yield* readDetectionTuningSnapshot(tuningPath);
+    const calibrationSnapshot = yield* readCalibrationSnapshot(calibrationPath);
+
+    const triggerMachine = createWakewordTriggerMachine({
+      threshold: tuningSnapshot?.trigger.threshold ?? 0.5,
+      smoothingWindow: tuningSnapshot?.trigger.smoothingWindow ?? 4,
+      consecutiveFrames: tuningSnapshot?.trigger.consecutiveFrames ?? 3,
+      cooldownMs: tuningSnapshot?.trigger.cooldownMs ?? 1500,
+    });
+
+    const isTranscribingRef = yield* Ref.make(false);
+
+    const wakewordRecordOptions = {
+      sampleSpec: {
+        format: PA_SAMPLE_FORMAT.S16LE,
+        channels: 1,
+        rate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+      },
+      fragmentSize: DEFAULT_ASSISTANT_WAKEWORD_FRAGMENT_SIZE,
+      sourceName: config.sourceName,
+    } as const;
+
+    yield* Console.log(
+      `[assistant] Wakeword listener armed: model=${selectedModelName} source=${config.sourceName}`,
+    );
+
+    if (tuningSnapshot !== undefined) {
+      yield* Console.log(`[assistant] Wakeword tuning loaded: ${tuningPath}`);
+    }
+
+    return yield* createWakewordTelemetryStream({
+      pipeline,
+      trigger: triggerMachine,
+      recordStream: wakewordRecordOptions,
+    }).pipe(
+      Stream.runForEach((event) =>
+        Effect.gen(function* () {
+          if (event.type !== "trigger" || event.event.model !== selectedModelName) {
+            return;
           }
 
-          if (!event.released) {
-            const alreadyActive = yield* Ref.get(captureActiveRef);
-            if (alreadyActive) {
-              continue;
+          const pttActive = yield* Ref.get(config.pttActiveRef);
+          if (pttActive) {
+            return;
+          }
+
+          const alreadyTranscribing = yield* Ref.get(isTranscribingRef);
+          if (alreadyTranscribing) {
+            return;
+          }
+
+          yield* Ref.set(isTranscribingRef, true);
+
+          const triggerEffect = Effect.gen(function* () {
+            const dictationSilenceSeconds =
+              config.sttConfig.openrouter.wakewordDictationSilenceSeconds;
+            const dictationMaxSeconds = config.sttConfig.openrouter.wakewordDictationMaxSeconds;
+            const dictationSpeechRmsThreshold =
+              calibrationSnapshot?.resolved.speechRms ??
+              config.sttConfig.openrouter.wakewordDictationSpeechRmsThreshold;
+
+            yield* Console.log(
+              `[wakeword-transcribe] Trigger detected (${selectedModelName}). Dictation capture started (silence=${dictationSilenceSeconds}s, max=${dictationMaxSeconds}s, speech_rms=${dictationSpeechRmsThreshold.toFixed(4)})...`,
+            );
+
+            const pcmBytes = yield* recordPcmUntilTrailingSilence({
+              silenceSeconds: dictationSilenceSeconds,
+              maxSeconds: dictationMaxSeconds,
+              speechRmsThreshold: dictationSpeechRmsThreshold,
+              fragmentSize: DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
+              sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+              channels: 1,
+              sourceName: config.sourceName,
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new CliError({
+                    message: "Failed to capture wakeword dictation clip",
+                    cause,
+                  }),
+              ),
+            );
+
+            const transcript = yield* transcribePcmWithOpenRouter({
+              model: config.sttConfig.openrouter.transcriptionModel,
+              pcmBytes,
+              sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+              language: config.sttConfig.openrouter.transcriptionLanguage,
+            }).pipe(
+              Effect.mapError(
+                (cause: OpenRouterSttError) =>
+                  new CliError({
+                    message: `Wakeword transcription failed: ${cause.message}`,
+                    cause,
+                  }),
+              ),
+            );
+
+            const text = transcript.trim();
+            const injectableText = normalizeTextForInjection(text);
+
+            if (injectableText.length === 0) {
+              yield* Console.log("[wakeword-transcribe] Ignored empty transcript");
+              return;
             }
 
-            yield* Ref.set(captureChunksRef, []);
-            yield* Ref.set(captureStartedAtRef, Date.now());
-            yield* Ref.set(captureActiveRef, true);
+            yield* Console.log("[wakeword-transcribe] Will type (start)");
+            yield* Console.log(injectableText);
+            yield* Console.log("[wakeword-transcribe] Will type (end)");
+
+            const typed = yield* typeTextInFocusedApp(injectableText).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new CliError({
+                    message:
+                      cause instanceof Error
+                        ? `Failed to type wakeword transcript: ${cause.message}`
+                        : "Failed to type wakeword transcript",
+                    cause,
+                  }),
+              ),
+            );
+
+            yield* Console.log(
+              `[wakeword-transcribe] Typed ${typed.text.length} chars with ${typed.backend} (${typed.sessionType})`,
+            );
+          }).pipe(
+            Effect.catch((cause: CliError) =>
+              Console.log(`[wakeword-transcribe] ${cause.message}`),
+            ),
+            Effect.ensuring(Ref.set(isTranscribingRef, false)),
+          );
+
+          yield* Effect.forkDetach(triggerEffect);
+        }),
+      ),
+      Effect.mapError(
+        (cause) =>
+          new CliError({
+            message: "Wakeword listener failed",
+            cause,
+          }),
+      ),
+    );
+  });
+
+type AssistantPttMode = "transcribe" | "translate";
+
+const runAssistantPttCombinedLoop = (config: {
+  readonly sourceName: string;
+  readonly sttConfig: SttRuntimeConfig;
+  readonly pttActiveRef: Ref.Ref<boolean>;
+}): Effect.Effect<never, PttKeyboardError, PulseAudioClient> =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const sourceLanguage = config.sttConfig.openrouter.translationSourceLanguage;
+      const targetLanguage = config.sttConfig.openrouter.translationTargetLanguage;
+
+      yield* Console.log(
+        `[assistant] PTT transcribe armed on keysym=${DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM} source=${config.sourceName}`,
+      );
+      yield* Console.log(
+        `[assistant] PTT translate armed on keysym=${DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM} source=${config.sourceName} (${sourceLanguage} -> ${targetLanguage})`,
+      );
+      yield* Console.log(
+        `PTT transcribe ready (keysym=${DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM}). Hold key to dictate.`,
+      );
+      yield* Console.log(
+        `PTT translate ready (keysym=${DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM}, ${sourceLanguage} -> ${targetLanguage}). Hold key to dictate.`,
+      );
+
+      const keyboardBus = yield* connectKeyboardMonitorBus();
+
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          keyboardBus.disconnect();
+        }).pipe(Effect.ignore),
+      );
+
+      yield* callKeyboardMonitorMethod(keyboardBus, "WatchKeyboard");
+      yield* Effect.addFinalizer(() =>
+        callKeyboardMonitorMethod(keyboardBus, "UnwatchKeyboard").pipe(Effect.ignore),
+      );
+
+      const eventQueue = new AsyncEventQueue<KeyboardMonitorKeyEvent>();
+
+      const onMessage = (message: DbusMessage): void => {
+        const event = parseKeyboardMonitorSignal(message);
+        if (event !== undefined) {
+          eventQueue.push(event);
+        }
+      };
+
+      keyboardBus.on("message", onMessage);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          keyboardBus.off("message", onMessage);
+        }).pipe(Effect.ignore),
+      );
+
+      const captureActiveRef = yield* Ref.make(false);
+      const captureModeRef = yield* Ref.make<AssistantPttMode | undefined>(undefined);
+      const captureChunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([]);
+      const captureStartedAtRef = yield* Ref.make<number | undefined>(undefined);
+
+      yield* Effect.addFinalizer(() => Ref.set(config.pttActiveRef, false));
+
+      const recordFiber = yield* createRecordStream({
+        sampleSpec: {
+          format: PA_SAMPLE_FORMAT.S16LE,
+          channels: 1,
+          rate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+        },
+        fragmentSize: DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
+        sourceName: config.sourceName,
+      }).pipe(
+        Stream.runForEach((chunk) =>
+          Effect.gen(function* () {
+            const active = yield* Ref.get(captureActiveRef);
+            if (!active) {
+              return;
+            }
+
+            const copied = chunk.slice();
+            yield* Ref.update(captureChunksRef, (chunks) => {
+              const next = chunks.slice();
+              next.push(copied);
+              return next;
+            });
+          }),
+        ),
+        Effect.forkDetach,
+      );
+
+      yield* Effect.addFinalizer(() => Fiber.interrupt(recordFiber).pipe(Effect.ignore));
+
+      while (true) {
+        const event = yield* Effect.promise(() => eventQueue.take());
+
+        const mode: AssistantPttMode | undefined =
+          event.keysym === DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM
+            ? "transcribe"
+            : event.keysym === DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM
+              ? "translate"
+              : undefined;
+
+        if (mode === undefined) {
+          continue;
+        }
+
+        const modePrefix =
+          mode === "transcribe" ? "assistant-ptt-transcribe" : "assistant-ptt-translate";
+
+        if (!event.released) {
+          const alreadyActive = yield* Ref.get(captureActiveRef);
+          if (alreadyActive) {
             continue;
           }
 
-          const wasActive = yield* Ref.get(captureActiveRef);
-          if (!wasActive) {
-            continue;
-          }
+          yield* Ref.set(captureChunksRef, []);
+          yield* Ref.set(captureStartedAtRef, Date.now());
+          yield* Ref.set(captureModeRef, mode);
+          yield* Ref.set(captureActiveRef, true);
+          yield* Ref.set(config.pttActiveRef, true);
+          yield* Console.log(`[${modePrefix}] Capturing... release key to stop`);
+          continue;
+        }
 
-          yield* Ref.set(captureActiveRef, false);
+        const wasActive = yield* Ref.get(captureActiveRef);
+        if (!wasActive) {
+          continue;
+        }
 
-          const startedAt = yield* Ref.get(captureStartedAtRef);
-          yield* Ref.set(captureStartedAtRef, undefined);
+        const activeMode = yield* Ref.get(captureModeRef);
+        if (activeMode !== mode) {
+          continue;
+        }
 
+        yield* Ref.set(captureActiveRef, false);
+        yield* Ref.set(captureModeRef, undefined);
+
+        const startedAt = yield* Ref.get(captureStartedAtRef);
+        yield* Ref.set(captureStartedAtRef, undefined);
+
+        yield* Effect.gen(function* () {
           const durationMs = startedAt === undefined ? 0 : Date.now() - startedAt;
           const chunks = yield* Ref.get(captureChunksRef);
           yield* Ref.set(captureChunksRef, []);
 
-          if (durationMs < config.minDurationMs) {
+          const capturedBytes = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+          yield* Console.log(
+            `[${modePrefix}] Capture stopped (${durationMs}ms, ${capturedBytes} bytes)`,
+          );
+
+          if (durationMs < DEFAULT_ASSISTANT_MIN_DURATION_MS) {
             yield* Console.log(
-              `[ptt] Ignored short clip (${durationMs}ms < ${config.minDurationMs}ms)`,
+              `[${modePrefix}] Ignored short clip (${durationMs}ms < ${DEFAULT_ASSISTANT_MIN_DURATION_MS}ms)`,
             );
-            continue;
+            return;
           }
 
           const pcmBytes = concatChunks(chunks);
           if (pcmBytes.length === 0) {
-            yield* Console.log("[ptt] Ignored empty clip");
-            continue;
+            yield* Console.log(`[${modePrefix}] Ignored empty clip`);
+            return;
           }
 
-          const outputPath = makePttClipPath(config.outputDir);
-          yield* writePcmWavFile(outputPath, pcmBytes, config.sampleRate).pipe(
-            Effect.mapError(
-              (cause: WakewordTrainingError) =>
-                new PttKeyboardError(
-                  `Failed to write PTT clip at ${outputPath}: ${cause.message}`,
-                  {
-                    cause,
-                  },
+          if (mode === "transcribe") {
+            const transcript = yield* transcribePcmWithOpenRouter({
+              model: config.sttConfig.openrouter.transcriptionModel,
+              pcmBytes,
+              sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+              language: config.sttConfig.openrouter.transcriptionLanguage,
+            }).pipe(
+              Effect.mapError((cause: OpenRouterSttError) =>
+                toPttKeyboardError(`PTT transcription failed: ${cause.message}`, cause),
+              ),
+            );
+
+            const text = transcript.trim();
+            const injectableText = normalizeTextForInjection(text);
+
+            if (injectableText.length === 0) {
+              yield* Console.log("[assistant-ptt-transcribe] Ignored empty transcript");
+              return;
+            }
+
+            yield* Console.log("[assistant-ptt-transcribe] Will type (start)");
+            yield* Console.log(injectableText);
+            yield* Console.log("[assistant-ptt-transcribe] Will type (end)");
+
+            const typed = yield* typeTextInFocusedApp(injectableText).pipe(
+              Effect.mapError((cause) =>
+                toPttKeyboardError(
+                  cause instanceof Error
+                    ? `Failed to type transcript text: ${cause.message}`
+                    : "Failed to type transcript text",
+                  cause,
                 ),
+              ),
+            );
+
+            yield* Console.log(
+              `[assistant-ptt-transcribe] Typed ${typed.text.length} chars with ${typed.backend} (${typed.sessionType})`,
+            );
+            return;
+          }
+
+          const translated = yield* transcribeAndTranslatePcmWithOpenRouter({
+            model: config.sttConfig.openrouter.translationModel,
+            pcmBytes,
+            sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+            sourceLanguage,
+            targetLanguage,
+          }).pipe(
+            Effect.mapError((cause: OpenRouterSttError) =>
+              toPttKeyboardError(`PTT translation failed: ${cause.message}`, cause),
             ),
           );
 
-          const seconds = (durationMs / 1000).toFixed(2);
-          yield* Console.log(`[ptt] Saved ${outputPath} (${seconds}s)`);
-        }
-      }),
+          const text = translated.trim();
+          const injectableText = normalizeTextForInjection(text);
+
+          if (injectableText.length === 0) {
+            yield* Console.log("[assistant-ptt-translate] Ignored empty translation");
+            return;
+          }
+
+          yield* Console.log("[assistant-ptt-translate] Will type (start)");
+          yield* Console.log(injectableText);
+          yield* Console.log("[assistant-ptt-translate] Will type (end)");
+
+          const typed = yield* typeTextInFocusedApp(injectableText).pipe(
+            Effect.mapError((cause) =>
+              toPttKeyboardError(
+                cause instanceof Error
+                  ? `Failed to type translated text: ${cause.message}`
+                  : "Failed to type translated text",
+                cause,
+              ),
+            ),
+          );
+
+          yield* Console.log(
+            `[assistant-ptt-translate] Typed ${typed.text.length} chars with ${typed.backend} (${typed.sessionType})`,
+          );
+        }).pipe(Effect.ensuring(Ref.set(config.pttActiveRef, false)));
+      }
+    }),
+  );
+
+const runAssistantDefaultCommand = Effect.gen(function* () {
+  const sttConfig = yield* loadSttRuntimeConfig().pipe(
+    Effect.mapError(
+      (cause: SttConfigError) =>
+        new CliError({
+          message: `Failed to load STT config: ${cause.message}`,
+          cause,
+        }),
     ),
-).pipe(
-  Command.withDescription(
-    "Experimental keyboard-monitor push-to-talk: hold key to capture audio and save clips as WAV",
-  ),
-);
+  );
+
+  const sourceName = yield* resolveDefaultSourceName();
+
+  yield* Console.log("[assistant] Running default combined mode");
+  yield* Console.log(
+    `[assistant] Wakeword model=${DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE} -> transcription (${sttConfig.openrouter.transcriptionLanguage})`,
+  );
+  yield* Console.log(
+    `[assistant] PTT transcribe keysym=${DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM}, PTT translate keysym=${DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM}`,
+  );
+  yield* Console.log(
+    `[assistant] Wakeword dictation: silence=${sttConfig.openrouter.wakewordDictationSilenceSeconds}s max=${sttConfig.openrouter.wakewordDictationMaxSeconds}s speech_rms=${sttConfig.openrouter.wakewordDictationSpeechRmsThreshold.toFixed(4)}`,
+  );
+  yield* Console.log("[assistant] Focus the target app (for example Slack) to receive typed text");
+  yield* Console.log("[assistant] Press Ctrl+C to stop all listeners");
+
+  const pttActiveRef = yield* Ref.make(false);
+
+  return yield* Effect.all(
+    [
+      runAssistantWakewordTranscribeLoop({ sourceName, sttConfig, pttActiveRef }),
+      runAssistantPttCombinedLoop({ sourceName, sttConfig, pttActiveRef }),
+    ],
+    {
+      concurrency: "unbounded",
+      discard: true,
+    },
+  );
+});
 
 const typeCommand = Command.make(
   "type",
@@ -1641,7 +2702,7 @@ const typeCommand = Command.make(
     Effect.gen(function* () {
       const result = yield* typeTextInFocusedApp(config.text);
       yield* Console.log(
-        `Typed ${config.text.length} characters with ${result.backend} (${result.sessionType})`,
+        `Typed ${result.text.length} characters with ${result.backend} (${result.sessionType})`,
       );
     }),
 ).pipe(Command.withDescription("Spike command that types text via wtype/xdotool based on session"));
@@ -1663,7 +2724,7 @@ const resolveTrainingSource = (config: {
   readonly availableSources: ReadonlyArray<SourceInfo>;
   readonly fragmentSize: number;
   readonly autoCalibrate: boolean;
-}): Effect.Effect<string, WakewordTrainingError, PulseAudioClient> =>
+}): Effect.Effect<string, WakewordTrainingError | CliError | Error, PulseAudioClient> =>
   Effect.gen(function* () {
     if (config.requestedSourceName !== undefined) {
       const exists = config.availableSources.some(
@@ -1671,11 +2732,9 @@ const resolveTrainingSource = (config: {
       );
 
       if (!exists) {
-        return yield* Effect.fail(
-          new WakewordTrainingError(
-            `Configured source '${config.requestedSourceName}' not found. Run 'bun run cli -- sources' and select one of the listed source names.`,
-          ),
-        );
+        return yield* new WakewordTrainingError({
+          message: `Configured source '${config.requestedSourceName}' not found. Run 'bun run cli -- sources' and select one of the listed source names.`,
+        });
       }
 
       return config.requestedSourceName;
@@ -1686,9 +2745,9 @@ const resolveTrainingSource = (config: {
       config.availableSources[0];
 
     if (defaultSource === undefined || defaultSource.name === null) {
-      return yield* Effect.fail(
-        new WakewordTrainingError("No capture source is available in PulseAudio"),
-      );
+      return yield* new WakewordTrainingError({
+        message: "No capture source is available in PulseAudio",
+      });
     }
 
     if (!config.autoCalibrate) {
@@ -1899,21 +2958,31 @@ const wakewordCommand = Command.make(
 
       const assets = yield* validateWakewordAssets(assetOptions).pipe(
         Effect.mapError(
-          (cause: WakewordAssetError) => new Error(`Wakeword assets are invalid: ${cause.message}`),
+          (cause: WakewordAssetError) =>
+            new CliError({
+              message: `Wakeword assets are invalid: ${cause.message}`,
+              cause,
+            }),
         ),
       );
 
       const sessions = yield* loadWakewordModelSessions(assets).pipe(
         Effect.mapError(
           (cause: WakewordRuntimeError) =>
-            new Error(`Failed to initialize wakeword model sessions: ${cause.message}`),
+            new CliError({
+              message: `Failed to initialize wakeword model sessions: ${cause.message}`,
+              cause,
+            }),
         ),
       );
 
       const pipeline = yield* makeWakewordPipeline(sessions).pipe(
         Effect.mapError(
           (cause: WakewordPipelineError) =>
-            new Error(`Failed to initialize wakeword inference pipeline: ${cause.message}`),
+            new CliError({
+              message: `Failed to initialize wakeword inference pipeline: ${cause.message}`,
+              cause,
+            }),
         ),
       );
 
@@ -2087,20 +3156,29 @@ const wakewordTuneCommand = Command.make(
 
       const assets = yield* validateWakewordAssets(assetOptions).pipe(
         Effect.mapError(
-          (cause: WakewordAssetError) => new Error(`Wakeword assets are invalid: ${cause.message}`),
+          (cause: WakewordAssetError) =>
+            new CliError({
+              message: `Wakeword assets are invalid: ${cause.message}`,
+              cause,
+            }),
         ),
       );
 
       const sessions = yield* loadWakewordModelSessions(assets).pipe(
         Effect.mapError(
           (cause: WakewordRuntimeError) =>
-            new Error(`Failed to initialize wakeword model sessions: ${cause.message}`),
+            new CliError({
+              message: `Failed to initialize wakeword model sessions: ${cause.message}`,
+              cause,
+            }),
         ),
       );
 
       const modelNames = Object.keys(assets.wakewordModelPaths);
       if (modelNames.length === 0) {
-        return yield* Effect.fail(new Error("No wakeword model is available for tuning"));
+        return yield* new CliError({
+          message: "No wakeword model is available for tuning",
+        });
       }
 
       const preferredModelName =
@@ -2134,11 +3212,9 @@ const wakewordTuneCommand = Command.make(
           : serverInfo.defaultSource;
 
         if (!sources.some((source) => source.name === resolvedSourceName)) {
-          return yield* Effect.fail(
-            new Error(
-              `Configured source '${resolvedSourceName}' not found. Run 'bun run cli -- sources' and choose one source name.`,
-            ),
-          );
+          return yield* new CliError({
+            message: `Configured source '${resolvedSourceName}' not found. Run 'bun run cli -- sources' and choose one source name.`,
+          });
         }
 
         yield* Console.log(`Wakeword tuning model: ${modelName} (${modelFile})`);
@@ -2359,7 +3435,10 @@ const wakewordTrainCommand = Command.make(
         catch: (cause) =>
           cause instanceof WakewordTrainingError
             ? cause
-            : new WakewordTrainingError("Failed to build wakeword training plan", { cause }),
+            : new WakewordTrainingError({
+                message: "Failed to build wakeword training plan",
+                cause,
+              }),
       });
 
       yield* initializeWakewordTrainingWorkspace(plan);
@@ -2370,14 +3449,20 @@ const wakewordTrainCommand = Command.make(
       }).pipe(
         Effect.mapError(
           (cause: WakewordAssetError) =>
-            new WakewordTrainingError(`Wakeword feature assets are invalid: ${cause.message}`),
+            new WakewordTrainingError({
+              message: `Wakeword feature assets are invalid: ${cause.message}`,
+              cause,
+            }),
         ),
       );
 
       const featureSessions = yield* loadWakewordFeatureSessions(assets).pipe(
         Effect.mapError(
           (cause: WakewordRuntimeError) =>
-            new WakewordTrainingError(`Failed to initialize feature models: ${cause.message}`),
+            new WakewordTrainingError({
+              message: `Failed to initialize feature models: ${cause.message}`,
+              cause,
+            }),
         ),
       );
 
@@ -2514,13 +3599,11 @@ const wakewordTrainCommand = Command.make(
               const minClipPeak = Math.max(minClipRms * 3, 0.01);
 
               if (clipRms < minClipRms || clipPeak < minClipPeak) {
-                return yield* Effect.fail(
-                  new NoSpeechDetectedError(
-                    `Captured clip is too quiet (rms ${clipRms.toFixed(4)}, peak ${clipPeak.toFixed(4)}; expected at least rms ${minClipRms.toFixed(4)}, peak ${minClipPeak.toFixed(4)})`,
-                    clipRms,
-                    minClipRms,
-                  ),
-                );
+                return yield* new NoSpeechDetectedError({
+                  message: `Captured clip is too quiet (rms ${clipRms.toFixed(4)}, peak ${clipPeak.toFixed(4)}; expected at least rms ${minClipRms.toFixed(4)}, peak ${minClipPeak.toFixed(4)})`,
+                  observedMaxRms: clipRms,
+                  threshold: minClipRms,
+                });
               }
 
               return clip;
@@ -2551,11 +3634,9 @@ const wakewordTrainCommand = Command.make(
 
                     if (attempt >= config.retryLimit) {
                       const effectiveSpeechRms = yield* Ref.get(speechRmsRef);
-                      return yield* Effect.fail(
-                        new WakewordTrainingError(
-                          `[positive ${clipNumber}/${config.positiveCount}] ${error.message}. Final speech-rms was ${effectiveSpeechRms.toFixed(4)}. Run 'bun run cli -- meter --source ${selectedSourceName}' to inspect live levels.`,
-                        ),
-                      );
+                      return yield* new WakewordTrainingError({
+                        message: `[positive ${clipNumber}/${config.positiveCount}] ${error.message}. Final speech-rms was ${effectiveSpeechRms.toFixed(4)}. Run 'bun run cli -- meter --source ${selectedSourceName}' to inspect live levels.`,
+                      });
                     }
 
                     const nextSpeechRms = yield* Ref.get(speechRmsRef);
@@ -2644,14 +3725,19 @@ const wakewordTrainCommand = Command.make(
   ),
 );
 
-const rootCommand = Command.make("effect-pi").pipe(
-  Command.withDescription("effect-pi command line"),
+const rootCommand = Command.make("effect-pi", {}, () => runAssistantDefaultCommand).pipe(
+  Command.withDescription(
+    "effect-pi command line (no args runs combined wakeword + PTT assistant mode)",
+  ),
   Command.withSubcommands([
     recordCommand,
     sourcesCommand,
     meterCommand,
     pttPortalCommand,
     pttCommand,
+    pttTranscribeCommand,
+    pttTranslateCommand,
+    sttInteractiveCommand,
     typeCommand,
     wakewordCommand,
     wakewordTuneCommand,
@@ -2659,9 +3745,8 @@ const rootCommand = Command.make("effect-pi").pipe(
   ]),
 );
 
-const main = Command.run(rootCommand, { version: "0.1.0" }).pipe(
-  Effect.provide(BunServices.layer),
-  Effect.provide(pulseLayer()),
-);
+const runtimeLayer = Layer.merge(BunServices.layer, pulseLayer());
+
+const main = Command.run(rootCommand, { version: "0.1.0" }).pipe(Effect.provide(runtimeLayer));
 
 BunRuntime.runMain(main);
