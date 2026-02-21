@@ -55,7 +55,7 @@ pie/
 - `pie stt-interactive` runs an Enter-to-start / Enter-to-stop transcription loop using OpenRouter streaming responses and types streamed deltas with `wtype`.
 - `pie type` sends text to the focused app and auto-selects backend (`wtype` for Wayland, `xdotool` for X11).
 - `pie wakeword` runs live wakeword scoring/trigger telemetry from PulseAudio.
-- `pie wakeword-train` runs best-effort capture setup (auto source probing, auto noise/speech calibration, adaptive speech threshold retries), collects positive/negative clips from PulseAudio, trains a lightweight wakeword scoring model, saves data under `$XDG_DATA_HOME/pie/openwakeword/`, updates the XDG manifest when requested, and persists calibration snapshots in `$XDG_CONFIG_HOME/pie/wakeword/`.
+- `pie wakeword-train` runs best-effort capture setup (auto source probing, auto noise/speech calibration, adaptive speech threshold retries), collects positive/negative clips from PulseAudio, trains a lightweight wakeword scoring model, saves data under `$XDG_DATA_HOME/pie/openwakeword/` (prefers legacy `$XDG_DATA_HOME/effect-pi/openwakeword/` when present), updates the XDG manifest when requested, and persists calibration snapshots in `$XDG_CONFIG_HOME/pie/wakeword/` (prefers legacy `$XDG_CONFIG_HOME/effect-pi/wakeword/` when present).
 - STT model and language routing for `ptt-transcribe` and `ptt-translate` is configured in `$XDG_CONFIG_HOME/pie/stt.json` (auto-created on first run) with defaults:
   - transcription model: `mistralai/voxtral-small-24b-2507`
   - translation model: `google/gemini-3-flash-preview`

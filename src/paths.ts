@@ -18,12 +18,12 @@ const resolveAppSubdir = (baseDir: string): string => {
   const preferred = path.join(baseDir, APP_DIR_NAME);
   const legacy = path.join(baseDir, LEGACY_APP_DIR_NAME);
 
-  if (fs.existsSync(preferred)) {
-    return preferred;
-  }
-
   if (fs.existsSync(legacy)) {
     return legacy;
+  }
+
+  if (fs.existsSync(preferred)) {
+    return preferred;
   }
 
   return preferred;

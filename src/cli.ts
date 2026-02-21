@@ -1915,7 +1915,7 @@ const pttTranscribeCommand = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Push-to-talk transcription via OpenRouter (model configured in $XDG_CONFIG_HOME/pie/stt.json)",
+    "Push-to-talk transcription via OpenRouter (model configured in $XDG_CONFIG_HOME/pie/stt.json; legacy effect-pi dir preferred when present)",
   ),
 );
 
@@ -2017,7 +2017,7 @@ const pttTranslateCommand = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Push-to-talk transcription + translation via OpenRouter (model configured in $XDG_CONFIG_HOME/pie/stt.json)",
+    "Push-to-talk transcription + translation via OpenRouter (model configured in $XDG_CONFIG_HOME/pie/stt.json; legacy effect-pi dir preferred when present)",
   ),
 );
 
@@ -3032,7 +3032,7 @@ const wakewordCommand = Command.make(
     ),
     noAutoTune: Flag.boolean("no-auto-tune").pipe(
       Flag.withDescription(
-        "Disable loading saved tuning from $XDG_CONFIG_HOME/pie/wakeword/<model>/detection-tuning.json",
+        "Disable loading saved tuning from $XDG_CONFIG_HOME/pie/wakeword/<model>/detection-tuning.json (legacy effect-pi dir is preferred when present)",
       ),
     ),
     scoreEvery: positiveIntegerFlag(
@@ -3507,7 +3507,7 @@ const wakewordTrainCommand = Command.make(
     assetRoot: Flag.string("asset-root").pipe(
       Flag.optional,
       Flag.withDescription(
-        "Root openWakeWord asset directory (default: $XDG_DATA_HOME/pie/openwakeword)",
+        "Root openWakeWord asset directory (default: $XDG_DATA_HOME/pie/openwakeword; legacy effect-pi dir preferred when present)",
       ),
     ),
     datasetRoot: Flag.string("dataset-root").pipe(
@@ -3520,7 +3520,7 @@ const wakewordTrainCommand = Command.make(
     ),
     register: Flag.boolean("register").pipe(
       Flag.withDescription(
-        "Add generated model filename to $XDG_DATA_HOME/pie/openwakeword/manifest.json",
+        "Add generated model filename to $XDG_DATA_HOME/pie/openwakeword/manifest.json (legacy effect-pi dir preferred when present)",
       ),
     ),
   },
