@@ -99,7 +99,9 @@ export type WtypeInjectionMode = "direct" | "clipboard" | "auto";
 export const resolveWtypeInjectionMode = (
   env: NodeJS.ProcessEnv = process.env,
 ): WtypeInjectionMode => {
-  const rawMode = (env.EFFECT_PI_WAYLAND_INJECTION_MODE ?? "auto").trim().toLowerCase();
+  const rawMode = (env.PIE_WAYLAND_INJECTION_MODE ?? env.EFFECT_PI_WAYLAND_INJECTION_MODE ?? "auto")
+    .trim()
+    .toLowerCase();
 
   if (rawMode === "direct" || rawMode === "clipboard" || rawMode === "auto") {
     return rawMode;

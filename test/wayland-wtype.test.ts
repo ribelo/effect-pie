@@ -52,10 +52,16 @@ test("resolveWtypeInjectionMode defaults to auto", () => {
 });
 
 test("resolveWtypeInjectionMode accepts explicit mode", () => {
-  expect(resolveWtypeInjectionMode({ EFFECT_PI_WAYLAND_INJECTION_MODE: "direct" })).toBe("direct");
-  expect(resolveWtypeInjectionMode({ EFFECT_PI_WAYLAND_INJECTION_MODE: "auto" })).toBe("auto");
+  expect(resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "direct" })).toBe("direct");
+  expect(resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "auto" })).toBe("auto");
+});
+
+test("resolveWtypeInjectionMode supports legacy env var", () => {
+  expect(resolveWtypeInjectionMode({ EFFECT_PI_WAYLAND_INJECTION_MODE: "clipboard" })).toBe(
+    "clipboard",
+  );
 });
 
 test("resolveWtypeInjectionMode falls back to auto for invalid values", () => {
-  expect(resolveWtypeInjectionMode({ EFFECT_PI_WAYLAND_INJECTION_MODE: "weird" })).toBe("auto");
+  expect(resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "weird" })).toBe("auto");
 });

@@ -2,8 +2,8 @@
 
 Runtime wakeword data now lives in XDG directories:
 
-- Data: `$XDG_DATA_HOME/effect-pi/openwakeword` (fallback `~/.local/share/effect-pi/openwakeword`)
-- Config: `$XDG_CONFIG_HOME/effect-pi/wakeword` (fallback `~/.config/effect-pi/wakeword`)
+- Data: `$XDG_DATA_HOME/pie/openwakeword` (fallback `~/.local/share/pie/openwakeword`)
+- Config: `$XDG_CONFIG_HOME/pie/wakeword` (fallback `~/.config/pie/wakeword`)
 
 This repository directory is only a bundled bootstrap source for defaults.
 Do not store personal training data or custom wakewords here.

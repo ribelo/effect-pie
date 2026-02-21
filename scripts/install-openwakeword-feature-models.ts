@@ -25,7 +25,7 @@ Usage:
   bun run scripts/install-openwakeword-feature-models.ts \\
     --melspectrogram-sha256 <sha256> \\
     --embedding-sha256 <sha256> \\
-    [--output-dir $XDG_DATA_HOME/effect-pi/openwakeword] \\
+    [--output-dir $XDG_DATA_HOME/pie/openwakeword] \\
     [--melspectrogram-url <url>] \\
     [--embedding-url <url>]
 

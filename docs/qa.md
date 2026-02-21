@@ -14,15 +14,15 @@
 | Decision                | Rationale                                                                   |
 | ----------------------- | --------------------------------------------------------------------------- |
 | Port of PIE (Rust)      | Same feature set -- audio capture, wake word, AI routing, command pipelines |
-| CLI/daemon architecture | Same as original -- `effect-pi daemon`, `effect-pi run <name>`, etc.        |
+| CLI/daemon architecture | Same as original -- `pie daemon`, `pie run <name>`, etc.                    |
 
 ## Wakeword Runtime
 
-| Decision                              | Rationale                                                                                                                        |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| openWakeWord model stack              | Python-free wakeword path in Bun with melspectrogram + embedding models and wakeword scoring (`.onnx` or trained `.json`)        |
-| Runtime pin: `onnxruntime-web@1.22.0` | Keep inference runtime deterministic and Bun-compatible                                                                          |
-| XDG storage layout                    | Runtime data lives under `$XDG_DATA_HOME/effect-pi/openwakeword`, tuning/calibration under `$XDG_CONFIG_HOME/effect-pi/wakeword` |
+| Decision                              | Rationale                                                                                                                 |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| openWakeWord model stack              | Python-free wakeword path in Bun with melspectrogram + embedding models and wakeword scoring (`.onnx` or trained `.json`) |
+| Runtime pin: `onnxruntime-web@1.22.0` | Keep inference runtime deterministic and Bun-compatible                                                                   |
+| XDG storage layout                    | Runtime data lives under `$XDG_DATA_HOME/pie/openwakeword`, tuning/calibration under `$XDG_CONFIG_HOME/pie/wakeword`      |
 
 ## Verification Workflow
 

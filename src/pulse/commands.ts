@@ -86,7 +86,7 @@ export const parseAuthResponse = (payload: Uint8Array): number => {
 };
 
 export const buildSetClientNameCommand = (
-  clientNameOrProps: string | Readonly<Record<string, string>> = "effect-pi",
+  clientNameOrProps: string | Readonly<Record<string, string>> = "pie",
 ): CommandPacket => {
   const props =
     typeof clientNameOrProps === "string"

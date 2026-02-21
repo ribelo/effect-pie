@@ -483,9 +483,9 @@ export const setupGlobalShortcutSession = (config: {
       const bus = await connectSessionBus();
 
       try {
-        const createHandleToken = randomToken("effect_pi_create_req");
-        const sessionHandleToken = randomToken("effect_pi_session");
-        const bindHandleToken = randomToken("effect_pi_bind_req");
+        const createHandleToken = randomToken("pie_create_req");
+        const sessionHandleToken = randomToken("pie_session");
+        const bindHandleToken = randomToken("pie_bind_req");
 
         const pendingCreateResponse = waitForRequestResponseByHandleToken(
           bus,

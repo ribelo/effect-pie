@@ -207,7 +207,7 @@ export class PulseAudioClient extends ServiceMap.Service<
     ) => Effect.Effect<OpenRecordStream, PulseAudioClientError>;
     readonly closeRecordStream: (streamIndex: number) => Effect.Effect<void, PulseAudioClientError>;
   }
->()("effect-pi/pulse/PulseAudioClient") {}
+>()("pie/pulse/PulseAudioClient") {}
 
 const makeConnection = (
   stateRef: Ref.Ref<Connection | null>,
@@ -387,7 +387,7 @@ const make = (defaults: PulseAudioClientConfig) =>
 
         connection.protocolVersion = authVersion;
 
-        const clientName = options?.clientName ?? defaults.clientName ?? "effect-pi";
+        const clientName = options?.clientName ?? defaults.clientName ?? "pie";
         yield* awaitReply(connection, buildSetClientNameCommand(clientName)).pipe(
           Effect.flatMap((payload) =>
             Effect.try({

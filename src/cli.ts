@@ -103,7 +103,7 @@ const optionalBoundedFloatFlag = (name: string, description: string, min: number
 
 const optionalSourceFlag = Flag.string("source").pipe(
   Flag.optional,
-  Flag.withDescription("PulseAudio source name (run `effect-pi sources` to list)"),
+  Flag.withDescription("PulseAudio source name (run `pie sources` to list)"),
 );
 
 const concatChunks = (chunks: ReadonlyArray<Uint8Array>): Uint8Array => {
@@ -1505,7 +1505,7 @@ const pttPortalCommand = Command.make(
     ),
     description: Flag.string("description").pipe(
       Flag.withDescription("Shortcut description shown by desktop portal"),
-      Flag.withDefault("effect-pi push-to-talk"),
+      Flag.withDefault("pie push-to-talk"),
     ),
     parentWindow: Flag.string("parent-window").pipe(
       Flag.withDescription("Parent window id (leave empty for headless CLI)"),
@@ -1915,7 +1915,7 @@ const pttTranscribeCommand = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Push-to-talk transcription via OpenRouter (model configured in $XDG_CONFIG_HOME/effect-pi/stt.json)",
+    "Push-to-talk transcription via OpenRouter (model configured in $XDG_CONFIG_HOME/pie/stt.json)",
   ),
 );
 
@@ -2017,7 +2017,7 @@ const pttTranslateCommand = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Push-to-talk transcription + translation via OpenRouter (model configured in $XDG_CONFIG_HOME/effect-pi/stt.json)",
+    "Push-to-talk transcription + translation via OpenRouter (model configured in $XDG_CONFIG_HOME/pie/stt.json)",
   ),
 );
 
@@ -3032,7 +3032,7 @@ const wakewordCommand = Command.make(
     ),
     noAutoTune: Flag.boolean("no-auto-tune").pipe(
       Flag.withDescription(
-        "Disable loading saved tuning from $XDG_CONFIG_HOME/effect-pi/wakeword/<model>/detection-tuning.json",
+        "Disable loading saved tuning from $XDG_CONFIG_HOME/pie/wakeword/<model>/detection-tuning.json",
       ),
     ),
     scoreEvery: positiveIntegerFlag(
@@ -3507,7 +3507,7 @@ const wakewordTrainCommand = Command.make(
     assetRoot: Flag.string("asset-root").pipe(
       Flag.optional,
       Flag.withDescription(
-        "Root openWakeWord asset directory (default: $XDG_DATA_HOME/effect-pi/openwakeword)",
+        "Root openWakeWord asset directory (default: $XDG_DATA_HOME/pie/openwakeword)",
       ),
     ),
     datasetRoot: Flag.string("dataset-root").pipe(
@@ -3520,7 +3520,7 @@ const wakewordTrainCommand = Command.make(
     ),
     register: Flag.boolean("register").pipe(
       Flag.withDescription(
-        "Add generated model filename to $XDG_DATA_HOME/effect-pi/openwakeword/manifest.json",
+        "Add generated model filename to $XDG_DATA_HOME/pie/openwakeword/manifest.json",
       ),
     ),
   },
@@ -3842,10 +3842,8 @@ const wakewordTrainCommand = Command.make(
   ),
 );
 
-const rootCommand = Command.make("effect-pi", {}, () => runAssistantDefaultCommand).pipe(
-  Command.withDescription(
-    "effect-pi command line (no args runs combined wakeword + PTT assistant mode)",
-  ),
+const rootCommand = Command.make("pie", {}, () => runAssistantDefaultCommand).pipe(
+  Command.withDescription("pie command line (no args runs combined wakeword + PTT assistant mode)"),
   Command.withSubcommands([
     recordCommand,
     sourcesCommand,

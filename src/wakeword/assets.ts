@@ -44,7 +44,7 @@ const ensureReadableFile = (filePath: string): Effect.Effect<void, WakewordAsset
       }),
   });
 
-const FEATURE_PLACEHOLDER_MARKER = "effect-pi placeholder feature model file";
+const FEATURE_PLACEHOLDER_MARKER = "pie placeholder feature model file";
 const MIN_FEATURE_MODEL_BYTES = 4_096;
 
 const ensureRealFeatureOnnxFile = (

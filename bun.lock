@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "effect-pi",
+      "name": "pie",
       "dependencies": {
         "@effect/ai-anthropic": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-anthropic@fe2cab2",
         "@effect/ai-openai": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-openai@fe2cab2",

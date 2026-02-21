@@ -26,26 +26,26 @@ Validate two pieces independently before STT wiring:
 Register and monitor PTT shortcut events:
 
 ```bash
-bun run cli -- ptt-portal --shortcut "<Ctrl><Super>space" --id push_to_talk --description "effect-pi push-to-talk"
+bun run cli -- ptt-portal --shortcut "<Ctrl><Super>space" --id push_to_talk --description "pie push-to-talk"
 ```
 
 Type text into the currently focused field (backend auto-detected):
 
 ```bash
-bun run cli -- type --text "hello from effect-pi"
+bun run cli -- type --text "hello from pie"
 ```
 
 Wayland injection mode (optional):
 
 ```bash
 # Default: auto (direct wtype, clipboard only for quote-heavy text)
-EFFECT_PI_WAYLAND_INJECTION_MODE=auto bun run cli -- type --text "don't break apostrophes"
+PIE_WAYLAND_INJECTION_MODE=auto bun run cli -- type --text "don't break apostrophes"
 
 # Force clipboard for all text
-EFFECT_PI_WAYLAND_INJECTION_MODE=clipboard bun run cli -- type --text "hello"
+PIE_WAYLAND_INJECTION_MODE=clipboard bun run cli -- type --text "hello"
 
 # Force direct wtype key typing
-EFFECT_PI_WAYLAND_INJECTION_MODE=direct bun run cli -- type --text "hello"
+PIE_WAYLAND_INJECTION_MODE=direct bun run cli -- type --text "hello"
 ```
 
 ## Manual Validation

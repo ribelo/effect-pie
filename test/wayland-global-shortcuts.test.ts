@@ -32,7 +32,7 @@ test("buildBindShortcutsArgs serializes shortcut payload", () => {
       sessionHandle: "/org/freedesktop/portal/desktop/session/1_20/example_session",
       shortcut: {
         id: "push_to_talk",
-        description: "effect-pi push-to-talk",
+        description: "pie push-to-talk",
         preferredTrigger: "<Ctrl><Super>space",
       },
       parentWindow: "",
@@ -44,7 +44,7 @@ test("buildBindShortcutsArgs serializes shortcut payload", () => {
     "2",
     "description",
     "s",
-    "effect-pi push-to-talk",
+    "pie push-to-talk",
     "preferred_trigger",
     "s",
     "<Ctrl><Super>space",
@@ -56,10 +56,10 @@ test("buildBindShortcutsArgs serializes shortcut payload", () => {
 test("deriveSessionHandleFromRequestHandle builds expected session path", () => {
   expect(
     deriveSessionHandleFromRequestHandle(
-      "/org/freedesktop/portal/desktop/request/1_42/effect_pi_req_abc123",
-      "effect_pi_session_xyz999",
+      "/org/freedesktop/portal/desktop/request/1_42/pie_req_abc123",
+      "pie_session_xyz999",
     ),
-  ).toBe("/org/freedesktop/portal/desktop/session/1_42/effect_pi_session_xyz999");
+  ).toBe("/org/freedesktop/portal/desktop/session/1_42/pie_session_xyz999");
 
   expect(deriveSessionHandleFromRequestHandle("/invalid/path", "session")).toBeUndefined();
 });
@@ -67,9 +67,9 @@ test("deriveSessionHandleFromRequestHandle builds expected session path", () => 
 test("parseObjectPathFromBusctlCallOutput extracts object path", () => {
   expect(
     parseObjectPathFromBusctlCallOutput(
-      'o "/org/freedesktop/portal/desktop/request/1_42/effect_pi_req_abc123"',
+      'o "/org/freedesktop/portal/desktop/request/1_42/pie_req_abc123"',
     ),
-  ).toBe("/org/freedesktop/portal/desktop/request/1_42/effect_pi_req_abc123");
+  ).toBe("/org/freedesktop/portal/desktop/request/1_42/pie_req_abc123");
 
   expect(parseObjectPathFromBusctlCallOutput("unexpected output")).toBeUndefined();
 });

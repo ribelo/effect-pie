@@ -14,7 +14,7 @@ describe("wakeword training workflow", () => {
   test("builds normalized training plan", () => {
     const plan = makeWakewordTrainingPlan({
       name: "Hey Jarvis.onnx",
-      assetRootDir: "/tmp/effect-pi-openwakeword",
+      assetRootDir: "/tmp/pie-openwakeword",
     });
 
     expect(plan.modelName).toBe("hey_jarvis");
@@ -23,7 +23,7 @@ describe("wakeword training workflow", () => {
   });
 
   test("creates workspace directories and readme", async () => {
-    const assetRoot = await fs.mkdtemp(path.join(tmpdir(), "effect-pi-train-"));
+    const assetRoot = await fs.mkdtemp(path.join(tmpdir(), "pie-train-"));
     const plan = makeWakewordTrainingPlan({
       name: "custom-word",
       assetRootDir: assetRoot,
@@ -43,7 +43,7 @@ describe("wakeword training workflow", () => {
   });
 
   test("registers model once in manifest", async () => {
-    const assetRoot = await fs.mkdtemp(path.join(tmpdir(), "effect-pi-manifest-"));
+    const assetRoot = await fs.mkdtemp(path.join(tmpdir(), "pie-manifest-"));
     const manifestPath = path.join(assetRoot, "manifest.json");
 
     await fs.writeFile(

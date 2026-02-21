@@ -16,7 +16,7 @@ const writeModelFile = async (filePath: string): Promise<void> => {
 };
 
 const createValidAssetTree = async (): Promise<string> => {
-  const rootDir = await fs.mkdtemp(path.join(tmpdir(), "effect-pi-wakeword-assets-"));
+  const rootDir = await fs.mkdtemp(path.join(tmpdir(), "pie-wakeword-assets-"));
 
   await fs.writeFile(
     path.join(rootDir, "manifest.json"),
@@ -78,7 +78,7 @@ describe("wakeword assets", () => {
     const rootDir = await createValidAssetTree();
     await fs.writeFile(
       path.join(rootDir, "melspectrogram.onnx"),
-      "effect-pi placeholder feature model file",
+      "pie placeholder feature model file",
       "utf8",
     );
 

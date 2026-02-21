@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { loadSttRuntimeConfig } from "../src/stt/config.js";
 
 test("loadSttRuntimeConfig creates defaults when file is missing", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "effect-pi-stt-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "pie-stt-"));
   const configPath = path.join(tempDir, "stt.json");
 
   const config = await Effect.runPromise(loadSttRuntimeConfig(configPath));
@@ -27,7 +27,7 @@ test("loadSttRuntimeConfig creates defaults when file is missing", async () => {
 });
 
 test("loadSttRuntimeConfig loads custom model and language configuration", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "effect-pi-stt-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "pie-stt-"));
   const configPath = path.join(tempDir, "stt.json");
 
   await writeFile(
@@ -65,7 +65,7 @@ test("loadSttRuntimeConfig loads custom model and language configuration", async
 });
 
 test("loadSttRuntimeConfig migrates language-only config with dictation defaults", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "effect-pi-stt-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "pie-stt-"));
   const configPath = path.join(tempDir, "stt.json");
 
   await writeFile(
@@ -98,7 +98,7 @@ test("loadSttRuntimeConfig migrates language-only config with dictation defaults
 });
 
 test("loadSttRuntimeConfig migrates legacy defaultTargetLanguage config", async () => {
-  const tempDir = await mkdtemp(path.join(tmpdir(), "effect-pi-stt-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "pie-stt-"));
   const configPath = path.join(tempDir, "stt.json");
 
   await writeFile(

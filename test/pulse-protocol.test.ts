@@ -51,7 +51,7 @@ describe("pulse protocol", () => {
     writer.addArbitrary(new Uint8Array([9, 8, 7]));
     writer.addSampleSpec({ format: PA_SAMPLE_FORMAT.S16LE, channels: 1, rate: 16_000 });
     writer.addChannelMap([1]);
-    writer.addProps({ "application.name": "effect-pi", "media.role": "production" });
+    writer.addProps({ "application.name": "pie", "media.role": "production" });
     writer.addCvolume([PA_VOLUME_NORM]);
 
     const reader = new TagStructReader(writer.finalize());
@@ -71,7 +71,7 @@ describe("pulse protocol", () => {
     });
     expect(reader.getChannelMap()).toEqual([1]);
     expect(reader.getProps()).toEqual({
-      "application.name": "effect-pi",
+      "application.name": "pie",
       "media.role": "production",
     });
     expect(reader.getCvolume()).toEqual([PA_VOLUME_NORM]);
