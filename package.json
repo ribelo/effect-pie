@@ -1,6 +1,9 @@
 {
   "name": "pie",
   "private": true,
+  "bin": {
+    "pie": "./bin/pie"
+  },
   "type": "module",
   "scripts": {
     "prepare": "effect-language-service patch",
