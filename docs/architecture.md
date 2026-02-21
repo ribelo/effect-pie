@@ -47,6 +47,7 @@ effect-pi/
 - `effect-pi sources` lists available PulseAudio capture sources.
 - `effect-pi meter` prints live RMS / peak levels for input verification and threshold tuning.
 - `effect-pi` (no subcommand) runs combined assistant mode: wakeword (`ok_pie`) transcription + PTT transcription + PTT translation.
+- Combined assistant mode writes runtime recording state to `$XDG_RUNTIME_DIR/effect-pi/recording.json` with `active`, `mode`, `startedAt`, and `updatedAt` for external status widgets (for example Quickshell).
 - `effect-pi ptt-portal` registers a GlobalShortcuts portal binding and prints activation/deactivation monitor events.
 - `effect-pi ptt-transcribe` records push-to-talk audio and transcribes with OpenRouter (model from `$XDG_CONFIG_HOME/effect-pi/stt.json`).
 - `effect-pi ptt-translate` records push-to-talk audio and performs single-pass transcription+translation with OpenRouter (model from `$XDG_CONFIG_HOME/effect-pi/stt.json`).

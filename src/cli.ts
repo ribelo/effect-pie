@@ -28,7 +28,11 @@ import {
   WakewordTrainingError,
   writePcmWavFile,
 } from "./wakeword/training.js";
-import { EFFECT_PI_DATA_DIR, EFFECT_PI_WAKEWORD_CONFIG_DIR } from "./paths.js";
+import {
+  EFFECT_PI_DATA_DIR,
+  EFFECT_PI_RUNTIME_DIR,
+  EFFECT_PI_WAKEWORD_CONFIG_DIR,
+} from "./paths.js";
 import { layer as pulseLayer, PulseAudioClient } from "./pulse/client.js";
 import { PA_SAMPLE_FORMAT, type SourceInfo } from "./pulse/defs.js";
 import { createRecordStream } from "./pulse/stream.js";
@@ -2172,6 +2176,90 @@ const DEFAULT_ASSISTANT_SAMPLE_RATE = 16_000;
 const DEFAULT_ASSISTANT_WAKEWORD_FRAGMENT_SIZE = 1024;
 const DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE = 4096;
 const DEFAULT_ASSISTANT_MIN_DURATION_MS = 120;
+const ASSISTANT_RECORDING_STATE_PATH = path.join(EFFECT_PI_RUNTIME_DIR, "recording.json");
+
+type AssistantRecordingMode = "ptt-transcribe" | "ptt-translate" | "wakeword";
+
+type AssistantRecordingState = {
+  readonly active: boolean;
+  readonly mode: AssistantRecordingMode | "idle";
+  readonly startedAt: string | null;
+  readonly updatedAt: string;
+};
+
+type AssistantRecordingRuntimeState = {
+  readonly mode: AssistantRecordingMode | undefined;
+  readonly startedAtMs: number | undefined;
+};
+
+const persistAssistantRecordingState = (
+  state: AssistantRecordingState,
+): Effect.Effect<void, CliError> =>
+  Effect.tryPromise({
+    try: async () => {
+      await mkdirNode(path.dirname(ASSISTANT_RECORDING_STATE_PATH), { recursive: true });
+      await writeNodeFile(
+        ASSISTANT_RECORDING_STATE_PATH,
+        `${JSON.stringify(state, null, 2)}\n`,
+        "utf8",
+      );
+    },
+    catch: (cause) =>
+      new CliError({
+        message: `Failed to write assistant recording state at ${ASSISTANT_RECORDING_STATE_PATH}`,
+        cause,
+      }),
+  });
+
+const setAssistantRecordingMode = (config: {
+  readonly ref: Ref.Ref<AssistantRecordingRuntimeState>;
+  readonly mode: AssistantRecordingMode | undefined;
+}): Effect.Effect<void, never> =>
+  Effect.gen(function* () {
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+
+    const state = yield* Ref.modify(config.ref, (current) => {
+      if (config.mode === undefined) {
+        const nextState: AssistantRecordingState = {
+          active: false,
+          mode: "idle",
+          startedAt: null,
+          updatedAt: nowIso,
+        };
+
+        const nextRuntime: AssistantRecordingRuntimeState = {
+          mode: undefined,
+          startedAtMs: undefined,
+        };
+
+        return [nextState, nextRuntime] as const;
+      }
+
+      const startedAtMs =
+        current.mode === config.mode && current.startedAtMs !== undefined
+          ? current.startedAtMs
+          : nowMs;
+
+      const nextState: AssistantRecordingState = {
+        active: true,
+        mode: config.mode,
+        startedAt: new Date(startedAtMs).toISOString(),
+        updatedAt: nowIso,
+      };
+
+      const nextRuntime: AssistantRecordingRuntimeState = {
+        mode: config.mode,
+        startedAtMs,
+      };
+
+      return [nextState, nextRuntime] as const;
+    });
+
+    yield* persistAssistantRecordingState(state).pipe(
+      Effect.catch((cause: CliError) => Console.log(`[assistant] ${cause.message}`)),
+    );
+  });
 
 const normalizeWakewordModelName = (modelName: string): string =>
   modelName.endsWith(".json") ? modelName.slice(0, -".json".length) : modelName;
@@ -2214,6 +2302,9 @@ const runAssistantWakewordTranscribeLoop = (config: {
   readonly sourceName: string;
   readonly sttConfig: SttRuntimeConfig;
   readonly pttActiveRef: Ref.Ref<boolean>;
+  readonly setRecordingMode: (
+    mode: AssistantRecordingMode | undefined,
+  ) => Effect.Effect<void, never>;
 }): Effect.Effect<void, CliError, PulseAudioClient> =>
   Effect.gen(function* () {
     const assets = yield* validateWakewordAssets({
@@ -2327,6 +2418,8 @@ const runAssistantWakewordTranscribeLoop = (config: {
               `[wakeword-transcribe] Trigger detected (${selectedModelName}). Dictation capture started (silence=${dictationSilenceSeconds}s, max=${dictationMaxSeconds}s, speech_rms=${dictationSpeechRmsThreshold.toFixed(4)})...`,
             );
 
+            yield* config.setRecordingMode("wakeword");
+
             const pcmBytes = yield* recordPcmUntilTrailingSilence({
               silenceSeconds: dictationSilenceSeconds,
               maxSeconds: dictationMaxSeconds,
@@ -2343,6 +2436,7 @@ const runAssistantWakewordTranscribeLoop = (config: {
                     cause,
                   }),
               ),
+              Effect.ensuring(config.setRecordingMode(undefined)),
             );
 
             const transcript = yield* transcribePcmWithOpenRouter({
@@ -2414,6 +2508,9 @@ const runAssistantPttCombinedLoop = (config: {
   readonly sourceName: string;
   readonly sttConfig: SttRuntimeConfig;
   readonly pttActiveRef: Ref.Ref<boolean>;
+  readonly setRecordingMode: (
+    mode: AssistantRecordingMode | undefined,
+  ) => Effect.Effect<void, never>;
 }): Effect.Effect<never, PttKeyboardError, PulseAudioClient> =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -2467,7 +2564,11 @@ const runAssistantPttCombinedLoop = (config: {
       const captureChunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([]);
       const captureStartedAtRef = yield* Ref.make<number | undefined>(undefined);
 
-      yield* Effect.addFinalizer(() => Ref.set(config.pttActiveRef, false));
+      yield* Effect.addFinalizer(() =>
+        Effect.all([Ref.set(config.pttActiveRef, false), config.setRecordingMode(undefined)], {
+          discard: true,
+        }),
+      );
 
       const recordFiber = yield* createRecordStream({
         sampleSpec: {
@@ -2514,6 +2615,8 @@ const runAssistantPttCombinedLoop = (config: {
 
         const modePrefix =
           mode === "transcribe" ? "assistant-ptt-transcribe" : "assistant-ptt-translate";
+        const recordingMode: AssistantRecordingMode =
+          mode === "transcribe" ? "ptt-transcribe" : "ptt-translate";
 
         if (!event.released) {
           const alreadyActive = yield* Ref.get(captureActiveRef);
@@ -2526,6 +2629,7 @@ const runAssistantPttCombinedLoop = (config: {
           yield* Ref.set(captureModeRef, mode);
           yield* Ref.set(captureActiveRef, true);
           yield* Ref.set(config.pttActiveRef, true);
+          yield* config.setRecordingMode(recordingMode);
           yield* Console.log(`[${modePrefix}] Capturing... release key to stop`);
           continue;
         }
@@ -2542,6 +2646,7 @@ const runAssistantPttCombinedLoop = (config: {
 
         yield* Ref.set(captureActiveRef, false);
         yield* Ref.set(captureModeRef, undefined);
+        yield* config.setRecordingMode(undefined);
 
         const startedAt = yield* Ref.get(captureStartedAtRef);
         yield* Ref.set(captureStartedAtRef, undefined);
@@ -2680,17 +2785,29 @@ const runAssistantDefaultCommand = Effect.gen(function* () {
   yield* Console.log("[assistant] Press Ctrl+C to stop all listeners");
 
   const pttActiveRef = yield* Ref.make(false);
+  const recordingStateRef = yield* Ref.make<AssistantRecordingRuntimeState>({
+    mode: undefined,
+    startedAtMs: undefined,
+  });
+  const setRecordingMode = (mode: AssistantRecordingMode | undefined) =>
+    setAssistantRecordingMode({
+      ref: recordingStateRef,
+      mode,
+    });
+
+  yield* setRecordingMode(undefined);
+  yield* Console.log(`[assistant] Recording state file: ${ASSISTANT_RECORDING_STATE_PATH}`);
 
   return yield* Effect.all(
     [
-      runAssistantWakewordTranscribeLoop({ sourceName, sttConfig, pttActiveRef }),
-      runAssistantPttCombinedLoop({ sourceName, sttConfig, pttActiveRef }),
+      runAssistantWakewordTranscribeLoop({ sourceName, sttConfig, pttActiveRef, setRecordingMode }),
+      runAssistantPttCombinedLoop({ sourceName, sttConfig, pttActiveRef, setRecordingMode }),
     ],
     {
       concurrency: "unbounded",
       discard: true,
     },
-  );
+  ).pipe(Effect.ensuring(setRecordingMode(undefined)));
 });
 
 const typeCommand = Command.make(
