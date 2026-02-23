@@ -1,43 +1,48 @@
-import { expect, test } from "bun:test";
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
 
 import { detectDesktopSessionType } from "../src/desktop/session.ts";
 
 test("detectDesktopSessionType prefers XDG_SESSION_TYPE when wayland", () => {
-  expect(
+  assert.strictEqual(
     detectDesktopSessionType({
       XDG_SESSION_TYPE: "wayland",
       DISPLAY: ":0",
       WAYLAND_DISPLAY: "wayland-1",
     }),
-  ).toBe("wayland");
+    "wayland",
+  );
 });
 
 test("detectDesktopSessionType prefers XDG_SESSION_TYPE when x11", () => {
-  expect(
+  assert.strictEqual(
     detectDesktopSessionType({
       XDG_SESSION_TYPE: "x11",
       DISPLAY: ":0",
       WAYLAND_DISPLAY: "wayland-1",
     }),
-  ).toBe("x11");
+    "x11",
+  );
 });
 
 test("detectDesktopSessionType falls back to WAYLAND_DISPLAY", () => {
-  expect(
+  assert.strictEqual(
     detectDesktopSessionType({
       WAYLAND_DISPLAY: "wayland-1",
     }),
-  ).toBe("wayland");
+    "wayland",
+  );
 });
 
 test("detectDesktopSessionType falls back to DISPLAY", () => {
-  expect(
+  assert.strictEqual(
     detectDesktopSessionType({
       DISPLAY: ":0",
     }),
-  ).toBe("x11");
+    "x11",
+  );
 });
 
 test("detectDesktopSessionType returns unknown when no session hints exist", () => {
-  expect(detectDesktopSessionType({})).toBe("unknown");
+  assert.strictEqual(detectDesktopSessionType({}), "unknown");
 });

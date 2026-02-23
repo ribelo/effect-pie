@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Ref from "effect/Ref";
@@ -18,7 +19,7 @@ const hasPulseSocket = async (): Promise<boolean> => {
   }
 };
 
-test("connects to PulseAudio and records audio", async () => {
+test("connects to PulseAudio and records audio", { timeout: 30_000 }, async () => {
   if (!(await hasPulseSocket())) {
     return;
   }
@@ -29,10 +30,10 @@ test("connects to PulseAudio and records audio", async () => {
     yield* client.connect();
 
     const serverInfo = yield* client.getServerInfo;
-    expect(serverInfo.name.length).toBeGreaterThan(0);
+    assert.ok(serverInfo.name.length > 0);
 
     const sources = yield* client.listSources;
-    expect(sources.length).toBeGreaterThan(0);
+    assert.ok(sources.length > 0);
 
     const byteCountRef = yield* Ref.make(0);
 
@@ -45,7 +46,7 @@ test("connects to PulseAudio and records audio", async () => {
     yield* Fiber.interrupt(recorderFiber);
 
     const byteCount = yield* Ref.get(byteCountRef);
-    expect(byteCount).toBeGreaterThan(0);
+    assert.ok(byteCount > 0);
 
     yield* client.disconnect;
   }).pipe(
@@ -57,4 +58,4 @@ test("connects to PulseAudio and records audio", async () => {
   );
 
   await Effect.runPromise(program);
-}, 30_000);
+});

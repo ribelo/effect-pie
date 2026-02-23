@@ -1,6 +1,7 @@
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import { promises as fs } from "node:fs";
+import { createRequire } from "node:module";
 import * as path from "node:path";
 
 import { BUNDLED_OPENWAKEWORD_ASSET_DIR, EFFECT_PI_OPENWAKEWORD_DATA_DIR } from "../paths.js";
@@ -25,6 +26,7 @@ export type WakewordAssetOptions = {
 };
 
 const defaultRootDir = EFFECT_PI_OPENWAKEWORD_DATA_DIR;
+const requireFromModule = createRequire(import.meta.url);
 
 const ensureReadableFile = (filePath: string): Effect.Effect<void, WakewordAssetError> =>
   Effect.tryPromise({
@@ -39,7 +41,7 @@ const ensureReadableFile = (filePath: string): Effect.Effect<void, WakewordAsset
     },
     catch: (cause) =>
       new WakewordAssetError({
-        message: `Missing or invalid model asset: ${filePath}. Install required feature models with 'bun run wakeword:install-feature-models --melspectrogram-sha256 <sha256> --embedding-sha256 <sha256>'.`,
+        message: `Missing or invalid model asset: ${filePath}. Install required feature models with 'npm run wakeword:install-feature-models --melspectrogram-sha256 <sha256> --embedding-sha256 <sha256>'.`,
         cause,
       }),
   });
@@ -148,12 +150,7 @@ const validateRuntimePin = (
         });
       }
 
-      const packageJsonPath = path.join(
-        process.cwd(),
-        "node_modules",
-        runtimePackage,
-        "package.json",
-      );
+      const packageJsonPath = requireFromModule.resolve(`${runtimePackage}/package.json`);
       const raw = await fs.readFile(packageJsonPath, "utf8");
       const pkg = JSON.parse(raw) as { readonly version?: string };
 
@@ -165,7 +162,7 @@ const validateRuntimePin = (
     },
     catch: (cause) =>
       new WakewordAssetError({
-        message: `Wakeword runtime validation failed. Install ${runtimePackage}@${runtimeVersion} with bun before starting wakeword detection.`,
+        message: `Wakeword runtime validation failed. Install ${runtimePackage}@${runtimeVersion} with npm before starting wakeword detection.`,
         cause,
       }),
   });

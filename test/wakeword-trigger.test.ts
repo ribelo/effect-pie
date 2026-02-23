@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, test } from "node:test";
+import * as assert from "node:assert/strict";
 
 import { createWakewordTriggerMachine } from "../src/wakeword/trigger.ts";
 
@@ -18,8 +19,8 @@ describe("wakeword trigger machine", () => {
       machine.processFrame({ timestampMs: 300, sampleIndex: 3_840, scores: { jarvis: 0.9 } }),
     ].flat();
 
-    expect(events.length).toBe(1);
-    expect(events[0]?.model).toBe("jarvis");
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0]?.model, "jarvis");
   });
 
   test("respects cooldown to prevent rapid duplicate triggers", () => {
@@ -48,8 +49,8 @@ describe("wakeword trigger machine", () => {
       scores: { jarvis: 0.93 },
     });
 
-    expect(first.length).toBe(1);
-    expect(suppressed.length).toBe(0);
-    expect(second.length).toBe(1);
+    assert.strictEqual(first.length, 1);
+    assert.strictEqual(suppressed.length, 0);
+    assert.strictEqual(second.length, 1);
   });
 });

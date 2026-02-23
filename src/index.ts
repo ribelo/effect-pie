@@ -1,6 +1,6 @@
-import { BunRuntime } from "@effect/platform-bun";
+import { NodeRuntime } from "@effect/platform-node";
 import { Effect } from "effect";
 
 const main = Effect.log("pie");
 
-main.pipe(BunRuntime.runMain);
+main.pipe(NodeRuntime.runMain);

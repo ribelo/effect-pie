@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
 import { Effect } from "effect";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,18 +13,18 @@ test("loadSttRuntimeConfig creates defaults when file is missing", async () => {
 
   const config = await Effect.runPromise(loadSttRuntimeConfig(configPath));
 
-  expect(config.openrouter.transcriptionModel).toBe("mistralai/voxtral-small-24b-2507");
-  expect(config.openrouter.translationModel).toBe("google/gemini-3-flash-preview");
-  expect(config.openrouter.transcriptionLanguage).toBe("English");
-  expect(config.openrouter.translationSourceLanguage).toBe("English");
-  expect(config.openrouter.translationTargetLanguage).toBe("English");
-  expect(config.openrouter.wakewordDictationSilenceSeconds).toBe(3);
-  expect(config.openrouter.wakewordDictationMaxSeconds).toBe(45);
-  expect(config.openrouter.wakewordDictationSpeechRmsThreshold).toBe(0.01);
+  assert.strictEqual(config.openrouter.transcriptionModel, "mistralai/voxtral-small-24b-2507");
+  assert.strictEqual(config.openrouter.translationModel, "google/gemini-3-flash-preview");
+  assert.strictEqual(config.openrouter.transcriptionLanguage, "English");
+  assert.strictEqual(config.openrouter.translationSourceLanguage, "English");
+  assert.strictEqual(config.openrouter.translationTargetLanguage, "English");
+  assert.strictEqual(config.openrouter.wakewordDictationSilenceSeconds, 3);
+  assert.strictEqual(config.openrouter.wakewordDictationMaxSeconds, 45);
+  assert.strictEqual(config.openrouter.wakewordDictationSpeechRmsThreshold, 0.01);
 
   const raw = await readFile(configPath, "utf8");
-  expect(raw).toContain("mistralai/voxtral-small-24b-2507");
-  expect(raw).toContain("google/gemini-3-flash-preview");
+  assert.ok(raw.includes("mistralai/voxtral-small-24b-2507"));
+  assert.ok(raw.includes("google/gemini-3-flash-preview"));
 });
 
 test("loadSttRuntimeConfig loads custom model and language configuration", async () => {
@@ -54,14 +55,14 @@ test("loadSttRuntimeConfig loads custom model and language configuration", async
 
   const config = await Effect.runPromise(loadSttRuntimeConfig(configPath));
 
-  expect(config.openrouter.transcriptionModel).toBe("mistralai/voxtral-mini-3b-2507");
-  expect(config.openrouter.translationModel).toBe("google/gemini-2.5-flash");
-  expect(config.openrouter.transcriptionLanguage).toBe("Polish");
-  expect(config.openrouter.translationSourceLanguage).toBe("Polish");
-  expect(config.openrouter.translationTargetLanguage).toBe("English");
-  expect(config.openrouter.wakewordDictationSilenceSeconds).toBe(2);
-  expect(config.openrouter.wakewordDictationMaxSeconds).toBe(60);
-  expect(config.openrouter.wakewordDictationSpeechRmsThreshold).toBe(0.02);
+  assert.strictEqual(config.openrouter.transcriptionModel, "mistralai/voxtral-mini-3b-2507");
+  assert.strictEqual(config.openrouter.translationModel, "google/gemini-2.5-flash");
+  assert.strictEqual(config.openrouter.transcriptionLanguage, "Polish");
+  assert.strictEqual(config.openrouter.translationSourceLanguage, "Polish");
+  assert.strictEqual(config.openrouter.translationTargetLanguage, "English");
+  assert.strictEqual(config.openrouter.wakewordDictationSilenceSeconds, 2);
+  assert.strictEqual(config.openrouter.wakewordDictationMaxSeconds, 60);
+  assert.strictEqual(config.openrouter.wakewordDictationSpeechRmsThreshold, 0.02);
 });
 
 test("loadSttRuntimeConfig migrates language-only config with dictation defaults", async () => {
@@ -89,12 +90,12 @@ test("loadSttRuntimeConfig migrates language-only config with dictation defaults
 
   const config = await Effect.runPromise(loadSttRuntimeConfig(configPath));
 
-  expect(config.openrouter.transcriptionLanguage).toBe("Polish");
-  expect(config.openrouter.translationSourceLanguage).toBe("Polish");
-  expect(config.openrouter.translationTargetLanguage).toBe("English");
-  expect(config.openrouter.wakewordDictationSilenceSeconds).toBe(3);
-  expect(config.openrouter.wakewordDictationMaxSeconds).toBe(45);
-  expect(config.openrouter.wakewordDictationSpeechRmsThreshold).toBe(0.01);
+  assert.strictEqual(config.openrouter.transcriptionLanguage, "Polish");
+  assert.strictEqual(config.openrouter.translationSourceLanguage, "Polish");
+  assert.strictEqual(config.openrouter.translationTargetLanguage, "English");
+  assert.strictEqual(config.openrouter.wakewordDictationSilenceSeconds, 3);
+  assert.strictEqual(config.openrouter.wakewordDictationMaxSeconds, 45);
+  assert.strictEqual(config.openrouter.wakewordDictationSpeechRmsThreshold, 0.01);
 });
 
 test("loadSttRuntimeConfig migrates legacy defaultTargetLanguage config", async () => {
@@ -120,14 +121,14 @@ test("loadSttRuntimeConfig migrates legacy defaultTargetLanguage config", async 
 
   const config = await Effect.runPromise(loadSttRuntimeConfig(configPath));
 
-  expect(config.openrouter.transcriptionLanguage).toBe("English");
-  expect(config.openrouter.translationSourceLanguage).toBe("English");
-  expect(config.openrouter.translationTargetLanguage).toBe("Polish");
-  expect(config.openrouter.wakewordDictationSilenceSeconds).toBe(3);
-  expect(config.openrouter.wakewordDictationMaxSeconds).toBe(45);
-  expect(config.openrouter.wakewordDictationSpeechRmsThreshold).toBe(0.01);
+  assert.strictEqual(config.openrouter.transcriptionLanguage, "English");
+  assert.strictEqual(config.openrouter.translationSourceLanguage, "English");
+  assert.strictEqual(config.openrouter.translationTargetLanguage, "Polish");
+  assert.strictEqual(config.openrouter.wakewordDictationSilenceSeconds, 3);
+  assert.strictEqual(config.openrouter.wakewordDictationMaxSeconds, 45);
+  assert.strictEqual(config.openrouter.wakewordDictationSpeechRmsThreshold, 0.01);
 
   const migratedRaw = await readFile(configPath, "utf8");
-  expect(migratedRaw).toContain("translationTargetLanguage");
-  expect(migratedRaw).not.toContain("defaultTargetLanguage");
+  assert.ok(migratedRaw.includes("translationTargetLanguage"));
+  assert.ok(!migratedRaw.includes("defaultTargetLanguage"));
 });

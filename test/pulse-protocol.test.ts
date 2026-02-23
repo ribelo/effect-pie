@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, test } from "node:test";
+import * as assert from "node:assert/strict";
 
 import {
   buildAuthCommand,
@@ -32,10 +33,10 @@ describe("pulse protocol", () => {
 
     const split = splitFramedPacket(packet);
 
-    expect(split.header.length).toBe(4);
-    expect(split.header.channel).toBe(77);
-    expect(split.header.flags).toBe(9);
-    expect(Array.from(split.payload)).toEqual([1, 2, 3, 4]);
+    assert.strictEqual(split.header.length, 4);
+    assert.strictEqual(split.header.channel, 77);
+    assert.strictEqual(split.header.flags, 9);
+    assert.deepStrictEqual(Array.from(split.payload), [1, 2, 3, 4]);
   });
 
   test("round-trips tag struct primitive and complex tags", () => {
@@ -56,26 +57,26 @@ describe("pulse protocol", () => {
 
     const reader = new TagStructReader(writer.finalize());
 
-    expect(reader.getUInt8()).toBe(7);
-    expect(reader.getUInt32()).toBe(42);
-    expect(reader.getUInt64()).toBe(123n);
-    expect(reader.getString()).toBe("hello");
-    expect(reader.getString()).toBeNull();
-    expect(reader.getBool()).toBeTrue();
-    expect(reader.getBool()).toBeFalse();
-    expect(Array.from(reader.getArbitrary())).toEqual([9, 8, 7]);
-    expect(reader.getSampleSpec()).toEqual({
+    assert.strictEqual(reader.getUInt8(), 7);
+    assert.strictEqual(reader.getUInt32(), 42);
+    assert.strictEqual(reader.getUInt64(), 123n);
+    assert.strictEqual(reader.getString(), "hello");
+    assert.strictEqual(reader.getString(), null);
+    assert.strictEqual(reader.getBool(), true);
+    assert.strictEqual(reader.getBool(), false);
+    assert.deepStrictEqual(Array.from(reader.getArbitrary()), [9, 8, 7]);
+    assert.deepStrictEqual(reader.getSampleSpec(), {
       format: PA_SAMPLE_FORMAT.S16LE,
       channels: 1,
       rate: 16_000,
     });
-    expect(reader.getChannelMap()).toEqual([1]);
-    expect(reader.getProps()).toEqual({
+    assert.deepStrictEqual(reader.getChannelMap(), [1]);
+    assert.deepStrictEqual(reader.getProps(), {
       "application.name": "pie",
       "media.role": "production",
     });
-    expect(reader.getCvolume()).toEqual([PA_VOLUME_NORM]);
-    expect(reader.hasRemaining()).toBeFalse();
+    assert.deepStrictEqual(reader.getCvolume(), [PA_VOLUME_NORM]);
+    assert.strictEqual(reader.hasRemaining(), false);
   });
 
   test("builds auth command packets", () => {
@@ -85,21 +86,21 @@ describe("pulse protocol", () => {
     const { header, payload } = splitFramedPacket(auth.bytes);
     const reader = new TagStructReader(payload);
 
-    expect(header.channel).toBe(PA_NO_INDEX);
-    expect(reader.getUInt32()).toBe(PA_COMMAND.AUTH);
-    expect(reader.getUInt32()).toBe(auth.tag);
-    expect(reader.getUInt32()).toBe(32);
-    expect(reader.getArbitrary()).toEqual(cookie);
-    expect(reader.hasRemaining()).toBeFalse();
+    assert.strictEqual(header.channel, PA_NO_INDEX);
+    assert.strictEqual(reader.getUInt32(), PA_COMMAND.AUTH);
+    assert.strictEqual(reader.getUInt32(), auth.tag);
+    assert.strictEqual(reader.getUInt32(), 32);
+    assert.deepStrictEqual(reader.getArbitrary(), cookie);
+    assert.strictEqual(reader.hasRemaining(), false);
   });
 
   test("builds set client name command with proplist", () => {
     const command = buildSetClientNameCommand("unit-test");
     const reader = new TagStructReader(splitFramedPacket(command.bytes).payload);
 
-    expect(reader.getUInt32()).toBe(PA_COMMAND.SET_CLIENT_NAME);
-    expect(reader.getUInt32()).toBe(command.tag);
-    expect(reader.getProps()).toEqual({ "application.name": "unit-test" });
+    assert.strictEqual(reader.getUInt32(), PA_COMMAND.SET_CLIENT_NAME);
+    assert.strictEqual(reader.getUInt32(), command.tag);
+    assert.deepStrictEqual(reader.getProps(), { "application.name": "unit-test" });
   });
 
   test("builds create and delete record stream commands", () => {
@@ -111,44 +112,44 @@ describe("pulse protocol", () => {
 
     const createReader = new TagStructReader(splitFramedPacket(create.bytes).payload);
 
-    expect(createReader.getUInt32()).toBe(PA_COMMAND.CREATE_RECORD_STREAM);
-    expect(createReader.getUInt32()).toBe(create.tag);
-    expect(createReader.getSampleSpec()).toEqual({
+    assert.strictEqual(createReader.getUInt32(), PA_COMMAND.CREATE_RECORD_STREAM);
+    assert.strictEqual(createReader.getUInt32(), create.tag);
+    assert.deepStrictEqual(createReader.getSampleSpec(), {
       format: PA_SAMPLE_FORMAT.S16LE,
       channels: 1,
       rate: 16_000,
     });
-    expect(createReader.getChannelMap()).toEqual([1]);
-    expect(createReader.getUInt32()).toBe(PA_NO_INDEX);
-    expect(createReader.getString()).toBeNull();
-    expect(createReader.getUInt32()).toBe(0xffffffff);
-    expect(createReader.getBool()).toBeFalse();
-    expect(createReader.getUInt32()).toBe(1024);
+    assert.deepStrictEqual(createReader.getChannelMap(), [1]);
+    assert.strictEqual(createReader.getUInt32(), PA_NO_INDEX);
+    assert.strictEqual(createReader.getString(), null);
+    assert.strictEqual(createReader.getUInt32(), 0xffffffff);
+    assert.strictEqual(createReader.getBool(), false);
+    assert.strictEqual(createReader.getUInt32(), 1024);
 
     for (let index = 0; index < 9; index += 1) {
-      expect(createReader.getBool()).toBeFalse();
+      assert.strictEqual(createReader.getBool(), false);
     }
 
-    expect(createReader.getProps()).toEqual({});
-    expect(createReader.getUInt32()).toBe(0xffffffff);
-    expect(createReader.getBool()).toBeFalse();
-    expect(createReader.getBool()).toBeFalse();
-    expect(createReader.getBool()).toBeFalse();
-    expect(createReader.getUInt8()).toBe(0);
-    expect(createReader.getCvolume()).toEqual([PA_VOLUME_NORM]);
-    expect(createReader.getBool()).toBeFalse();
-    expect(createReader.getBool()).toBeFalse();
-    expect(createReader.getBool()).toBeFalse();
-    expect(createReader.getBool()).toBeFalse();
-    expect(createReader.getBool()).toBeFalse();
-    expect(createReader.hasRemaining()).toBeFalse();
+    assert.deepStrictEqual(createReader.getProps(), {});
+    assert.strictEqual(createReader.getUInt32(), 0xffffffff);
+    assert.strictEqual(createReader.getBool(), false);
+    assert.strictEqual(createReader.getBool(), false);
+    assert.strictEqual(createReader.getBool(), false);
+    assert.strictEqual(createReader.getUInt8(), 0);
+    assert.deepStrictEqual(createReader.getCvolume(), [PA_VOLUME_NORM]);
+    assert.strictEqual(createReader.getBool(), false);
+    assert.strictEqual(createReader.getBool(), false);
+    assert.strictEqual(createReader.getBool(), false);
+    assert.strictEqual(createReader.getBool(), false);
+    assert.strictEqual(createReader.getBool(), false);
+    assert.strictEqual(createReader.hasRemaining(), false);
 
     const remove = buildDeleteRecordStreamCommand(99);
     const removeReader = new TagStructReader(splitFramedPacket(remove.bytes).payload);
-    expect(removeReader.getUInt32()).toBe(PA_COMMAND.DELETE_RECORD_STREAM);
-    expect(removeReader.getUInt32()).toBe(remove.tag);
-    expect(removeReader.getUInt32()).toBe(99);
-    expect(removeReader.hasRemaining()).toBeFalse();
+    assert.strictEqual(removeReader.getUInt32(), PA_COMMAND.DELETE_RECORD_STREAM);
+    assert.strictEqual(removeReader.getUInt32(), remove.tag);
+    assert.strictEqual(removeReader.getUInt32(), 99);
+    assert.strictEqual(removeReader.hasRemaining(), false);
   });
 
   test("parses server, source list, and create-record responses", () => {
@@ -163,7 +164,7 @@ describe("pulse protocol", () => {
     serverWriter.addUInt32(123);
     serverWriter.addChannelMap([1, 2]);
 
-    expect(parseServerInfoResponse(serverWriter.finalize())).toEqual({
+    assert.deepStrictEqual(parseServerInfoResponse(serverWriter.finalize()), {
       name: "PulseAudio",
       version: "16.1",
       username: "tester",
@@ -199,7 +200,7 @@ describe("pulse protocol", () => {
     sourceWriter.addString(null);
     sourceWriter.addUInt8(0);
 
-    expect(parseSourceListResponse(sourceWriter.finalize())).toEqual([
+    assert.deepStrictEqual(parseSourceListResponse(sourceWriter.finalize()), [
       {
         index: 5,
         name: "source0",
@@ -227,7 +228,7 @@ describe("pulse protocol", () => {
     streamWriter.addUsec(250n);
     streamWriter.addFormatInfo(1, {});
 
-    expect(parseCreateRecordStreamResponse(streamWriter.finalize())).toEqual({
+    assert.deepStrictEqual(parseCreateRecordStreamResponse(streamWriter.finalize()), {
       streamIndex: 12,
       sourceOutputIndex: 20,
       maximumLength: 65_536,
@@ -246,13 +247,13 @@ describe("pulse protocol", () => {
     const sourceList = buildGetSourceListCommand();
 
     const serverReader = new TagStructReader(splitFramedPacket(serverInfo.bytes).payload);
-    expect(serverReader.getUInt32()).toBe(PA_COMMAND.GET_SERVER_INFO);
-    expect(serverReader.getUInt32()).toBe(serverInfo.tag);
-    expect(serverReader.hasRemaining()).toBeFalse();
+    assert.strictEqual(serverReader.getUInt32(), PA_COMMAND.GET_SERVER_INFO);
+    assert.strictEqual(serverReader.getUInt32(), serverInfo.tag);
+    assert.strictEqual(serverReader.hasRemaining(), false);
 
     const sourceReader = new TagStructReader(splitFramedPacket(sourceList.bytes).payload);
-    expect(sourceReader.getUInt32()).toBe(PA_COMMAND.GET_SOURCE_INFO_LIST);
-    expect(sourceReader.getUInt32()).toBe(sourceList.tag);
-    expect(sourceReader.hasRemaining()).toBeFalse();
+    assert.strictEqual(sourceReader.getUInt32(), PA_COMMAND.GET_SOURCE_INFO_LIST);
+    assert.strictEqual(sourceReader.getUInt32(), sourceList.tag);
+    assert.strictEqual(sourceReader.hasRemaining(), false);
   });
 });

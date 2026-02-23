@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, test } from "node:test";
+import * as assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,9 +18,9 @@ describe("wakeword training workflow", () => {
       assetRootDir: "/tmp/pie-openwakeword",
     });
 
-    expect(plan.modelName).toBe("hey_jarvis");
-    expect(plan.outputModelFileName).toBe("hey_jarvis.json");
-    expect(plan.workspaceDir).toContain("training/hey_jarvis");
+    assert.strictEqual(plan.modelName, "hey_jarvis");
+    assert.strictEqual(plan.outputModelFileName, "hey_jarvis.json");
+    assert.ok(plan.workspaceDir.includes("training/hey_jarvis"));
   });
 
   test("creates workspace directories and readme", async () => {
@@ -36,10 +37,10 @@ describe("wakeword training workflow", () => {
     const testStat = await fs.stat(plan.testDir);
     const readme = await fs.readFile(path.join(plan.workspaceDir, "README.md"), "utf8");
 
-    expect(positiveStat.isDirectory()).toBeTrue();
-    expect(negativeStat.isDirectory()).toBeTrue();
-    expect(testStat.isDirectory()).toBeTrue();
-    expect(readme).toContain("custom-word");
+    assert.strictEqual(positiveStat.isDirectory(), true);
+    assert.strictEqual(negativeStat.isDirectory(), true);
+    assert.strictEqual(testStat.isDirectory(), true);
+    assert.ok(readme.includes("custom-word"));
   });
 
   test("registers model once in manifest", async () => {
@@ -78,8 +79,8 @@ describe("wakeword training workflow", () => {
       readonly models: { readonly wakewords: ReadonlyArray<string> };
     };
 
-    expect(first).toBeTrue();
-    expect(second).toBeFalse();
-    expect(saved.models.wakewords).toEqual(["existing.json", "custom.json"]);
+    assert.strictEqual(first, true);
+    assert.strictEqual(second, false);
+    assert.deepStrictEqual(saved.models.wakewords, ["existing.json", "custom.json"]);
   });
 });

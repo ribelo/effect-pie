@@ -1,4 +1,4 @@
-import * as BunSocket from "@effect/platform-bun/BunSocket";
+import * as NodeSocket from "@effect/platform-node/NodeSocket";
 import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -219,7 +219,7 @@ const makeConnection = (
     const socketPath = options?.socketPath ?? defaults.socketPath ?? PA_DEFAULT_SOCKET_PATH;
     const requestTimeoutMs = defaults.requestTimeoutMs ?? defaultRequestTimeoutMs;
 
-    const socket = yield* BunSocket.makeNet({ path: socketPath }).pipe(
+    const socket = yield* NodeSocket.makeNet({ path: socketPath }).pipe(
       Scope.provide(scope),
       Effect.mapError(
         (cause) =>

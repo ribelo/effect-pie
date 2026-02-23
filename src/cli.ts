@@ -1,5 +1,4 @@
-import { BunRuntime } from "@effect/platform-bun";
-import * as BunServices from "@effect/platform-bun/BunServices";
+import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import * as dbusNext from "dbus-next";
 import type { Message as DbusMessage, MessageBus } from "dbus-next";
 import { Console, Data, Effect, Fiber, Layer, Option, Ref, Stream } from "effect";
@@ -1181,6 +1180,7 @@ const recordPcmClip = (config: {
 const recordPcmUntilTrailingSilence = (config: {
   readonly silenceSeconds: number;
   readonly maxSeconds: number;
+  readonly speechStartTimeoutSeconds?: number;
   readonly speechRmsThreshold: number;
   readonly fragmentSize: number;
   readonly sampleRate: number;
@@ -1194,9 +1194,14 @@ const recordPcmUntilTrailingSilence = (config: {
       1,
       Math.ceil(config.silenceSeconds / chunkDurationSeconds),
     );
+    const speechStartTimeoutSeconds = Math.min(
+      config.maxSeconds,
+      config.speechStartTimeoutSeconds ?? config.maxSeconds,
+    );
 
     const completion = yield* Deferred.make<Uint8Array, NoSpeechDetectedError | CliError>();
     const chunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([]);
+    const capturedChunksRef = yield* Ref.make(0);
     const seenSpeechRef = yield* Ref.make(false);
     const silenceChunksRef = yield* Ref.make(0);
     const maxObservedRmsRef = yield* Ref.make(0);
@@ -1228,6 +1233,7 @@ const recordPcmUntilTrailingSilence = (config: {
           const copied = chunk.slice();
           yield* Ref.update(chunksRef, (chunks) => [...chunks, copied]);
 
+          const capturedChunks = yield* Ref.updateAndGet(capturedChunksRef, (value) => value + 1);
           const rms = pcmRms(copied);
           yield* Ref.update(maxObservedRmsRef, (current) => (rms > current ? rms : current));
 
@@ -1239,6 +1245,20 @@ const recordPcmUntilTrailingSilence = (config: {
 
           const seenSpeech = yield* Ref.get(seenSpeechRef);
           if (!seenSpeech) {
+            const elapsedSeconds = capturedChunks * chunkDurationSeconds;
+            if (elapsedSeconds >= speechStartTimeoutSeconds) {
+              const observed = yield* Ref.get(maxObservedRmsRef);
+              yield* Deferred.complete(
+                completion,
+                Effect.fail(
+                  new NoSpeechDetectedError({
+                    message: `No speech detected within ${speechStartTimeoutSeconds.toFixed(1)}s (max RMS ${observed.toFixed(4)} < threshold ${config.speechRmsThreshold.toFixed(4)})`,
+                    observedMaxRms: observed,
+                    threshold: config.speechRmsThreshold,
+                  }),
+                ),
+              );
+            }
             return;
           }
 
@@ -2176,7 +2196,17 @@ const DEFAULT_ASSISTANT_SAMPLE_RATE = 16_000;
 const DEFAULT_ASSISTANT_WAKEWORD_FRAGMENT_SIZE = 1024;
 const DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE = 4096;
 const DEFAULT_ASSISTANT_MIN_DURATION_MS = 120;
+const DEFAULT_ASSISTANT_WAKEWORD_SPEECH_START_TIMEOUT_SECONDS = 8;
 const ASSISTANT_RECORDING_STATE_PATH = path.join(EFFECT_PI_RUNTIME_DIR, "recording.json");
+
+const resolveWakewordSpeechStartTimeoutSeconds = (config: {
+  readonly silenceSeconds: number;
+  readonly maxSeconds: number;
+}): number =>
+  Math.min(
+    config.maxSeconds,
+    Math.max(DEFAULT_ASSISTANT_WAKEWORD_SPEECH_START_TIMEOUT_SECONDS, config.silenceSeconds + 2),
+  );
 
 type AssistantRecordingMode = "ptt-transcribe" | "ptt-translate" | "wakeword";
 
@@ -2410,12 +2440,16 @@ const runAssistantWakewordTranscribeLoop = (config: {
             const dictationSilenceSeconds =
               config.sttConfig.openrouter.wakewordDictationSilenceSeconds;
             const dictationMaxSeconds = config.sttConfig.openrouter.wakewordDictationMaxSeconds;
+            const dictationSpeechStartTimeoutSeconds = resolveWakewordSpeechStartTimeoutSeconds({
+              silenceSeconds: dictationSilenceSeconds,
+              maxSeconds: dictationMaxSeconds,
+            });
             const dictationSpeechRmsThreshold =
               calibrationSnapshot?.resolved.speechRms ??
               config.sttConfig.openrouter.wakewordDictationSpeechRmsThreshold;
 
             yield* Console.log(
-              `[wakeword-transcribe] Trigger detected (${selectedModelName}). Dictation capture started (silence=${dictationSilenceSeconds}s, max=${dictationMaxSeconds}s, speech_rms=${dictationSpeechRmsThreshold.toFixed(4)})...`,
+              `[wakeword-transcribe] Trigger detected (${selectedModelName}). Dictation capture started (silence=${dictationSilenceSeconds}s, max=${dictationMaxSeconds}s, speech_start_timeout=${dictationSpeechStartTimeoutSeconds}s, speech_rms=${dictationSpeechRmsThreshold.toFixed(4)})...`,
             );
 
             yield* config.setRecordingMode("wakeword");
@@ -2423,6 +2457,7 @@ const runAssistantWakewordTranscribeLoop = (config: {
             const pcmBytes = yield* recordPcmUntilTrailingSilence({
               silenceSeconds: dictationSilenceSeconds,
               maxSeconds: dictationMaxSeconds,
+              speechStartTimeoutSeconds: dictationSpeechStartTimeoutSeconds,
               speechRmsThreshold: dictationSpeechRmsThreshold,
               fragmentSize: DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
               sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
@@ -2770,6 +2805,10 @@ const runAssistantDefaultCommand = Effect.gen(function* () {
   );
 
   const sourceName = yield* resolveDefaultSourceName();
+  const wakewordSpeechStartTimeoutSeconds = resolveWakewordSpeechStartTimeoutSeconds({
+    silenceSeconds: sttConfig.openrouter.wakewordDictationSilenceSeconds,
+    maxSeconds: sttConfig.openrouter.wakewordDictationMaxSeconds,
+  });
 
   yield* Console.log("[assistant] Running default combined mode");
   yield* Console.log(
@@ -2779,7 +2818,7 @@ const runAssistantDefaultCommand = Effect.gen(function* () {
     `[assistant] PTT transcribe keysym=${DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM}, PTT translate keysym=${DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM}`,
   );
   yield* Console.log(
-    `[assistant] Wakeword dictation: silence=${sttConfig.openrouter.wakewordDictationSilenceSeconds}s max=${sttConfig.openrouter.wakewordDictationMaxSeconds}s speech_rms=${sttConfig.openrouter.wakewordDictationSpeechRmsThreshold.toFixed(4)}`,
+    `[assistant] Wakeword dictation: silence=${sttConfig.openrouter.wakewordDictationSilenceSeconds}s max=${sttConfig.openrouter.wakewordDictationMaxSeconds}s speech_start_timeout=${wakewordSpeechStartTimeoutSeconds}s speech_rms=${sttConfig.openrouter.wakewordDictationSpeechRmsThreshold.toFixed(4)}`,
   );
   yield* Console.log("[assistant] Focus the target app (for example Slack) to receive typed text");
   yield* Console.log("[assistant] Press Ctrl+C to stop all listeners");
@@ -2850,7 +2889,7 @@ const resolveTrainingSource = (config: {
 
       if (!exists) {
         return yield* new WakewordTrainingError({
-          message: `Configured source '${config.requestedSourceName}' not found. Run 'bun run cli -- sources' and select one of the listed source names.`,
+          message: `Configured source '${config.requestedSourceName}' not found. Run 'npm run cli -- sources' and select one of the listed source names.`,
         });
       }
 
@@ -3330,7 +3369,7 @@ const wakewordTuneCommand = Command.make(
 
         if (!sources.some((source) => source.name === resolvedSourceName)) {
           return yield* new CliError({
-            message: `Configured source '${resolvedSourceName}' not found. Run 'bun run cli -- sources' and choose one source name.`,
+            message: `Configured source '${resolvedSourceName}' not found. Run 'npm run cli -- sources' and choose one source name.`,
           });
         }
 
@@ -3454,7 +3493,7 @@ const wakewordTuneCommand = Command.make(
       }
 
       yield* Console.log(
-        `Try now: bun run cli -- wakeword --models ${modelFile} --source ${tuning.sourceName} --duration 30`,
+        `Try now: npm run cli -- wakeword --models ${modelFile} --source ${tuning.sourceName} --duration 30`,
       );
     }),
 ).pipe(
@@ -3752,7 +3791,7 @@ const wakewordTrainCommand = Command.make(
                     if (attempt >= config.retryLimit) {
                       const effectiveSpeechRms = yield* Ref.get(speechRmsRef);
                       return yield* new WakewordTrainingError({
-                        message: `[positive ${clipNumber}/${config.positiveCount}] ${error.message}. Final speech-rms was ${effectiveSpeechRms.toFixed(4)}. Run 'bun run cli -- meter --source ${selectedSourceName}' to inspect live levels.`,
+                        message: `[positive ${clipNumber}/${config.positiveCount}] ${error.message}. Final speech-rms was ${effectiveSpeechRms.toFixed(4)}. Run 'npm run cli -- meter --source ${selectedSourceName}' to inspect live levels.`,
                       });
                     }
 
@@ -3833,7 +3872,7 @@ const wakewordTrainCommand = Command.make(
       );
       yield* Console.log(manifestMessage);
       yield* Console.log(
-        `Verify with: bun run cli -- wakeword --models ${plan.outputModelFileName} --duration 20 --threshold 0.5`,
+        `Verify with: npm run cli -- wakeword --models ${plan.outputModelFileName} --duration 20 --threshold 0.5`,
       );
     }),
 ).pipe(
@@ -3860,8 +3899,8 @@ const rootCommand = Command.make("pie", {}, () => runAssistantDefaultCommand).pi
   ]),
 );
 
-const runtimeLayer = Layer.merge(BunServices.layer, pulseLayer());
+const runtimeLayer = Layer.merge(NodeServices.layer, pulseLayer());
 
 const main = Command.run(rootCommand, { version: "0.1.0" }).pipe(Effect.provide(runtimeLayer));
 
-BunRuntime.runMain(main);
+NodeRuntime.runMain(main);

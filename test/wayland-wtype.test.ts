@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
 
 import {
   buildWtypeCommandArgs,
@@ -8,7 +9,7 @@ import {
 } from "../src/wayland/wtype.ts";
 
 test("buildWtypeCommandArgs builds argv with text payload", () => {
-  expect(buildWtypeCommandArgs("/run/current-system/sw/bin/wtype", "hello world")).toEqual([
+  assert.deepStrictEqual(buildWtypeCommandArgs("/run/current-system/sw/bin/wtype", "hello world"), [
     "/run/current-system/sw/bin/wtype",
     "--",
     "hello world",
@@ -16,7 +17,7 @@ test("buildWtypeCommandArgs builds argv with text payload", () => {
 });
 
 test("buildWtypeCommandArgs adds delay when requested", () => {
-  expect(buildWtypeCommandArgs("/run/current-system/sw/bin/wtype", "zazolc", 8)).toEqual([
+  assert.deepStrictEqual(buildWtypeCommandArgs("/run/current-system/sw/bin/wtype", "zazolc", 8), [
     "/run/current-system/sw/bin/wtype",
     "-d",
     "8",
@@ -26,7 +27,7 @@ test("buildWtypeCommandArgs adds delay when requested", () => {
 });
 
 test("buildWtypePasteShortcutArgs builds Ctrl+V shortcut argv", () => {
-  expect(buildWtypePasteShortcutArgs("/run/current-system/sw/bin/wtype")).toEqual([
+  assert.deepStrictEqual(buildWtypePasteShortcutArgs("/run/current-system/sw/bin/wtype"), [
     "/run/current-system/sw/bin/wtype",
     "-M",
     "ctrl",
@@ -38,30 +39,28 @@ test("buildWtypePasteShortcutArgs builds Ctrl+V shortcut argv", () => {
 });
 
 test("shouldUseWtypeClipboardPaste returns true for apostrophes and quotes", () => {
-  expect(shouldUseWtypeClipboardPaste("don't")).toBe(true);
-  expect(shouldUseWtypeClipboardPaste('say "hi"')).toBe(true);
-  expect(shouldUseWtypeClipboardPaste(`it${String.fromCharCode(0x2019)}s`)).toBe(true);
+  assert.strictEqual(shouldUseWtypeClipboardPaste("don't"), true);
+  assert.strictEqual(shouldUseWtypeClipboardPaste('say "hi"'), true);
+  assert.strictEqual(shouldUseWtypeClipboardPaste(`it${String.fromCharCode(0x2019)}s`), true);
 });
 
 test("shouldUseWtypeClipboardPaste returns false for plain words", () => {
-  expect(shouldUseWtypeClipboardPaste("plain text")).toBe(false);
+  assert.strictEqual(shouldUseWtypeClipboardPaste("plain text"), false);
 });
 
 test("resolveWtypeInjectionMode defaults to auto", () => {
-  expect(resolveWtypeInjectionMode({})).toBe("auto");
+  assert.strictEqual(resolveWtypeInjectionMode({}), "auto");
 });
 
 test("resolveWtypeInjectionMode accepts explicit mode", () => {
-  expect(resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "direct" })).toBe("direct");
-  expect(resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "auto" })).toBe("auto");
+  assert.strictEqual(resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "direct" }), "direct");
+  assert.strictEqual(resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "auto" }), "auto");
 });
 
 test("resolveWtypeInjectionMode supports legacy env var", () => {
-  expect(resolveWtypeInjectionMode({ EFFECT_PI_WAYLAND_INJECTION_MODE: "clipboard" })).toBe(
-    "clipboard",
-  );
+  assert.strictEqual(resolveWtypeInjectionMode({ EFFECT_PI_WAYLAND_INJECTION_MODE: "clipboard" }), "clipboard");
 });
 
 test("resolveWtypeInjectionMode falls back to auto for invalid values", () => {
-  expect(resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "weird" })).toBe("auto");
+  assert.strictEqual(resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "weird" }), "auto");
 });

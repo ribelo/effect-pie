@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
 
 import {
   buildBindShortcutsArgs,
@@ -10,24 +11,25 @@ import {
 } from "../src/wayland/globalShortcuts.ts";
 
 test("buildCreateSessionOptionsArgs serializes portal tokens", () => {
-  expect(
+  assert.deepStrictEqual(
     buildCreateSessionOptionsArgs({
       handleToken: "handle_token_1",
       sessionHandleToken: "session_token_2",
     }),
-  ).toEqual([
-    "2",
-    "handle_token",
-    "s",
-    "handle_token_1",
-    "session_handle_token",
-    "s",
-    "session_token_2",
-  ]);
+    [
+      "2",
+      "handle_token",
+      "s",
+      "handle_token_1",
+      "session_handle_token",
+      "s",
+      "session_token_2",
+    ],
+  );
 });
 
 test("buildBindShortcutsArgs serializes shortcut payload", () => {
-  expect(
+  assert.deepStrictEqual(
     buildBindShortcutsArgs({
       sessionHandle: "/org/freedesktop/portal/desktop/session/1_20/example_session",
       shortcut: {
@@ -37,65 +39,71 @@ test("buildBindShortcutsArgs serializes shortcut payload", () => {
       },
       parentWindow: "",
     }),
-  ).toEqual([
-    "/org/freedesktop/portal/desktop/session/1_20/example_session",
-    "1",
-    "push_to_talk",
-    "2",
-    "description",
-    "s",
-    "pie push-to-talk",
-    "preferred_trigger",
-    "s",
-    "<Ctrl><Super>space",
-    "",
-    "0",
-  ]);
+    [
+      "/org/freedesktop/portal/desktop/session/1_20/example_session",
+      "1",
+      "push_to_talk",
+      "2",
+      "description",
+      "s",
+      "pie push-to-talk",
+      "preferred_trigger",
+      "s",
+      "<Ctrl><Super>space",
+      "",
+      "0",
+    ],
+  );
 });
 
 test("deriveSessionHandleFromRequestHandle builds expected session path", () => {
-  expect(
+  assert.strictEqual(
     deriveSessionHandleFromRequestHandle(
       "/org/freedesktop/portal/desktop/request/1_42/pie_req_abc123",
       "pie_session_xyz999",
     ),
-  ).toBe("/org/freedesktop/portal/desktop/session/1_42/pie_session_xyz999");
+    "/org/freedesktop/portal/desktop/session/1_42/pie_session_xyz999",
+  );
 
-  expect(deriveSessionHandleFromRequestHandle("/invalid/path", "session")).toBeUndefined();
+  assert.strictEqual(deriveSessionHandleFromRequestHandle("/invalid/path", "session"), undefined);
 });
 
 test("parseObjectPathFromBusctlCallOutput extracts object path", () => {
-  expect(
+  assert.strictEqual(
     parseObjectPathFromBusctlCallOutput(
       'o "/org/freedesktop/portal/desktop/request/1_42/pie_req_abc123"',
     ),
-  ).toBe("/org/freedesktop/portal/desktop/request/1_42/pie_req_abc123");
+    "/org/freedesktop/portal/desktop/request/1_42/pie_req_abc123",
+  );
 
-  expect(parseObjectPathFromBusctlCallOutput("unexpected output")).toBeUndefined();
+  assert.strictEqual(parseObjectPathFromBusctlCallOutput("unexpected output"), undefined);
 });
 
 test("parseRequestResponseCodeFromBusctlWaitOutput extracts response code", () => {
-  expect(parseRequestResponseCodeFromBusctlWaitOutput("ua{sv} 0 0")).toBe(0);
-  expect(
+  assert.strictEqual(parseRequestResponseCodeFromBusctlWaitOutput("ua{sv} 0 0"), 0);
+  assert.strictEqual(
     parseRequestResponseCodeFromBusctlWaitOutput(
       'ua{sv} 2 1 "session_handle" s "/org/freedesktop/portal/desktop/session/1_42/token"',
     ),
-  ).toBe(2);
-  expect(parseRequestResponseCodeFromBusctlWaitOutput("invalid output")).toBeUndefined();
+    2,
+  );
+  assert.strictEqual(parseRequestResponseCodeFromBusctlWaitOutput("invalid output"), undefined);
 });
 
 test("parseSessionHandleFromRequestResponseOutput extracts session handle", () => {
-  expect(
+  assert.strictEqual(
     parseSessionHandleFromRequestResponseOutput(
       'ua{sv} 0 1 "session_handle" s "/org/freedesktop/portal/desktop/session/1_42/token"',
     ),
-  ).toBe("/org/freedesktop/portal/desktop/session/1_42/token");
+    "/org/freedesktop/portal/desktop/session/1_42/token",
+  );
 
-  expect(
+  assert.strictEqual(
     parseSessionHandleFromRequestResponseOutput(
       'ua{sv} 0 1 "session_handle" o "/org/freedesktop/portal/desktop/session/1_42/token"',
     ),
-  ).toBe("/org/freedesktop/portal/desktop/session/1_42/token");
+    "/org/freedesktop/portal/desktop/session/1_42/token",
+  );
 
-  expect(parseSessionHandleFromRequestResponseOutput("ua{sv} 0 0")).toBeUndefined();
+  assert.strictEqual(parseSessionHandleFromRequestResponseOutput("ua{sv} 0 0"), undefined);
 });

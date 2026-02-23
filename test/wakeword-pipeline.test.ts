@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, test } from "node:test";
+import * as assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
 
 import { makeWakewordPipeline, type WakewordPipeline } from "../src/wakeword/pipeline.ts";
@@ -121,7 +122,7 @@ describe("wakeword pipeline", () => {
       chunkBytes(bytes, [501, 777, 1281, 409]),
     );
 
-    expect(splitFrames).toEqual(mergedFrames);
-    expect(splitFrames.length).toBeGreaterThan(0);
+    assert.deepStrictEqual(splitFrames, mergedFrames);
+    assert.ok(splitFrames.length > 0);
   });
 });

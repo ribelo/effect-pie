@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import { promises as fs } from "node:fs";
@@ -17,7 +18,7 @@ const hasPulseSocket = async (): Promise<boolean> => {
   }
 };
 
-test("wakeword live stream emits telemetry when PulseAudio is available", async () => {
+test("wakeword live stream emits telemetry when PulseAudio is available", { timeout: 20_000 }, async () => {
   if (!(await hasPulseSocket())) {
     return;
   }
@@ -71,5 +72,5 @@ test("wakeword live stream emits telemetry when PulseAudio is available", async 
   );
 
   const events = await Effect.runPromise(program);
-  expect(events.length).toBeGreaterThan(0);
-}, 20_000);
+  assert.ok(events.length > 0);
+});

@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, test } from "node:test";
+import * as assert from "node:assert/strict";
 import * as Effect from "effect/Effect";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
@@ -56,8 +57,8 @@ describe("wakeword assets", () => {
       }),
     );
 
-    expect(Object.keys(resolved.wakewordModelPaths)).toEqual(["jarvis"]);
-    expect(resolved.melspectrogramModelPath.endsWith("melspectrogram.onnx")).toBeTrue();
+    assert.deepStrictEqual(Object.keys(resolved.wakewordModelPaths), ["jarvis"]);
+    assert.strictEqual(resolved.melspectrogramModelPath.endsWith("melspectrogram.onnx"), true);
   });
 
   test("fails when a required model file is missing", async () => {
@@ -71,7 +72,7 @@ describe("wakeword assets", () => {
       }),
     );
 
-    await expect(run).rejects.toThrow("Missing or invalid model asset");
+    await assert.rejects(run, /Missing or invalid model asset/);
   });
 
   test("fails when feature model is placeholder text", async () => {
@@ -89,6 +90,6 @@ describe("wakeword assets", () => {
       }),
     );
 
-    await expect(run).rejects.toThrow("Install real openWakeWord ONNX feature models");
+    await assert.rejects(run, /Install real openWakeWord ONNX feature models/);
   });
 });

@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
 
 import {
   chooseFallbackTextInjectionBackend,
@@ -6,34 +7,36 @@ import {
 } from "../src/input/textInjection.ts";
 
 test("chooseTextInjectionBackend selects wtype for wayland", () => {
-  expect(chooseTextInjectionBackend("wayland")).toBe("wtype");
+  assert.strictEqual(chooseTextInjectionBackend("wayland"), "wtype");
 });
 
 test("chooseTextInjectionBackend selects xdotool for x11", () => {
-  expect(chooseTextInjectionBackend("x11")).toBe("xdotool");
+  assert.strictEqual(chooseTextInjectionBackend("x11"), "xdotool");
 });
 
 test("chooseTextInjectionBackend returns undefined for unknown", () => {
-  expect(chooseTextInjectionBackend("unknown")).toBeUndefined();
+  assert.strictEqual(chooseTextInjectionBackend("unknown"), undefined);
 });
 
 test("chooseFallbackTextInjectionBackend uses xdotool when wayland backend has x11 available", () => {
-  expect(
+  assert.strictEqual(
     chooseFallbackTextInjectionBackend("wtype", {
       DISPLAY: ":0",
     }),
-  ).toBe("xdotool");
+    "xdotool",
+  );
 });
 
 test("chooseFallbackTextInjectionBackend uses wtype when x11 backend has wayland available", () => {
-  expect(
+  assert.strictEqual(
     chooseFallbackTextInjectionBackend("xdotool", {
       WAYLAND_DISPLAY: "wayland-1",
     }),
-  ).toBe("wtype");
+    "wtype",
+  );
 });
 
 test("chooseFallbackTextInjectionBackend returns undefined without alternate session", () => {
-  expect(chooseFallbackTextInjectionBackend("wtype", {})).toBeUndefined();
-  expect(chooseFallbackTextInjectionBackend("xdotool", {})).toBeUndefined();
+  assert.strictEqual(chooseFallbackTextInjectionBackend("wtype", {}), undefined);
+  assert.strictEqual(chooseFallbackTextInjectionBackend("xdotool", {}), undefined);
 });

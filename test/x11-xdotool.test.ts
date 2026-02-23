@@ -1,9 +1,10 @@
-import { expect, test } from "bun:test";
+import { test } from "node:test";
+import * as assert from "node:assert/strict";
 
 import { buildXdotoolCommandArgs } from "../src/x11/xdotool.ts";
 
 test("buildXdotoolCommandArgs builds argv with text payload", () => {
-  expect(buildXdotoolCommandArgs("/usr/bin/xdotool", "hello world")).toEqual([
+  assert.deepStrictEqual(buildXdotoolCommandArgs("/usr/bin/xdotool", "hello world"), [
     "/usr/bin/xdotool",
     "type",
     "--clearmodifiers",
