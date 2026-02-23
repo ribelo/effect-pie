@@ -2889,7 +2889,7 @@ const resolveTrainingSource = (config: {
 
       if (!exists) {
         return yield* new WakewordTrainingError({
-          message: `Configured source '${config.requestedSourceName}' not found. Run 'npm run cli -- sources' and select one of the listed source names.`,
+          message: `Configured source '${config.requestedSourceName}' not found. Run 'pie sources' and select one of the listed source names.`,
         });
       }
 
@@ -3369,7 +3369,7 @@ const wakewordTuneCommand = Command.make(
 
         if (!sources.some((source) => source.name === resolvedSourceName)) {
           return yield* new CliError({
-            message: `Configured source '${resolvedSourceName}' not found. Run 'npm run cli -- sources' and choose one source name.`,
+            message: `Configured source '${resolvedSourceName}' not found. Run 'pie sources' and choose one source name.`,
           });
         }
 
@@ -3493,7 +3493,7 @@ const wakewordTuneCommand = Command.make(
       }
 
       yield* Console.log(
-        `Try now: npm run cli -- wakeword --models ${modelFile} --source ${tuning.sourceName} --duration 30`,
+        `Try now: pie wakeword --models ${modelFile} --source ${tuning.sourceName} --duration 30`,
       );
     }),
 ).pipe(
@@ -3791,7 +3791,7 @@ const wakewordTrainCommand = Command.make(
                     if (attempt >= config.retryLimit) {
                       const effectiveSpeechRms = yield* Ref.get(speechRmsRef);
                       return yield* new WakewordTrainingError({
-                        message: `[positive ${clipNumber}/${config.positiveCount}] ${error.message}. Final speech-rms was ${effectiveSpeechRms.toFixed(4)}. Run 'npm run cli -- meter --source ${selectedSourceName}' to inspect live levels.`,
+                        message: `[positive ${clipNumber}/${config.positiveCount}] ${error.message}. Final speech-rms was ${effectiveSpeechRms.toFixed(4)}. Run 'pie meter --source ${selectedSourceName}' to inspect live levels.`,
                       });
                     }
 
@@ -3872,7 +3872,7 @@ const wakewordTrainCommand = Command.make(
       );
       yield* Console.log(manifestMessage);
       yield* Console.log(
-        `Verify with: npm run cli -- wakeword --models ${plan.outputModelFileName} --duration 20 --threshold 0.5`,
+        `Verify with: pie wakeword --models ${plan.outputModelFileName} --duration 20 --threshold 0.5`,
       );
     }),
 ).pipe(

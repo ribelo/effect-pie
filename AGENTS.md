@@ -23,21 +23,21 @@ PIE is coupled with a Quickshell status bar that displays recording state via th
 ## Build, Test, and Development Commands
 
 ```bash
-npm install          # Install dependencies
-npm run check        # TypeScript typecheck (tsgo)
-npm run lint         # Lint (oxlint)
-npm run format:check # Format check (oxfmt)
-npm run test         # Run tests
-npm run gate         # Full quality gate (must pass before push)
+pnpm install         # Install dependencies (pnpm handles pkg.pr.new tarball URLs; deno install cannot)
+pnpm run check       # TypeScript typecheck (tsgo)
+pnpm run lint        # Lint (oxlint)
+pnpm run format:check # Format check (oxfmt)
+pnpm run test        # Run tests
+pnpm run gate        # Full quality gate (must pass before push)
 ```
 
 ## Quality Gate
 
-Gate command: `npm run gate`
+Gate command: `pnpm run gate`
 
 Gate runs: `check -> effect:diagnostics -> lint -> format:check -> test`
 
-**Saying "Done" rule**: Before claiming work is done, run `npm run gate`. If it fails from your changes, fix it. If pre-existing, stop and ask.
+**Saying "Done" rule**: Before claiming work is done, run `pnpm run gate`. If it fails from your changes, fix it. If pre-existing, stop and ask.
 
 ## Issue Tracking
 
@@ -78,7 +78,7 @@ Uses beads (`bd`) for task tracking.
 
 ## Landing the Plane
 
-1. Run `npm run gate`
+1. Run `pnpm run gate`
 2. Update beads issues
 3. `git pull --rebase && bd sync && git push`
 4. Verify pushed

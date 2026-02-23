@@ -103,7 +103,7 @@ const loadOrtModule = (runtimePackage: string): Effect.Effect<OrtModule, Wakewor
     try: () => import(runtimePackage) as Promise<OrtModule>,
     catch: (cause) =>
       new WakewordRuntimeError({
-        message: `Unable to load ONNX runtime package '${runtimePackage}'. Run npm install and ensure runtime assets are pinned.`,
+        message: `Unable to load ONNX runtime package '${runtimePackage}'. Run pnpm install and ensure runtime assets are pinned.`,
         cause,
       }),
   });
