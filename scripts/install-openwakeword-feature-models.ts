@@ -22,7 +22,7 @@ const defaultEmbeddingUrl =
 const usage = (): string => `Install real openWakeWord feature models with checksum validation.
 
 Usage:
-  tsx scripts/install-openwakeword-feature-models.ts \\
+  deno run -A scripts/install-openwakeword-feature-models.ts \\
     --melspectrogram-sha256 <sha256> \\
     --embedding-sha256 <sha256> \\
     [--output-dir $XDG_DATA_HOME/pie/openwakeword] \\

@@ -14,7 +14,7 @@ PIE is coupled with a Quickshell status bar that displays recording state via th
 
 ## Tech Stack
 
-- **Runtime**: Node.js (with tsx for TypeScript execution)
+- **Runtime**: Deno (Node-compatible mode with --unstable-sloppy-imports)
 - **Framework**: Effect 4.0 (effect-smol)
 - **AI**: `@effect/ai-anthropic`, `@effect/ai-openai`
 - **Platform**: `@effect/platform-node`

@@ -12,10 +12,10 @@
     "lint:fix": "oxlint . --fix",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "test": "node --import tsx --test test/*.test.ts",
+    "test": "deno test --allow-all --no-check test/*.test.ts",
     "effect:diagnostics": "npx effect-language-service diagnostics --project tsconfig.json --format pretty --progress",
-    "cli": "tsx src/cli.ts",
-    "wakeword:install-feature-models": "tsx scripts/install-openwakeword-feature-models.ts",
+    "cli": "deno run -A --unstable-sloppy-imports src/cli.ts",
+    "wakeword:install-feature-models": "deno run -A --unstable-sloppy-imports scripts/install-openwakeword-feature-models.ts",
     "gate": "npm run check && npm run effect:diagnostics && npm run lint && npm run format:check && npm run test"
   },
   "dependencies": {
@@ -29,7 +29,6 @@
   "devDependencies": {
     "@effect/language-service": "^0.71.0",
     "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
     "oxfmt": "^0.26.0",
     "oxlint": "^1.41.0",
     "typescript": "^5.9.3"
