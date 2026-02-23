@@ -150,7 +150,12 @@ const validateRuntimePin = (
         });
       }
 
-      const packageJsonPath = requireFromModule.resolve(`${runtimePackage}/package.json`);
+      const entryPath = requireFromModule.resolve(runtimePackage);
+      const marker = `node_modules/${runtimePackage}/`;
+      const idx = entryPath.lastIndexOf(marker);
+      const packageJsonPath = idx >= 0
+        ? path.join(entryPath.slice(0, idx + marker.length), "package.json")
+        : requireFromModule.resolve(`${runtimePackage}/package.json`);
       const raw = await fs.readFile(packageJsonPath, "utf8");
       const pkg = JSON.parse(raw) as { readonly version?: string };
 
