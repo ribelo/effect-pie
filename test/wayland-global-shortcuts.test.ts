@@ -16,15 +16,7 @@ test("buildCreateSessionOptionsArgs serializes portal tokens", () => {
       handleToken: "handle_token_1",
       sessionHandleToken: "session_token_2",
     }),
-    [
-      "2",
-      "handle_token",
-      "s",
-      "handle_token_1",
-      "session_handle_token",
-      "s",
-      "session_token_2",
-    ],
+    ["2", "handle_token", "s", "handle_token_1", "session_handle_token", "s", "session_token_2"],
   );
 });
 

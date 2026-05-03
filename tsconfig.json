@@ -20,6 +20,7 @@
     "sourceMap": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
+    "types": ["bun"],
 
     "plugins": [
       {

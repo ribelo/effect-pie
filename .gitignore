@@ -47,6 +47,9 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 .beads/*.sock
 .beads/sync-state.json
 
+# pi session artifacts
+.pi/
+
 # wakeword runtime artifacts (use XDG paths instead)
 assets/openwakeword/*.onnx
 assets/openwakeword/training/

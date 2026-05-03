@@ -58,7 +58,10 @@ test("resolveWtypeInjectionMode accepts explicit mode", () => {
 });
 
 test("resolveWtypeInjectionMode supports legacy env var", () => {
-  assert.strictEqual(resolveWtypeInjectionMode({ EFFECT_PI_WAYLAND_INJECTION_MODE: "clipboard" }), "clipboard");
+  assert.strictEqual(
+    resolveWtypeInjectionMode({ EFFECT_PI_WAYLAND_INJECTION_MODE: "clipboard" }),
+    "clipboard",
+  );
 });
 
 test("resolveWtypeInjectionMode falls back to auto for invalid values", () => {

@@ -18,59 +18,63 @@ const hasPulseSocket = async (): Promise<boolean> => {
   }
 };
 
-test("wakeword live stream emits telemetry when PulseAudio is available", { timeout: 20_000 }, async () => {
-  if (!(await hasPulseSocket())) {
-    return;
-  }
+test(
+  "wakeword live stream emits telemetry when PulseAudio is available",
+  { timeout: 20_000 },
+  async () => {
+    if (!(await hasPulseSocket())) {
+      return;
+    }
 
-  let sampleIndex = 0;
+    let sampleIndex = 0;
 
-  const pipeline = {
-    feedPcmChunk: (chunk: Uint8Array) =>
-      Effect.succeed([
-        {
-          timestampMs: sampleIndex / 16,
-          sampleIndex,
-          scores: {
-            jarvis: Math.min(1, chunk.length / 1024),
+    const pipeline = {
+      feedPcmChunk: (chunk: Uint8Array) =>
+        Effect.succeed([
+          {
+            timestampMs: sampleIndex / 16,
+            sampleIndex,
+            scores: {
+              jarvis: Math.min(1, chunk.length / 1024),
+            },
           },
-        },
-      ]),
-    feedPcmSamples: (_samples: Int16Array) => Effect.succeed([]),
-    getFeatureFrameCount: Effect.succeed(0),
-    reset: Effect.void,
-  };
+        ]),
+      feedPcmSamples: (_samples: Int16Array) => Effect.succeed([]),
+      getFeatureFrameCount: Effect.succeed(0),
+      reset: Effect.void,
+    };
 
-  const trigger = createWakewordTriggerMachine({
-    threshold: 0.5,
-    smoothingWindow: 1,
-    consecutiveFrames: 1,
-    cooldownMs: 200,
-  });
+    const trigger = createWakewordTriggerMachine({
+      threshold: 0.5,
+      smoothingWindow: 1,
+      consecutiveFrames: 1,
+      cooldownMs: 200,
+    });
 
-  const program = createWakewordTelemetryStream({
-    pipeline,
-    trigger,
-    recordStream: {
-      fragmentSize: 1024,
-    },
-  }).pipe(
-    Stream.tap((event) =>
-      Effect.sync(() => {
-        if (event.type === "score") {
-          sampleIndex += 1_280;
-        }
+    const program = createWakewordTelemetryStream({
+      pipeline,
+      trigger,
+      recordStream: {
+        fragmentSize: 1024,
+      },
+    }).pipe(
+      Stream.tap((event) =>
+        Effect.sync(() => {
+          if (event.type === "score") {
+            sampleIndex += 1_280;
+          }
+        }),
+      ),
+      Stream.take(3),
+      Stream.runCollect,
+      Effect.timeoutOrElse({
+        duration: "10 seconds",
+        onTimeout: () => Effect.fail(new Error("wakeword live stream timed out")),
       }),
-    ),
-    Stream.take(3),
-    Stream.runCollect,
-    Effect.timeoutOrElse({
-      duration: "10 seconds",
-      onTimeout: () => Effect.fail(new Error("wakeword live stream timed out")),
-    }),
-    Effect.provide(layer()),
-  );
+      Effect.provide(layer()),
+    );
 
-  const events = await Effect.runPromise(program);
-  assert.ok(events.length > 0);
-});
+    const events = await Effect.runPromise(program);
+    assert.ok(events.length > 0);
+  },
+);
