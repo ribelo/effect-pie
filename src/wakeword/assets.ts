@@ -41,7 +41,7 @@ const ensureReadableFile = (filePath: string): Effect.Effect<void, WakewordAsset
     },
     catch: (cause) =>
       new WakewordAssetError({
-        message: `Missing or invalid model asset: ${filePath}. Install required feature models with 'pnpm run wakeword:install-feature-models --melspectrogram-sha256 <sha256> --embedding-sha256 <sha256>'.`,
+        message: `Missing or invalid model asset: ${filePath}. Install required feature models with 'bun run wakeword:install-feature-models --melspectrogram-sha256 <sha256> --embedding-sha256 <sha256>'.`,
         cause,
       }),
   });

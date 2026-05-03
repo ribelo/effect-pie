@@ -12,11 +12,11 @@
     "lint:fix": "oxlint . --fix",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "test": "deno test --allow-all --no-check test/*.test.ts",
-    "effect:diagnostics": "npx effect-language-service diagnostics --project tsconfig.json --format pretty --progress",
-    "cli": "deno run -A --unstable-sloppy-imports src/cli.ts",
-    "wakeword:install-feature-models": "deno run -A --unstable-sloppy-imports scripts/install-openwakeword-feature-models.ts",
-    "gate": "pnpm run check && pnpm run effect:diagnostics && pnpm run lint && pnpm run format:check && pnpm run test"
+    "test": "bun test",
+    "effect:diagnostics": "bunx effect-language-service diagnostics --project tsconfig.json --format pretty --progress",
+    "cli": "bun run src/cli.ts",
+    "wakeword:install-feature-models": "bun run scripts/install-openwakeword-feature-models.ts",
+    "gate": "bun run check && bun run effect:diagnostics && bun run lint && bun run format:check && bun run test"
   },
   "dependencies": {
     "@effect/ai-anthropic": "https://pkg.pr.new/Effect-TS/effect-smol/@effect/ai-anthropic@fe2cab2",

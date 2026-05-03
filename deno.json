@@ -1,6 +1,0 @@
-{
-  "nodeModulesDir": "manual",
-  "compilerOptions": {
-    "types": ["npm:@types/node"]
-  }
-}
