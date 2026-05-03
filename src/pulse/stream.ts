@@ -9,7 +9,7 @@ export const createRecordStream = (
 ): Stream.Stream<Uint8Array, PulseAudioClientError, PulseAudioClient> =>
   Stream.unwrap(
     Effect.gen(function* () {
-      const client = yield* PulseAudioClient
+      const client = yield* Effect.service(PulseAudioClient)
       const opened = yield* client.openRecordStream(options)
 
       yield* Effect.addFinalizer(() =>

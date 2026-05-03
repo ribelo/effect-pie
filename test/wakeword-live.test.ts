@@ -74,7 +74,7 @@ test(
       Stream.runCollect,
       Effect.timeoutOrElse({
         duration: "10 seconds",
-        onTimeout: () =>
+        orElse: () =>
           Effect.fail(
             new WakewordLiveTestTimeoutError({ message: "wakeword live stream timed out" }),
           ),

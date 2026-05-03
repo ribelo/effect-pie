@@ -1254,7 +1254,7 @@ const recordVoiceActivatedClip = (config: {
     const result = yield* Deferred.await(completion).pipe(
       Effect.timeoutOrElse({
         duration: `${Math.ceil(config.maxWaitSeconds + config.clipSeconds + 2)} seconds`,
-        onTimeout: () =>
+        orElse: () =>
           Ref.get(maxObservedRmsRef).pipe(
             Effect.flatMap((observedMaxRms) =>
               Effect.fail(
@@ -1417,7 +1417,7 @@ const recordPcmUntilTrailingSilence = (config: {
     const result = yield* Deferred.await(completion).pipe(
       Effect.timeoutOrElse({
         duration: `${Math.ceil(config.maxSeconds + 2)} seconds`,
-        onTimeout: () =>
+        orElse: () =>
           Effect.gen(function* () {
             const chunks = yield* Ref.get(chunksRef)
             const seenSpeech = yield* Ref.get(seenSpeechRef)
@@ -1959,7 +1959,7 @@ const runKeyboardMonitorPtt = (
           const nextEvent = yield* Effect.promise(() => eventQueue.take()).pipe(
             Effect.timeoutOrElse({
               duration: Duration.millis(remaining),
-              onTimeout: () => Effect.succeed(undefined),
+              orElse: () => Effect.succeed(undefined),
             }),
           )
 
@@ -2979,7 +2979,7 @@ const runAssistantPttCombinedLoop = (config: {
           const nextEvent = yield* Effect.promise(() => eventQueue.take()).pipe(
             Effect.timeoutOrElse({
               duration: Duration.millis(remaining),
-              onTimeout: () => Effect.succeed(undefined),
+              orElse: () => Effect.succeed(undefined),
             }),
           )
 

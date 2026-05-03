@@ -1,4 +1,4 @@
-import { type Generated as OpenAiGenerated, OpenAiClient } from "@effect/ai-openai"
+import { type Generated as OpenAiGenerated, OpenAiClientGenerated } from "@effect/ai-openai"
 import { Data, Effect, Layer, Redacted, Schema, Stream } from "effect"
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
 import * as HttpClient from "effect/unstable/http/HttpClient"
@@ -220,7 +220,7 @@ const makeOpenRouterClientLayer = (apiKey: string, baseUrl: string) => {
   const referer = readEnvString(process.env, "OPENROUTER_HTTP_REFERER", "OR_SITE_URL")
   const title = readEnvString(process.env, "OPENROUTER_X_TITLE", "OR_APP_NAME")
 
-  return OpenAiClient.layer({
+  return OpenAiClientGenerated.layer({
     apiKey: Redacted.make(apiKey),
     apiUrl: baseUrl,
     transformClient: (client) =>
@@ -357,9 +357,9 @@ const runOpenRouterAudioStreaming = (config: {
       } as unknown as typeof OpenAiGenerated.CreateChatCompletionRequestJson.Encoded
 
       const nonStreamingEffect = Effect.gen(function* () {
-        const client = yield* OpenAiClient.OpenAiClient
+        const client = yield* OpenAiClientGenerated.OpenAiClientGenerated
 
-        const response = yield* client.client.createChatCompletion({
+        const response = yield* client.createChatCompletion({
           payload: nonStreamingPayload,
         })
 
@@ -412,9 +412,9 @@ const runOpenRouterAudioStreaming = (config: {
     let streamedContent = ""
 
     const streamingEffect = Effect.gen(function* () {
-      const client = yield* OpenAiClient.OpenAiClient
+      const client = yield* OpenAiClientGenerated.OpenAiClientGenerated
 
-      yield* client.client.createChatCompletionSse({ payload: streamingPayload }).pipe(
+      yield* client.createChatCompletionSse({ payload: streamingPayload }).pipe(
         Stream.catchIf(
           (cause) => isDoneSentinelSchemaError(cause),
           () => Stream.empty,

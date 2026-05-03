@@ -7,7 +7,7 @@
   "type": "module",
   "scripts": {
     "prepare": "effect-language-service patch",
-    "check": "tsgo -p tsconfig.check.json --noEmit",
+    "check": "node scripts/tsgo.cjs -p tsconfig.check.json --noEmit",
     "lint": "bunx oxlint .",
     "lint:fix": "bunx oxlint . --fix",
     "format": "bunx oxfmt .",

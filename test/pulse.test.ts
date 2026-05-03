@@ -57,7 +57,7 @@ test("connects to PulseAudio and records audio", { timeout: 30_000 }, async () =
   }).pipe(
     Effect.timeoutOrElse({
       duration: "20 seconds",
-      onTimeout: () =>
+      orElse: () =>
         Effect.fail(
           new PulseTestTimeoutError({ message: "PulseAudio integration test timed out" }),
         ),

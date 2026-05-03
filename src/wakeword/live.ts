@@ -52,7 +52,7 @@ export const createWakewordTelemetryStream = (
   Stream.unwrap(
     Effect.gen(function* () {
       const queue = yield* Queue.unbounded<WakewordTelemetryEvent>()
-      const client = yield* PulseAudioClient
+      const client = yield* Effect.service(PulseAudioClient)
 
       yield* client.connect().pipe(
         Effect.mapError(

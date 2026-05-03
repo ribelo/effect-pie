@@ -7,7 +7,7 @@ import * as Layer from "effect/Layer"
 import * as Queue from "effect/Queue"
 import * as Ref from "effect/Ref"
 import * as Scope from "effect/Scope"
-import * as ServiceMap from "effect/ServiceMap"
+import * as Context from "effect/Context"
 import type * as Socket from "effect/unstable/socket/Socket"
 import { promises as fs } from "node:fs"
 
@@ -195,7 +195,7 @@ const shutdownRecordQueues = (connection: Connection): Effect.Effect<void> =>
     ),
   )
 
-export class PulseAudioClient extends ServiceMap.Service<
+export class PulseAudioClient extends Context.Service<
   PulseAudioClient,
   {
     readonly connect: (options?: ConnectOptions) => Effect.Effect<void, PulseAudioClientError>
@@ -308,7 +308,7 @@ const make = (defaults: PulseAudioClientConfig) =>
         return yield* Deferred.await(pending).pipe(
           Effect.timeoutOrElse({
             duration: `${connection.requestTimeoutMs} millis`,
-            onTimeout: () =>
+            orElse: () =>
               Effect.fail(
                 new PulseAudioClientError({
                   message: `timed out waiting for PulseAudio response to tag ${packet.tag}`,
@@ -478,6 +478,6 @@ const make = (defaults: PulseAudioClientConfig) =>
   })
 
 export const layer = (config: PulseAudioClientConfig = {}): Layer.Layer<PulseAudioClient> =>
-  Layer.effect(PulseAudioClient, make(config))
+  Layer.effect(PulseAudioClient)(make(config))
 
 export const PulseAudioClientLive = layer()
