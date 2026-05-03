@@ -26,13 +26,19 @@ export const buildXdotoolCommandArgs = (xdotoolExecutable: string, text: string)
   text,
 ]
 
-const findXdotoolExecutable = Effect.sync(() => {
-  const executable = Bun.which("xdotool")
-  if (executable === null) {
-    throw new XdotoolError("xdotool is required for X11 text injection but was not found in PATH")
-  }
+const findXdotoolExecutable = Effect.try({
+  try: () => {
+    const executable = Bun.which("xdotool")
+    if (executable === null) {
+      throw new XdotoolError("xdotool is required for X11 text injection but was not found in PATH")
+    }
 
-  return executable
+    return executable
+  },
+  catch: (cause) =>
+    cause instanceof XdotoolError
+      ? cause
+      : new XdotoolError("Failed to resolve xdotool", { cause }),
 })
 
 const validateInputText = (text: string): Effect.Effect<void, XdotoolError> =>

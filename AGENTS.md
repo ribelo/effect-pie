@@ -31,10 +31,10 @@ PIE is coupled with a Quickshell status bar that displays recording state via th
 Use local reference code before inventing patterns from scratch.
 
 - `../erg/` - Bun + Effect 4.0 project structure, dependency pinning, tool config, and engineering rules
-- `../erg/.reference/effect-smol/` - canonical Effect v4 reference, package names, service/layer patterns, and migration guidance
-- `../erg/.reference/effect-smol/MIGRATION.md` - repo-wide migration rules and naming changes to apply when examples conflict
-- `../erg/.reference/effect-smol/LLMS.md` - Effect v4 LLM-oriented guidance and idiomatic patterns
-- `../erg/.reference/effect-smol/migration/services.md` - Effect service/layer migration details
+- `.reference/effect-smol/` - canonical Effect v4 reference, package names, service/layer patterns, and migration guidance
+- `.reference/effect-smol/MIGRATION.md` - repo-wide migration rules and naming changes to apply when examples conflict
+- `.reference/effect-smol/LLMS.md` - Effect v4 LLM-oriented guidance and idiomatic patterns
+- `.reference/effect-smol/migration/services.md` - Effect service/layer migration details
 - `.reference/pulseaudio.js/` - local PulseAudio reference implementation
 
 ## Tech Stack
@@ -90,7 +90,7 @@ Keep solutions boring, explicit, and easy to edit.
 
 This repository targets Effect v4 beta from `effect-smol`. Do not duplicate Effect migration notes in this file.
 
-Before writing or normalizing Effect code, read the relevant source of truth in `../erg/.reference/effect-smol/`:
+Before writing or normalizing Effect code, read the relevant source of truth in `.reference/effect-smol/`:
 
 - `MIGRATION.md`
 - `LLMS.md`
