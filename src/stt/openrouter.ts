@@ -3,20 +3,9 @@ import { Data, Effect, Layer, Redacted, Schema, Stream } from "effect"
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
+import type * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
 
 const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-
-const TRANSCRIBE_PROMPT_TEMPLATE =
-  'Transcribe the spoken audio in {{language}}. Return application/json with exactly one field: {"transciption":"..."}.'
-
-const TRANSCRIBE_STREAM_PROMPT_TEMPLATE =
-  "Transcribe the spoken audio in {{language}}. Return only transcript text."
-
-const TRANSLATE_PROMPT_TEMPLATE =
-  'Transcribe the spoken audio in {{sourceLanguage}} and translate it to {{targetLanguage}}. Return application/json with exactly one field: {"translation":"..."}.'
-
-const TRANSLATE_STREAM_PROMPT_TEMPLATE =
-  "Transcribe the spoken audio in {{sourceLanguage}} and translate it to {{targetLanguage}}. Return only translated text."
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null
@@ -69,8 +58,10 @@ export const resolveOpenRouterBaseUrl = (env: NodeJS.ProcessEnv = process.env): 
     DEFAULT_OPENROUTER_BASE_URL
   ).replace(/\/+$/, "")
 
-const renderTemplate = (template: string, variables: Readonly<Record<string, string>>): string =>
-  template.replace(/\{\{(\w+)\}\}/g, (_, key: string) => variables[key] ?? "")
+export const renderTemplate = (
+  template: string,
+  variables: Readonly<Record<string, string>>,
+): string => template.replace(/\{\{(\w+)\}\}/g, (_, key: string) => variables[key] ?? "")
 
 export const encodePcm16MonoWav = (pcmBytes: Uint8Array, sampleRate: number): Uint8Array => {
   const header = new ArrayBuffer(44)
@@ -145,8 +136,8 @@ export const decodeStructuredTransciption = (
 ): Effect.Effect<string, OpenRouterSttError> =>
   decodeStructuredField({
     responseBody,
-    fields: ["transciption", "transcription"],
-    description: "`transciption` or `transcription`",
+    fields: ["transcription"],
+    description: "`transcription`",
   })
 
 export const decodeStructuredTranslation = (
@@ -154,7 +145,7 @@ export const decodeStructuredTranslation = (
 ): Effect.Effect<string, OpenRouterSttError> =>
   decodeStructuredField({
     responseBody,
-    fields: ["translation", "translated_text", "transciption", "transcription"],
+    fields: ["translation"],
     description: "`translation`",
   })
 
@@ -218,6 +209,13 @@ const extractRawContentFromChatCompletion = (
   return extractTextFromMessageContent(content)
 }
 
+export const patchSystemFingerprint = (body: unknown): unknown => {
+  if (isRecord(body) && body["system_fingerprint"] === null) {
+    return { ...body, system_fingerprint: "" }
+  }
+  return body
+}
+
 const makeOpenRouterClientLayer = (apiKey: string, baseUrl: string) => {
   const referer = readEnvString(process.env, "OPENROUTER_HTTP_REFERER", "OR_SITE_URL")
   const title = readEnvString(process.env, "OPENROUTER_X_TITLE", "OR_APP_NAME")
@@ -240,14 +238,68 @@ const makeOpenRouterClientLayer = (apiKey: string, baseUrl: string) => {
 
           return next
         }),
+        HttpClient.transformResponse((effect) =>
+          Effect.gen(function* () {
+            const response = yield* effect
+            const contentType = response.headers["content-type"] ?? ""
+            if (!contentType.includes("application/json")) {
+              return response
+            }
+
+            const text = yield* response.text
+            const parsed: unknown = JSON.parse(text)
+            const patched = patchSystemFingerprint(parsed)
+            const patchedText = JSON.stringify(patched)
+
+            const proto = Object.getPrototypeOf(response) as object
+            const patchedResponse = Object.create(proto) as HttpClientResponse.HttpClientResponse
+            Object.assign(patchedResponse, response)
+            Object.defineProperty(patchedResponse, "text", {
+              value: Effect.succeed(patchedText),
+              writable: true,
+              enumerable: true,
+              configurable: true,
+            })
+            Object.defineProperty(patchedResponse, "json", {
+              value: Effect.succeed(patched),
+              writable: true,
+              enumerable: true,
+              configurable: true,
+            })
+
+            return patchedResponse
+          }),
+        ),
       ),
-  })
+  }).pipe(Layer.provide(FetchHttpClient.layer))
+}
+
+export const TRANSCRIPTION_JSON_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    transcription: { type: "string" as const },
+  },
+  required: ["transcription"],
+  additionalProperties: false,
+}
+
+export const TRANSLATION_JSON_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    translation: { type: "string" as const },
+  },
+  required: ["translation"],
+  additionalProperties: false,
 }
 
 const runOpenRouterAudioStreaming = (config: {
   readonly model: string
   readonly prompt: string
   readonly wavData: Uint8Array
+  readonly jsonSchema?: {
+    readonly name: string
+    readonly schema: typeof TRANSCRIPTION_JSON_SCHEMA | typeof TRANSLATION_JSON_SCHEMA
+  }
   readonly structuredDecoder?: (responseBody: string) => Effect.Effect<string, OpenRouterSttError>
   readonly onDelta?: (delta: string) => Effect.Effect<void, OpenRouterSttError>
 }): Effect.Effect<string, OpenRouterSttError> =>
@@ -282,18 +334,21 @@ const runOpenRouterAudioStreaming = (config: {
           ],
         },
       ],
-      ...(config.structuredDecoder === undefined
+      ...(config.jsonSchema === undefined
         ? {}
         : {
             response_format: {
-              type: "json_object" as const,
+              type: "json_schema" as const,
+              json_schema: {
+                name: config.jsonSchema.name,
+                strict: true,
+                schema: config.jsonSchema.schema,
+              },
             },
           }),
     }
 
-    const openAiLayer = makeOpenRouterClientLayer(apiKey, baseUrl).pipe(
-      Layer.provide(FetchHttpClient.layer),
-    )
+    const openAiLayer = makeOpenRouterClientLayer(apiKey, baseUrl)
 
     if (config.onDelta === undefined) {
       const nonStreamingPayload = {
@@ -320,17 +375,12 @@ const runOpenRouterAudioStreaming = (config: {
         }
 
         return yield* config.structuredDecoder(rawOutput).pipe(
-          Effect.catch(() =>
-            Effect.succeed(rawOutput).pipe(
-              Effect.filterOrFail(
-                (text) => text.length > 0,
-                () =>
-                  new OpenRouterSttError({
-                    message: "OpenRouter response did not contain transcript text",
-                    responseBody: rawOutput,
-                  }),
-              ),
-            ),
+          Effect.mapError(
+            () =>
+              new OpenRouterSttError({
+                message: "OpenRouter structured response did not match expected schema",
+                responseBody: rawOutput,
+              }),
           ),
         )
       }).pipe(
@@ -413,19 +463,20 @@ export const transcribePcmWithOpenRouter = (config: {
   readonly pcmBytes: Uint8Array
   readonly sampleRate: number
   readonly language: string
+  readonly promptTemplate: string
   readonly onDelta?: (delta: string) => Effect.Effect<void, OpenRouterSttError>
 }): Effect.Effect<string, OpenRouterSttError> =>
   runOpenRouterAudioStreaming({
     model: config.model,
-    prompt: renderTemplate(
-      config.onDelta === undefined ? TRANSCRIBE_PROMPT_TEMPLATE : TRANSCRIBE_STREAM_PROMPT_TEMPLATE,
-      {
-        language: config.language,
-      },
-    ),
+    prompt: renderTemplate(config.promptTemplate, {
+      language: config.language,
+    }),
     wavData: encodePcm16MonoWav(config.pcmBytes, config.sampleRate),
     ...(config.onDelta === undefined
-      ? { structuredDecoder: decodeStructuredTransciption }
+      ? {
+          jsonSchema: { name: "transcription_response", schema: TRANSCRIPTION_JSON_SCHEMA },
+          structuredDecoder: decodeStructuredTransciption,
+        }
       : { onDelta: config.onDelta }),
   })
 
@@ -435,19 +486,20 @@ export const transcribeAndTranslatePcmWithOpenRouter = (config: {
   readonly sampleRate: number
   readonly sourceLanguage: string
   readonly targetLanguage: string
+  readonly promptTemplate: string
   readonly onDelta?: (delta: string) => Effect.Effect<void, OpenRouterSttError>
 }): Effect.Effect<string, OpenRouterSttError> =>
   runOpenRouterAudioStreaming({
     model: config.model,
-    prompt: renderTemplate(
-      config.onDelta === undefined ? TRANSLATE_PROMPT_TEMPLATE : TRANSLATE_STREAM_PROMPT_TEMPLATE,
-      {
-        sourceLanguage: config.sourceLanguage,
-        targetLanguage: config.targetLanguage,
-      },
-    ),
+    prompt: renderTemplate(config.promptTemplate, {
+      source_language: config.sourceLanguage,
+      target_language: config.targetLanguage,
+    }),
     wavData: encodePcm16MonoWav(config.pcmBytes, config.sampleRate),
     ...(config.onDelta === undefined
-      ? { structuredDecoder: decodeStructuredTranslation }
+      ? {
+          jsonSchema: { name: "translation_response", schema: TRANSLATION_JSON_SCHEMA },
+          structuredDecoder: decodeStructuredTranslation,
+        }
       : { onDelta: config.onDelta }),
   })

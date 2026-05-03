@@ -6,6 +6,10 @@ import {
   decodeStructuredTransciption,
   decodeStructuredTranslation,
   encodePcm16MonoWav,
+  patchSystemFingerprint,
+  renderTemplate,
+  TRANSCRIPTION_JSON_SCHEMA,
+  TRANSLATION_JSON_SCHEMA,
 } from "../src/stt/openrouter.js"
 
 test("encodePcm16MonoWav writes a RIFF/WAVE payload", () => {
@@ -18,17 +22,17 @@ test("encodePcm16MonoWav writes a RIFF/WAVE payload", () => {
   assert.strictEqual(String.fromCharCode(...wav.slice(36, 40)), "data")
 })
 
-test("decodeStructuredTransciption reads the transciption field", async () => {
-  const decoded = await Effect.runPromise(decodeStructuredTransciption('{"transciption":"hello"}'))
-  assert.strictEqual(decoded, "hello")
-})
-
-test("decodeStructuredTransciption accepts transcription alias", async () => {
+test("decodeStructuredTransciption reads the transcription field", async () => {
   const decoded = await Effect.runPromise(decodeStructuredTransciption('{"transcription":"hello"}'))
   assert.strictEqual(decoded, "hello")
 })
 
-test("decodeStructuredTransciption fails when transcript field is missing", async () => {
+test("decodeStructuredTransciption rejects legacy transciption alias", async () => {
+  const exit = await Effect.runPromiseExit(decodeStructuredTransciption('{"transciption":"hello"}'))
+  assert.strictEqual(Exit.isFailure(exit), true)
+})
+
+test("decodeStructuredTransciption fails when transcription field is missing", async () => {
   const exit = await Effect.runPromiseExit(decodeStructuredTransciption('{"text":"hello"}'))
 
   assert.strictEqual(Exit.isFailure(exit), true)
@@ -39,7 +43,72 @@ test("decodeStructuredTranslation reads translation field", async () => {
   assert.strictEqual(decoded, "hello")
 })
 
-test("decodeStructuredTranslation accepts legacy transcription aliases", async () => {
-  const decoded = await Effect.runPromise(decodeStructuredTranslation('{"transcription":"legacy"}'))
-  assert.strictEqual(decoded, "legacy")
+test("decodeStructuredTranslation rejects legacy transcription aliases", async () => {
+  const exit = await Effect.runPromiseExit(
+    decodeStructuredTranslation('{"transcription":"legacy"}'),
+  )
+  assert.strictEqual(Exit.isFailure(exit), true)
+})
+
+test("renderTemplate substitutes {{language}} for transcription prompt", () => {
+  const result = renderTemplate("Transcribe in {{language}}.", { language: "Polish" })
+  assert.strictEqual(result, "Transcribe in Polish.")
+})
+
+test("renderTemplate substitutes {{source_language}} and {{target_language}} for translation prompt", () => {
+  const result = renderTemplate("Translate from {{source_language}} to {{target_language}}.", {
+    source_language: "Polish",
+    target_language: "English",
+  })
+  assert.strictEqual(result, "Translate from Polish to English.")
+})
+
+test("renderTemplate leaves unknown placeholders empty", () => {
+  const result = renderTemplate("Hello {{name}}.", {})
+  assert.strictEqual(result, "Hello .")
+})
+
+test("TRANSCRIPTION_JSON_SCHEMA requires transcription string field", () => {
+  assert.strictEqual(TRANSCRIPTION_JSON_SCHEMA.type, "object")
+  assert.deepStrictEqual(TRANSCRIPTION_JSON_SCHEMA.required, ["transcription"])
+  assert.strictEqual(TRANSCRIPTION_JSON_SCHEMA.additionalProperties, false)
+  assert.strictEqual(TRANSCRIPTION_JSON_SCHEMA.properties.transcription.type, "string")
+})
+
+test("TRANSLATION_JSON_SCHEMA requires translation string field", () => {
+  assert.strictEqual(TRANSLATION_JSON_SCHEMA.type, "object")
+  assert.deepStrictEqual(TRANSLATION_JSON_SCHEMA.required, ["translation"])
+  assert.strictEqual(TRANSLATION_JSON_SCHEMA.additionalProperties, false)
+  assert.strictEqual(TRANSLATION_JSON_SCHEMA.properties.translation.type, "string")
+})
+
+test("decodeStructuredTransciption fails without raw fallback for malformed JSON", async () => {
+  const exit = await Effect.runPromiseExit(decodeStructuredTransciption("not valid json"))
+  assert.strictEqual(Exit.isFailure(exit), true)
+})
+
+test("decodeStructuredTranslation fails without raw fallback for missing field", async () => {
+  const exit = await Effect.runPromiseExit(decodeStructuredTranslation('{"text":"hello"}'))
+  assert.strictEqual(Exit.isFailure(exit), true)
+})
+
+test("patchSystemFingerprint replaces null with empty string", () => {
+  const patched = patchSystemFingerprint({ system_fingerprint: null, choices: [] })
+  assert.deepStrictEqual(patched, { system_fingerprint: "", choices: [] })
+})
+
+test("patchSystemFingerprint leaves string fingerprint untouched", () => {
+  const patched = patchSystemFingerprint({ system_fingerprint: "fp_abc", choices: [] })
+  assert.deepStrictEqual(patched, { system_fingerprint: "fp_abc", choices: [] })
+})
+
+test("patchSystemFingerprint leaves missing fingerprint untouched", () => {
+  const patched = patchSystemFingerprint({ choices: [] })
+  assert.deepStrictEqual(patched, { choices: [] })
+})
+
+test("patchSystemFingerprint leaves non-record untouched", () => {
+  assert.strictEqual(patchSystemFingerprint("raw text"), "raw text")
+  assert.strictEqual(patchSystemFingerprint(42), 42)
+  assert.deepStrictEqual(patchSystemFingerprint(null), null)
 })

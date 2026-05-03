@@ -291,7 +291,7 @@ const toOnnxScoringModel = (session: OnnxSession): WakewordScoringModel => {
   }
 }
 
-const loadLinearWakewordModel = (
+export const loadLinearWakewordModel = (
   modelPath: string,
 ): Effect.Effect<WakewordScoringModel, WakewordRuntimeError> =>
   Effect.tryPromise({

@@ -1,7 +1,7 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import * as dbusNext from "dbus-next"
 import type { Message as DbusMessage, MessageBus } from "dbus-next"
-import { Console, Data, Effect, Fiber, Layer, Option, Ref, Stream } from "effect"
+import { Console, Data, Duration, Effect, Fiber, Layer, Option, Ref, Stream } from "effect"
 import * as Deferred from "effect/Deferred"
 import { Command, Flag } from "effect/unstable/cli"
 import { mkdir as mkdirNode, readFile, writeFile as writeNodeFile } from "node:fs/promises"
@@ -11,19 +11,30 @@ import { createInterface } from "node:readline/promises"
 import { validateWakewordAssets, type WakewordAssetError } from "./wakeword/assets.js"
 import { createWakewordTelemetryStream } from "./wakeword/live.js"
 import {
+  loadLinearWakewordModel,
   loadWakewordFeatureSessions,
   loadWakewordModelSessions,
+  type WakewordFeatureSessions,
   type WakewordModelSessions,
   type WakewordRuntimeError,
 } from "./wakeword/onnx.js"
-import { makeWakewordPipeline, type WakewordPipelineError } from "./wakeword/pipeline.js"
+import {
+  makeWakewordPipeline,
+  type WakewordPipeline,
+  type WakewordPipelineError,
+} from "./wakeword/pipeline.js"
 import { createWakewordTriggerMachine } from "./wakeword/trigger.js"
 import {
+  decodePcmWavFile,
   initializeWakewordTrainingWorkspace,
+  loadSavedWavClips,
   makeWakewordTrainingPlan,
+  nextWavPath,
   registerWakewordModelInManifest,
   saveTrainedWakewordModel,
+  sortedWavPaths,
   trainLinearWakewordModel,
+  validateMinimumClips,
   WakewordTrainingError,
   writePcmWavFile,
 } from "./wakeword/training.js"
@@ -53,6 +64,22 @@ import {
   transcribeAndTranslatePcmWithOpenRouter,
   transcribePcmWithOpenRouter,
 } from "./stt/openrouter.js"
+import { MIN_GAIN_TO_APPLY, normalizePcmForStt, pcmPeak, pcmRms } from "./audio/pcm.js"
+import { AssistantDiagnostics, isShellTraceEnabled } from "./assistant/diagnostics.js"
+import { notifyWarning } from "./desktop/notification.js"
+import {
+  pttCaptureIdle,
+  pttCaptureIsAcceptingChunks,
+  pttCapturePostRollRemainingMs,
+  pttCaptureRelease,
+  pttCaptureStart,
+  type PttCaptureState,
+} from "./ptt/capture.js"
+import {
+  pttDeadInputDetectorInitial,
+  pttDeadInputDetectorProcessChunk,
+  pttDeadInputDetectorSync,
+} from "./ptt/deadInput.js"
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null
@@ -323,42 +350,6 @@ class CliError extends Data.TaggedError("CliError")<{
   readonly message: string
   readonly cause?: unknown
 }> {}
-
-const pcmRms = (chunk: Uint8Array): number => {
-  const sampleCount = Math.floor(chunk.length / 2)
-  if (sampleCount <= 0) {
-    return 0
-  }
-
-  const view = new DataView(chunk.buffer, chunk.byteOffset, sampleCount * 2)
-  let sumSquares = 0
-
-  for (let index = 0; index < sampleCount; index += 1) {
-    const sample = view.getInt16(index * 2, true) / 32768
-    sumSquares += sample * sample
-  }
-
-  return Math.sqrt(sumSquares / sampleCount)
-}
-
-const pcmPeak = (chunk: Uint8Array): number => {
-  const sampleCount = Math.floor(chunk.length / 2)
-  if (sampleCount <= 0) {
-    return 0
-  }
-
-  const view = new DataView(chunk.buffer, chunk.byteOffset, sampleCount * 2)
-  let peak = 0
-
-  for (let index = 0; index < sampleCount; index += 1) {
-    const normalized = Math.abs(view.getInt16(index * 2, true) / 32768)
-    if (normalized > peak) {
-      peak = normalized
-    }
-  }
-
-  return peak
-}
 
 const clamp = (value: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, value))
@@ -712,6 +703,159 @@ const candidateThresholds = (
 
   return [...values].sort((left, right) => left - right)
 }
+
+const scorePcmClips = (config: {
+  readonly clips: ReadonlyArray<Uint8Array>
+  readonly pipeline: WakewordPipeline
+  readonly modelName: string
+}): Effect.Effect<ReadonlyArray<CapturedScoreFrame>, WakewordPipelineError> =>
+  Effect.gen(function* () {
+    const frames: Array<CapturedScoreFrame> = []
+
+    for (const clip of config.clips) {
+      const scoreFrames = yield* config.pipeline.feedPcmChunk(clip)
+      for (const frame of scoreFrames) {
+        const score = frame.scores[config.modelName]
+        if (score !== undefined) {
+          frames.push({
+            timestampMs: frame.timestampMs,
+            score,
+          })
+        }
+      }
+    }
+
+    return frames
+  })
+
+const runPostTrainValidationAndTuning = (config: {
+  readonly featureSessions: WakewordFeatureSessions
+  readonly plan: {
+    readonly modelName: string
+    readonly outputModelPath: string
+    readonly positiveDir: string
+    readonly negativeDir: string
+    readonly silenceDir: string
+  }
+  readonly noTuning: boolean
+  readonly sourceName: string
+}): Effect.Effect<void, WakewordTrainingError | WakewordPipelineError | WakewordRuntimeError> =>
+  Effect.gen(function* () {
+    yield* Console.log(`Validating trained model: ${config.plan.outputModelPath}`)
+
+    const trainedModel = yield* loadLinearWakewordModel(config.plan.outputModelPath)
+    const modelSessions = {
+      ...config.featureSessions,
+      wakewords: {
+        [config.plan.modelName]: trainedModel,
+      },
+    }
+
+    const pipeline = yield* makeWakewordPipeline(modelSessions)
+
+    const positiveClips = yield* loadSavedWavClips(config.plan.positiveDir)
+    if (positiveClips.length === 0) {
+      return yield* new WakewordTrainingError({
+        message: "No positive clips found for validation",
+      })
+    }
+
+    const positiveFrames = yield* scorePcmClips({
+      clips: [positiveClips[0] ?? new Uint8Array()],
+      pipeline,
+      modelName: config.plan.modelName,
+    })
+
+    if (positiveFrames.length === 0) {
+      return yield* new WakewordTrainingError({
+        message: `Trained model '${config.plan.modelName}' produced no score frames from a positive clip. The model may be invalid.`,
+      })
+    }
+
+    const maxPositiveScore = positiveFrames.reduce(
+      (max, frame) => (frame.score > max ? frame.score : max),
+      0,
+    )
+    yield* Console.log(
+      `Validation: ${positiveFrames.length} score frames from positive clip, max_score=${maxPositiveScore.toFixed(4)}`,
+    )
+
+    if (config.noTuning) {
+      yield* Console.log("Tuning persistence skipped (--no-tuning)")
+      return
+    }
+
+    const silenceClips = yield* loadSavedWavClips(config.plan.silenceDir).pipe(
+      Effect.orElseSucceed(() => []),
+    )
+    const negativeClips = yield* loadSavedWavClips(config.plan.negativeDir)
+
+    const silenceFrames = yield* scorePcmClips({
+      clips: silenceClips,
+      pipeline,
+      modelName: config.plan.modelName,
+    })
+    const negativeFrames = yield* scorePcmClips({
+      clips: negativeClips,
+      pipeline,
+      modelName: config.plan.modelName,
+    })
+    const allPositiveFrames = yield* scorePcmClips({
+      clips: positiveClips,
+      pipeline,
+      modelName: config.plan.modelName,
+    })
+
+    const evaluation = evaluateTriggerTuning({
+      modelName: config.plan.modelName,
+      silenceFrames,
+      negativeFrames,
+      positiveFrames: allPositiveFrames,
+      targetPositiveTriggers: estimateWakePhraseCount(allPositiveFrames),
+    })
+
+    yield* writeDetectionTuningSnapshot(detectionTuningPathFor(config.plan.modelName), {
+      schemaVersion: 1,
+      createdAt: new Date().toISOString(),
+      sourceName: config.sourceName,
+      modelName: config.plan.modelName,
+      modelFile: `${config.plan.modelName}.json`,
+      trigger: {
+        threshold: evaluation.config.threshold,
+        smoothingWindow: evaluation.config.smoothingWindow,
+        consecutiveFrames: evaluation.config.consecutiveFrames,
+        cooldownMs: evaluation.config.cooldownMs,
+      },
+      metrics: {
+        silenceP99: percentile(
+          silenceFrames.map((f) => f.score),
+          0.99,
+        ),
+        negativeP99: percentile(
+          negativeFrames.map((f) => f.score),
+          0.99,
+        ),
+        positiveP90: percentile(
+          allPositiveFrames.map((f) => f.score),
+          0.9,
+        ),
+        positiveEstimatedPhrases: estimateWakePhraseCount(allPositiveFrames),
+        positiveTriggers: evaluation.positiveTriggers,
+        negativeTriggers: evaluation.negativeTriggers,
+        silenceTriggers: evaluation.silenceTriggers,
+      },
+    })
+
+    yield* Console.log(
+      `Tuning: threshold=${evaluation.config.threshold.toFixed(3)} smoothing=${evaluation.config.smoothingWindow} consecutive=${evaluation.config.consecutiveFrames} cooldown=${evaluation.config.cooldownMs}ms`,
+    )
+    yield* Console.log(
+      `Tuning quality: objective=${evaluation.objective.toFixed(2)} positive=${evaluation.positiveTriggers}/${evaluation.targetPositiveTriggers} background=${evaluation.silenceTriggers + evaluation.negativeTriggers}`,
+    )
+    yield* Console.log(
+      `Tuning snapshot written to: ${detectionTuningPathFor(config.plan.modelName)}`,
+    )
+  })
 
 const evaluateTriggerTuning = (config: {
   readonly modelName: string
@@ -1310,6 +1454,10 @@ const recordCommand = Command.make(
       Flag.optional,
       Flag.withDescription("Write raw PCM to this file"),
     ),
+    raw: Flag.boolean("raw").pipe(
+      Flag.withDescription("Write unnormalized PCM without auto-gain"),
+      Flag.withDefault(false),
+    ),
     sampleRate: positiveIntegerFlag("sample-rate", "Sample rate in Hz", 16_000),
     channels: positiveIntegerFlag("channels", "Number of channels", 1),
     fragmentSize: positiveIntegerFlag("fragment-size", "PulseAudio fragment size in bytes", 1024),
@@ -1321,37 +1469,40 @@ const recordCommand = Command.make(
       yield* client.connect()
 
       const program = Effect.gen(function* () {
+        const serverInfo = yield* client.getServerInfo
+        const sources = yield* client.listSources
+
+        const requestedSource = Option.getOrUndefined(config.source)
+        const sourceName = requestedSource ?? serverInfo.defaultSource
+
+        if (
+          requestedSource !== undefined &&
+          !sources.some((source) => source.name === requestedSource)
+        ) {
+          const available = sources.map((source) => source.name ?? "<unnamed>").join(", ")
+          return yield* new CliError({
+            message: `Unknown source '${requestedSource}'. Available sources: ${available}. Run 'pie sources' to list sources.`,
+          })
+        }
+
+        yield* Console.log(`[record] Source: ${sourceName}`)
+
         const byteCountRef = yield* Ref.make(0)
         const chunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([])
 
-        const recordOptions: {
-          sampleSpec: {
-            format: PA_SAMPLE_FORMAT
-            channels: number
-            rate: number
-          }
-          fragmentSize: number
-          sourceName?: string
-        } = {
+        const recordFiber = yield* createRecordStream({
           sampleSpec: {
             format: PA_SAMPLE_FORMAT.S16LE,
             channels: config.channels,
             rate: config.sampleRate,
           },
           fragmentSize: config.fragmentSize,
-        }
-
-        if (Option.isSome(config.source)) {
-          recordOptions.sourceName = config.source.value
-        }
-
-        const recordFiber = yield* createRecordStream(recordOptions).pipe(
+          sourceName,
+        }).pipe(
           Stream.runForEach((chunk) =>
             Effect.gen(function* () {
               yield* Ref.update(byteCountRef, (count) => count + chunk.length)
-              if (Option.isSome(config.output)) {
-                yield* Ref.update(chunksRef, (chunks) => [...chunks, chunk])
-              }
+              yield* Ref.update(chunksRef, (chunks) => [...chunks, chunk])
             }),
           ),
           Effect.forkDetach,
@@ -1367,12 +1518,27 @@ const recordCommand = Command.make(
           })
         }
 
+        const chunks = yield* Ref.get(chunksRef)
+        const rawData = concatChunks(chunks)
+        const rawRms = pcmRms(rawData)
+        const rawPeak = pcmPeak(rawData)
+
+        const bytesPerSecond = config.sampleRate * config.channels * 2
+        const expectedBytes = bytesPerSecond * config.duration
+        const trimmedRawData =
+          rawData.length > expectedBytes ? rawData.slice(0, expectedBytes) : rawData
+
+        const { normalizedBytes: outputData, gain } = config.raw
+          ? { normalizedBytes: trimmedRawData, gain: 1.0 }
+          : normalizePcmForStt(trimmedRawData)
+
         if (Option.isSome(config.output)) {
           const outputPath = config.output.value
-          const chunks = yield* Ref.get(chunksRef)
-          const data = concatChunks(chunks)
           yield* Effect.tryPromise({
-            try: () => writeNodeFile(outputPath, data),
+            try: async () => {
+              await mkdirNode(path.dirname(outputPath), { recursive: true })
+              await writeNodeFile(outputPath, outputData)
+            },
             catch: (cause) =>
               new CliError({
                 message: `Failed to write output file: ${String(cause)}`,
@@ -1381,16 +1547,14 @@ const recordCommand = Command.make(
           })
         }
 
-        const samplesPerChannel = Math.floor(byteCount / 2 / config.channels)
-        const seconds = samplesPerChannel / config.sampleRate
+        const seconds = outputData.length / bytesPerSecond
+        const gainLabel = gain > MIN_GAIN_TO_APPLY ? `gain=${gain.toFixed(2)}` : "gain=1.0"
+        const rawLabel = config.raw ? " raw=true" : ""
+        const outputLabel = Option.isSome(config.output) ? ` to ${config.output.value}` : ""
 
-        if (Option.isSome(config.output)) {
-          yield* Console.log(
-            `Recorded ${byteCount} bytes (${seconds.toFixed(2)}s) to ${config.output.value}`,
-          )
-        } else {
-          yield* Console.log(`Recorded ${byteCount} bytes (${seconds.toFixed(2)}s)`)
-        }
+        yield* Console.log(
+          `Recorded ${outputData.length} bytes (${seconds.toFixed(2)}s) rms=${rawRms.toFixed(4)} peak=${rawPeak.toFixed(4)} ${gainLabel}${rawLabel} source=${sourceName}${outputLabel}`,
+        )
       })
 
       yield* program.pipe(Effect.ensuring(client.disconnect))
@@ -1680,7 +1844,7 @@ const runKeyboardMonitorPtt = (
         })
       }
 
-      const captureActiveRef = yield* Ref.make(false)
+      const captureStateRef = yield* Ref.make<PttCaptureState>(pttCaptureIdle)
       const captureChunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([])
       const captureStartedAtRef = yield* Ref.make<number | undefined>(undefined)
 
@@ -1701,11 +1865,19 @@ const runKeyboardMonitorPtt = (
         recordOptions.sourceName = config.source.value
       }
 
+      const deadInputDetectorRef = yield* Ref.make(pttDeadInputDetectorInitial())
+
       const recordFiber = yield* createRecordStream(recordOptions).pipe(
         Stream.runForEach((chunk) =>
           Effect.gen(function* () {
-            const active = yield* Ref.get(captureActiveRef)
-            if (!active) {
+            const state = yield* Ref.get(captureStateRef)
+            const isActive = pttCaptureIsAcceptingChunks(state)
+
+            yield* Ref.update(deadInputDetectorRef, (detector) =>
+              pttDeadInputDetectorSync(detector, isActive),
+            )
+
+            if (!isActive) {
               return
             }
 
@@ -1715,6 +1887,22 @@ const runKeyboardMonitorPtt = (
               next.push(copied)
               return next
             })
+
+            const { detector: nextDetector, warn } = pttDeadInputDetectorProcessChunk(
+              yield* Ref.get(deadInputDetectorRef),
+              copied,
+            )
+            yield* Ref.set(deadInputDetectorRef, nextDetector)
+
+            if (warn) {
+              yield* Console.log(
+                `[${config.logPrefix}] No input detected; microphone probably muted`,
+              )
+              yield* notifyWarning(
+                "pie: no microphone input",
+                "No input detected during push-to-talk. Your microphone may be muted.",
+              )
+            }
           }),
         ),
         Effect.forkDetach,
@@ -1724,7 +1912,7 @@ const runKeyboardMonitorPtt = (
 
       yield* Console.log(config.armedMessage(trigger))
 
-      while (true) {
+      mainLoop: while (true) {
         const event = yield* Effect.promise(() => eventQueue.take())
 
         const keycodeMatches = trigger.keycode > 0 && event.keycode === trigger.keycode
@@ -1735,24 +1923,66 @@ const runKeyboardMonitorPtt = (
         }
 
         if (!event.released) {
-          const alreadyActive = yield* Ref.get(captureActiveRef)
-          if (alreadyActive) {
+          const state = yield* Ref.get(captureStateRef)
+          const nextState = pttCaptureStart(state, Date.now())
+          if (nextState === state) {
+            continue
+          }
+
+          if (state.tag === "postRoll") {
+            yield* Ref.set(captureStateRef, nextState)
+            yield* Console.log(`[${config.logPrefix}] Post-roll cancelled, continuing capture`)
             continue
           }
 
           yield* Ref.set(captureChunksRef, [])
           yield* Ref.set(captureStartedAtRef, Date.now())
-          yield* Ref.set(captureActiveRef, true)
+          yield* Ref.set(captureStateRef, nextState)
           yield* Console.log(`[${config.logPrefix}] Capturing... release key to stop`)
           continue
         }
 
-        const wasActive = yield* Ref.get(captureActiveRef)
-        if (!wasActive) {
+        const state = yield* Ref.get(captureStateRef)
+        if (state.tag !== "capturing") {
           continue
         }
 
-        yield* Ref.set(captureActiveRef, false)
+        yield* Ref.set(captureStateRef, pttCaptureRelease(state, Date.now()))
+
+        postRollLoop: while (true) {
+          const postRollState = yield* Ref.get(captureStateRef)
+          const remaining = pttCapturePostRollRemainingMs(postRollState, Date.now())
+          if (remaining <= 0) {
+            break postRollLoop
+          }
+
+          const nextEvent = yield* Effect.promise(() => eventQueue.take()).pipe(
+            Effect.timeoutOrElse({
+              duration: Duration.millis(remaining),
+              onTimeout: () => Effect.succeed(undefined),
+            }),
+          )
+
+          if (nextEvent === undefined) {
+            break postRollLoop
+          }
+
+          const evt = nextEvent
+          const nextKeycodeMatches = trigger.keycode > 0 && evt.keycode === trigger.keycode
+          const nextKeysymMatches = trigger.keysym > 0 && evt.keysym === trigger.keysym
+
+          if (!nextKeycodeMatches && !nextKeysymMatches) {
+            continue postRollLoop
+          }
+
+          if (!evt.released) {
+            yield* Ref.update(captureStateRef, (s) => pttCaptureStart(s, Date.now()))
+            yield* Console.log(`[${config.logPrefix}] Post-roll cancelled, continuing capture`)
+            continue mainLoop
+          }
+        }
+
+        yield* Ref.set(captureStateRef, pttCaptureIdle)
 
         const startedAt = yield* Ref.get(captureStartedAtRef)
         yield* Ref.set(captureStartedAtRef, undefined)
@@ -1773,15 +2003,22 @@ const runKeyboardMonitorPtt = (
           continue
         }
 
-        const pcmBytes = concatChunks(chunks)
-        if (pcmBytes.length === 0) {
+        const rawPcmBytes = concatChunks(chunks)
+        if (rawPcmBytes.length === 0) {
           yield* Console.log(`[${config.logPrefix}] Ignored empty clip`)
           continue
         }
 
+        const { normalizedBytes, gain } = normalizePcmForStt(rawPcmBytes)
+        if (gain > MIN_GAIN_TO_APPLY) {
+          yield* Console.log(
+            `[${config.logPrefix}] Normalized clip (rms=${pcmRms(rawPcmBytes).toFixed(4)} peak=${pcmPeak(rawPcmBytes).toFixed(4)} gain=${gain.toFixed(2)})`,
+          )
+        }
+
         yield* config.onClip({
           durationMs,
-          pcmBytes,
+          pcmBytes: normalizedBytes,
         })
       }
     }),
@@ -1896,6 +2133,7 @@ const pttTranscribeCommand = Command.make(
               pcmBytes: clip.pcmBytes,
               sampleRate: config.sampleRate,
               language: transcriptionLanguage,
+              promptTemplate: sttConfig.transcriptionPrompt,
             }).pipe(
               Effect.mapError((cause: OpenRouterSttError) =>
                 toPttKeyboardError(`STT request failed: ${cause.message}`, cause),
@@ -1933,7 +2171,7 @@ const pttTranscribeCommand = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Push-to-talk transcription via OpenRouter (model configured in $XDG_CONFIG_HOME/pie/stt.json; legacy effect-pi dir preferred when present)",
+    "Push-to-talk transcription via OpenRouter (model configured in $XDG_CONFIG_HOME/pie/stt.json)",
   ),
 )
 
@@ -1998,6 +2236,7 @@ const pttTranslateCommand = Command.make(
               sampleRate: config.sampleRate,
               sourceLanguage,
               targetLanguage,
+              promptTemplate: sttConfig.translationPrompt,
             }).pipe(
               Effect.mapError((cause: OpenRouterSttError) =>
                 toPttKeyboardError(`STT+translation request failed: ${cause.message}`, cause),
@@ -2035,7 +2274,7 @@ const pttTranslateCommand = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Push-to-talk transcription + translation via OpenRouter (model configured in $XDG_CONFIG_HOME/pie/stt.json; legacy effect-pi dir preferred when present)",
+    "Push-to-talk transcription + translation via OpenRouter (model configured in $XDG_CONFIG_HOME/pie/stt.json)",
   ),
 )
 
@@ -2153,6 +2392,7 @@ const sttInteractiveCommand = Command.make(
           pcmBytes,
           sampleRate: config.sampleRate,
           language: transcriptionLanguage,
+          promptTemplate: sttConfig.transcriptionPrompt,
           ...(config.noType
             ? {}
             : {
@@ -2331,6 +2571,7 @@ const runAssistantWakewordTranscribeLoop = (config: {
   readonly sttConfig: SttRuntimeConfig
   readonly pttActiveRef: Ref.Ref<boolean>
   readonly setRecordingMode: (mode: AssistantRecordingMode | undefined) => Effect.Effect<void>
+  readonly diagnostics?: AssistantDiagnostics | undefined
 }): Effect.Effect<void, CliError, PulseAudioClient> =>
   Effect.gen(function* () {
     const assets = yield* validateWakewordAssets({
@@ -2431,8 +2672,10 @@ const runAssistantWakewordTranscribeLoop = (config: {
           }
 
           yield* Ref.set(isTranscribingRef, true)
+          config.diagnostics?.wakewordTrigger(selectedModelName)
 
           const triggerEffect = Effect.gen(function* () {
+            config.diagnostics?.setState("wakeword-dictation")
             const dictationSilenceSeconds =
               config.sttConfig.openrouter.wakewordDictationSilenceSeconds
             const dictationMaxSeconds = config.sttConfig.openrouter.wakewordDictationMaxSeconds
@@ -2450,7 +2693,7 @@ const runAssistantWakewordTranscribeLoop = (config: {
 
             yield* config.setRecordingMode("wakeword")
 
-            const pcmBytes = yield* recordPcmUntilTrailingSilence({
+            const rawPcmBytes = yield* recordPcmUntilTrailingSilence({
               silenceSeconds: dictationSilenceSeconds,
               maxSeconds: dictationMaxSeconds,
               speechStartTimeoutSeconds: dictationSpeechStartTimeoutSeconds,
@@ -2470,11 +2713,21 @@ const runAssistantWakewordTranscribeLoop = (config: {
               Effect.ensuring(config.setRecordingMode(undefined)),
             )
 
+            const { normalizedBytes: pcmBytes, gain } = normalizePcmForStt(rawPcmBytes)
+            if (gain > MIN_GAIN_TO_APPLY) {
+              yield* Console.log(
+                `[wakeword-transcribe] Normalized dictation (rms=${pcmRms(rawPcmBytes).toFixed(4)} peak=${pcmPeak(rawPcmBytes).toFixed(4)} gain=${gain.toFixed(2)})`,
+              )
+            }
+
+            config.diagnostics?.setState("stt")
+            config.diagnostics?.sttStart(config.sttConfig.openrouter.transcriptionModel)
             const transcript = yield* transcribePcmWithOpenRouter({
               model: config.sttConfig.openrouter.transcriptionModel,
               pcmBytes,
               sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
               language: config.sttConfig.openrouter.transcriptionLanguage,
+              promptTemplate: config.sttConfig.transcriptionPrompt,
             }).pipe(
               Effect.mapError(
                 (cause: OpenRouterSttError) =>
@@ -2484,12 +2737,14 @@ const runAssistantWakewordTranscribeLoop = (config: {
                   }),
               ),
             )
+            config.diagnostics?.sttComplete(transcript.length)
 
             const text = transcript.trim()
             const injectableText = normalizeTextForInjection(text)
 
             if (injectableText.length === 0) {
               yield* Console.log("[wakeword-transcribe] Ignored empty transcript")
+              config.diagnostics?.setState("idle")
               return
             }
 
@@ -2497,6 +2752,8 @@ const runAssistantWakewordTranscribeLoop = (config: {
             yield* Console.log(injectableText)
             yield* Console.log("[wakeword-transcribe] Will type (end)")
 
+            config.diagnostics?.setState("injection")
+            config.diagnostics?.injectionStart(injectableText.length)
             const typed = yield* typeTextInFocusedApp(injectableText).pipe(
               Effect.mapError(
                 (cause) =>
@@ -2509,14 +2766,18 @@ const runAssistantWakewordTranscribeLoop = (config: {
                   }),
               ),
             )
+            config.diagnostics?.injectionComplete()
+            config.diagnostics?.setState("idle")
 
             yield* Console.log(
               `[wakeword-transcribe] Typed ${typed.text.length} chars with ${typed.backend} (${typed.sessionType})`,
             )
           }).pipe(
-            Effect.catch((cause: CliError) =>
-              Console.log(`[wakeword-transcribe] ${cause.message}`),
-            ),
+            Effect.catch((cause: CliError) => {
+              config.diagnostics?.sttFailure(cause.message)
+              config.diagnostics?.injectionFailure(cause.message)
+              return Console.log(`[wakeword-transcribe] ${cause.message}`)
+            }),
             Effect.ensuring(Ref.set(isTranscribingRef, false)),
           )
 
@@ -2540,6 +2801,7 @@ const runAssistantPttCombinedLoop = (config: {
   readonly sttConfig: SttRuntimeConfig
   readonly pttActiveRef: Ref.Ref<boolean>
   readonly setRecordingMode: (mode: AssistantRecordingMode | undefined) => Effect.Effect<void>
+  readonly diagnostics?: AssistantDiagnostics | undefined
 }): Effect.Effect<never, PttKeyboardError, PulseAudioClient> =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -2588,7 +2850,7 @@ const runAssistantPttCombinedLoop = (config: {
         }).pipe(Effect.ignore),
       )
 
-      const captureActiveRef = yield* Ref.make(false)
+      const captureStateRef = yield* Ref.make<PttCaptureState>(pttCaptureIdle)
       const captureModeRef = yield* Ref.make<AssistantPttMode | undefined>(undefined)
       const captureChunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([])
       const captureStartedAtRef = yield* Ref.make<number | undefined>(undefined)
@@ -2598,6 +2860,8 @@ const runAssistantPttCombinedLoop = (config: {
           discard: true,
         }),
       )
+
+      const deadInputDetectorRef = yield* Ref.make(pttDeadInputDetectorInitial())
 
       const recordFiber = yield* createRecordStream({
         sampleSpec: {
@@ -2610,8 +2874,14 @@ const runAssistantPttCombinedLoop = (config: {
       }).pipe(
         Stream.runForEach((chunk) =>
           Effect.gen(function* () {
-            const active = yield* Ref.get(captureActiveRef)
-            if (!active) {
+            const state = yield* Ref.get(captureStateRef)
+            const isActive = pttCaptureIsAcceptingChunks(state)
+
+            yield* Ref.update(deadInputDetectorRef, (detector) =>
+              pttDeadInputDetectorSync(detector, isActive),
+            )
+
+            if (!isActive) {
               return
             }
 
@@ -2621,6 +2891,20 @@ const runAssistantPttCombinedLoop = (config: {
               next.push(copied)
               return next
             })
+
+            const { detector: nextDetector, warn } = pttDeadInputDetectorProcessChunk(
+              yield* Ref.get(deadInputDetectorRef),
+              copied,
+            )
+            yield* Ref.set(deadInputDetectorRef, nextDetector)
+
+            if (warn) {
+              yield* Console.log("[assistant-ptt] No input detected; microphone probably muted")
+              yield* notifyWarning(
+                "pie: no microphone input",
+                "No input detected during push-to-talk. Your microphone may be muted.",
+              )
+            }
           }),
         ),
         Effect.forkDetach,
@@ -2628,7 +2912,7 @@ const runAssistantPttCombinedLoop = (config: {
 
       yield* Effect.addFinalizer(() => Fiber.interrupt(recordFiber).pipe(Effect.ignore))
 
-      while (true) {
+      mainLoop: while (true) {
         const event = yield* Effect.promise(() => eventQueue.take())
 
         const mode: AssistantPttMode | undefined =
@@ -2648,23 +2932,32 @@ const runAssistantPttCombinedLoop = (config: {
           mode === "transcribe" ? "ptt-transcribe" : "ptt-translate"
 
         if (!event.released) {
-          const alreadyActive = yield* Ref.get(captureActiveRef)
-          if (alreadyActive) {
+          const state = yield* Ref.get(captureStateRef)
+          const nextState = pttCaptureStart(state, Date.now())
+          if (nextState === state) {
+            continue
+          }
+
+          if (state.tag === "postRoll") {
+            yield* Ref.set(captureStateRef, nextState)
+            yield* Console.log(`[${modePrefix}] Post-roll cancelled, continuing capture`)
             continue
           }
 
           yield* Ref.set(captureChunksRef, [])
           yield* Ref.set(captureStartedAtRef, Date.now())
           yield* Ref.set(captureModeRef, mode)
-          yield* Ref.set(captureActiveRef, true)
+          yield* Ref.set(captureStateRef, nextState)
           yield* Ref.set(config.pttActiveRef, true)
           yield* config.setRecordingMode(recordingMode)
+          config.diagnostics?.pttHold(mode)
+          config.diagnostics?.setState(mode === "transcribe" ? "ptt-transcribe" : "ptt-translate")
           yield* Console.log(`[${modePrefix}] Capturing... release key to stop`)
           continue
         }
 
-        const wasActive = yield* Ref.get(captureActiveRef)
-        if (!wasActive) {
+        const state = yield* Ref.get(captureStateRef)
+        if (state.tag !== "capturing") {
           continue
         }
 
@@ -2673,7 +2966,47 @@ const runAssistantPttCombinedLoop = (config: {
           continue
         }
 
-        yield* Ref.set(captureActiveRef, false)
+        yield* Ref.set(captureStateRef, pttCaptureRelease(state, Date.now()))
+        config.diagnostics?.pttRelease()
+
+        postRollLoop: while (true) {
+          const postRollState = yield* Ref.get(captureStateRef)
+          const remaining = pttCapturePostRollRemainingMs(postRollState, Date.now())
+          if (remaining <= 0) {
+            break postRollLoop
+          }
+
+          const nextEvent = yield* Effect.promise(() => eventQueue.take()).pipe(
+            Effect.timeoutOrElse({
+              duration: Duration.millis(remaining),
+              onTimeout: () => Effect.succeed(undefined),
+            }),
+          )
+
+          if (nextEvent === undefined) {
+            break postRollLoop
+          }
+
+          const evt = nextEvent
+          const evtMode: AssistantPttMode | undefined =
+            evt.keysym === DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM
+              ? "transcribe"
+              : evt.keysym === DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM
+                ? "translate"
+                : undefined
+
+          if (evtMode === undefined) {
+            continue postRollLoop
+          }
+
+          if (!evt.released && evtMode === mode) {
+            yield* Ref.update(captureStateRef, (s) => pttCaptureStart(s, Date.now()))
+            yield* Console.log(`[${modePrefix}] Post-roll cancelled, continuing capture`)
+            continue mainLoop
+          }
+        }
+
+        yield* Ref.set(captureStateRef, pttCaptureIdle)
         yield* Ref.set(captureModeRef, undefined)
         yield* config.setRecordingMode(undefined)
 
@@ -2686,6 +3019,7 @@ const runAssistantPttCombinedLoop = (config: {
           yield* Ref.set(captureChunksRef, [])
 
           const capturedBytes = chunks.reduce((sum, chunk) => sum + chunk.length, 0)
+          config.diagnostics?.pttFinalize(durationMs)
           yield* Console.log(
             `[${modePrefix}] Capture stopped (${durationMs}ms, ${capturedBytes} bytes)`,
           )
@@ -2694,32 +3028,47 @@ const runAssistantPttCombinedLoop = (config: {
             yield* Console.log(
               `[${modePrefix}] Ignored short clip (${durationMs}ms < ${DEFAULT_ASSISTANT_MIN_DURATION_MS}ms)`,
             )
+            config.diagnostics?.setState("idle")
             return
           }
 
-          const pcmBytes = concatChunks(chunks)
-          if (pcmBytes.length === 0) {
+          const rawPcmBytes = concatChunks(chunks)
+          if (rawPcmBytes.length === 0) {
             yield* Console.log(`[${modePrefix}] Ignored empty clip`)
+            config.diagnostics?.setState("idle")
             return
+          }
+
+          const { normalizedBytes: pcmBytes, gain } = normalizePcmForStt(rawPcmBytes)
+          if (gain > MIN_GAIN_TO_APPLY) {
+            yield* Console.log(
+              `[${modePrefix}] Normalized clip (rms=${pcmRms(rawPcmBytes).toFixed(4)} peak=${pcmPeak(rawPcmBytes).toFixed(4)} gain=${gain.toFixed(2)})`,
+            )
           }
 
           if (mode === "transcribe") {
+            config.diagnostics?.setState("stt")
+            config.diagnostics?.sttStart(config.sttConfig.openrouter.transcriptionModel)
             const transcript = yield* transcribePcmWithOpenRouter({
               model: config.sttConfig.openrouter.transcriptionModel,
               pcmBytes,
               sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
               language: config.sttConfig.openrouter.transcriptionLanguage,
+              promptTemplate: config.sttConfig.transcriptionPrompt,
             }).pipe(
-              Effect.mapError((cause: OpenRouterSttError) =>
-                toPttKeyboardError(`PTT transcription failed: ${cause.message}`, cause),
-              ),
+              Effect.mapError((cause: OpenRouterSttError) => {
+                config.diagnostics?.sttFailure(cause.message)
+                return toPttKeyboardError(`PTT transcription failed: ${cause.message}`, cause)
+              }),
             )
+            config.diagnostics?.sttComplete(transcript.length)
 
             const text = transcript.trim()
             const injectableText = normalizeTextForInjection(text)
 
             if (injectableText.length === 0) {
               yield* Console.log("[assistant-ptt-transcribe] Ignored empty transcript")
+              config.diagnostics?.setState("idle")
               return
             }
 
@@ -2727,16 +3076,23 @@ const runAssistantPttCombinedLoop = (config: {
             yield* Console.log(injectableText)
             yield* Console.log("[assistant-ptt-transcribe] Will type (end)")
 
+            config.diagnostics?.setState("injection")
+            config.diagnostics?.injectionStart(injectableText.length)
             const typed = yield* typeTextInFocusedApp(injectableText).pipe(
-              Effect.mapError((cause) =>
-                toPttKeyboardError(
+              Effect.mapError((cause) => {
+                config.diagnostics?.injectionFailure(
+                  cause instanceof Error ? cause.message : String(cause),
+                )
+                return toPttKeyboardError(
                   cause instanceof Error
                     ? `Failed to type transcript text: ${cause.message}`
                     : "Failed to type transcript text",
                   cause,
-                ),
-              ),
+                )
+              }),
             )
+            config.diagnostics?.injectionComplete()
+            config.diagnostics?.setState("idle")
 
             yield* Console.log(
               `[assistant-ptt-transcribe] Typed ${typed.text.length} chars with ${typed.backend} (${typed.sessionType})`,
@@ -2744,23 +3100,29 @@ const runAssistantPttCombinedLoop = (config: {
             return
           }
 
+          config.diagnostics?.setState("stt")
+          config.diagnostics?.sttStart(config.sttConfig.openrouter.translationModel)
           const translated = yield* transcribeAndTranslatePcmWithOpenRouter({
             model: config.sttConfig.openrouter.translationModel,
             pcmBytes,
             sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
             sourceLanguage,
             targetLanguage,
+            promptTemplate: config.sttConfig.translationPrompt,
           }).pipe(
-            Effect.mapError((cause: OpenRouterSttError) =>
-              toPttKeyboardError(`PTT translation failed: ${cause.message}`, cause),
-            ),
+            Effect.mapError((cause: OpenRouterSttError) => {
+              config.diagnostics?.sttFailure(cause.message)
+              return toPttKeyboardError(`PTT translation failed: ${cause.message}`, cause)
+            }),
           )
+          config.diagnostics?.sttComplete(translated.length)
 
           const text = translated.trim()
           const injectableText = normalizeTextForInjection(text)
 
           if (injectableText.length === 0) {
             yield* Console.log("[assistant-ptt-translate] Ignored empty translation")
+            config.diagnostics?.setState("idle")
             return
           }
 
@@ -2768,16 +3130,23 @@ const runAssistantPttCombinedLoop = (config: {
           yield* Console.log(injectableText)
           yield* Console.log("[assistant-ptt-translate] Will type (end)")
 
+          config.diagnostics?.setState("injection")
+          config.diagnostics?.injectionStart(injectableText.length)
           const typed = yield* typeTextInFocusedApp(injectableText).pipe(
-            Effect.mapError((cause) =>
-              toPttKeyboardError(
+            Effect.mapError((cause) => {
+              config.diagnostics?.injectionFailure(
+                cause instanceof Error ? cause.message : String(cause),
+              )
+              return toPttKeyboardError(
                 cause instanceof Error
                   ? `Failed to type translated text: ${cause.message}`
                   : "Failed to type translated text",
                 cause,
-              ),
-            ),
+              )
+            }),
           )
+          config.diagnostics?.injectionComplete()
+          config.diagnostics?.setState("idle")
 
           yield* Console.log(
             `[assistant-ptt-translate] Typed ${typed.text.length} chars with ${typed.backend} (${typed.sessionType})`,
@@ -2804,16 +3173,22 @@ const runAssistantDefaultCommand = Effect.gen(function* () {
     maxSeconds: sttConfig.openrouter.wakewordDictationMaxSeconds,
   })
 
-  yield* Console.log("[assistant] Running default combined mode")
-  yield* Console.log(
-    `[assistant] Wakeword model=${DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE} -> transcription (${sttConfig.openrouter.transcriptionLanguage})`,
-  )
+  yield* Console.log("[assistant] Running default assistant mode")
+  if (sttConfig.openrouter.wakewordEnabled) {
+    yield* Console.log(
+      `[assistant] Wakeword model=${DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE} -> transcription (${sttConfig.openrouter.transcriptionLanguage})`,
+    )
+  } else {
+    yield* Console.log("[assistant] Wakeword disabled (PTT-only mode)")
+  }
   yield* Console.log(
     `[assistant] PTT transcribe keysym=${DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM}, PTT translate keysym=${DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM}`,
   )
-  yield* Console.log(
-    `[assistant] Wakeword dictation: silence=${sttConfig.openrouter.wakewordDictationSilenceSeconds}s max=${sttConfig.openrouter.wakewordDictationMaxSeconds}s speech_start_timeout=${wakewordSpeechStartTimeoutSeconds}s speech_rms=${sttConfig.openrouter.wakewordDictationSpeechRmsThreshold.toFixed(4)}`,
-  )
+  if (sttConfig.openrouter.wakewordEnabled) {
+    yield* Console.log(
+      `[assistant] Wakeword dictation: silence=${sttConfig.openrouter.wakewordDictationSilenceSeconds}s max=${sttConfig.openrouter.wakewordDictationMaxSeconds}s speech_start_timeout=${wakewordSpeechStartTimeoutSeconds}s speech_rms=${sttConfig.openrouter.wakewordDictationSpeechRmsThreshold.toFixed(4)}`,
+    )
+  }
   yield* Console.log("[assistant] Focus the target app (for example Slack) to receive typed text")
   yield* Console.log("[assistant] Press Ctrl+C to stop all listeners")
 
@@ -2831,16 +3206,48 @@ const runAssistantDefaultCommand = Effect.gen(function* () {
   yield* setRecordingMode(undefined)
   yield* Console.log(`[assistant] Recording state file: ${ASSISTANT_RECORDING_STATE_PATH}`)
 
-  return yield* Effect.all(
+  const diagnostics = isShellTraceEnabled(process.env["PIE_SHELL_TRACE"])
+    ? new AssistantDiagnostics()
+    : undefined
+
+  const effect = Effect.all(
     [
-      runAssistantWakewordTranscribeLoop({ sourceName, sttConfig, pttActiveRef, setRecordingMode }),
-      runAssistantPttCombinedLoop({ sourceName, sttConfig, pttActiveRef, setRecordingMode }),
+      runAssistantPttCombinedLoop({
+        sourceName,
+        sttConfig,
+        pttActiveRef,
+        setRecordingMode,
+        diagnostics,
+      }),
+      ...(sttConfig.openrouter.wakewordEnabled
+        ? [
+            runAssistantWakewordTranscribeLoop({
+              sourceName,
+              sttConfig,
+              pttActiveRef,
+              setRecordingMode,
+              diagnostics,
+            }),
+          ]
+        : []),
     ],
     {
       concurrency: "unbounded",
       discard: true,
     },
   ).pipe(Effect.ensuring(setRecordingMode(undefined)))
+
+  return yield* effect.pipe(
+    Effect.tapError((cause) =>
+      Effect.sync(() => {
+        if (diagnostics !== undefined) {
+          diagnostics.setState("idle")
+          // eslint-disable-next-line no-console
+          console.error(diagnostics.renderSnapshot())
+        }
+      }),
+    ),
+  )
 })
 
 const typeCommand = Command.make(
@@ -3070,7 +3477,7 @@ const wakewordCommand = Command.make(
     ),
     noAutoTune: Flag.boolean("no-auto-tune").pipe(
       Flag.withDescription(
-        "Disable loading saved tuning from $XDG_CONFIG_HOME/pie/wakeword/<model>/detection-tuning.json (legacy effect-pi dir is preferred when present)",
+        "Disable loading saved tuning from $XDG_CONFIG_HOME/pie/wakeword/<model>/detection-tuning.json",
       ),
     ),
     scoreEvery: positiveIntegerFlag(
@@ -3543,7 +3950,7 @@ const wakewordTrainCommand = Command.make(
     assetRoot: Flag.string("asset-root").pipe(
       Flag.optional,
       Flag.withDescription(
-        "Root openWakeWord asset directory (default: $XDG_DATA_HOME/pie/openwakeword; legacy effect-pi dir preferred when present)",
+        "Root openWakeWord asset directory (default: $XDG_DATA_HOME/pie/openwakeword)",
       ),
     ),
     datasetRoot: Flag.string("dataset-root").pipe(
@@ -3554,14 +3961,29 @@ const wakewordTrainCommand = Command.make(
       Flag.optional,
       Flag.withDescription("Override trained wakeword model output directory"),
     ),
+    captureNegativesOnly: Flag.boolean("capture-negatives-only").pipe(
+      Flag.withDescription("Append negative clips to saved dataset without training"),
+    ),
+    trainOnly: Flag.boolean("train-only").pipe(
+      Flag.withDescription("Train from saved clips without capturing new audio"),
+    ),
+    noTuning: Flag.boolean("no-tuning").pipe(
+      Flag.withDescription("Skip writing detection-tuning.json after training"),
+    ),
     register: Flag.boolean("register").pipe(
       Flag.withDescription(
-        "Add generated model filename to $XDG_DATA_HOME/pie/openwakeword/manifest.json (legacy effect-pi dir preferred when present)",
+        "Add generated model filename to $XDG_DATA_HOME/pie/openwakeword/manifest.json",
       ),
     ),
   },
   (config) =>
     Effect.gen(function* () {
+      if (config.captureNegativesOnly && config.trainOnly) {
+        return yield* new WakewordTrainingError({
+          message: "--capture-negatives-only and --train-only are mutually exclusive",
+        })
+      }
+
       const trainingOptions: {
         name: string
         assetRootDir?: string
@@ -3623,10 +4045,60 @@ const wakewordTrainCommand = Command.make(
       const autoCalibrate = !config.noAutoCalibrate
       const calibrationPath = calibrationPathFor(plan.modelName)
 
+      if (config.trainOnly) {
+        yield* Console.log(`Train-only mode: loading saved clips for '${plan.modelName}'`)
+
+        yield* validateMinimumClips({ dir: plan.positiveDir, label: "positive", minimum: 3 })
+        yield* validateMinimumClips({ dir: plan.negativeDir, label: "negative", minimum: 3 })
+
+        const positiveClips = yield* loadSavedWavClips(plan.positiveDir)
+        const negativeClips = yield* loadSavedWavClips(plan.negativeDir)
+
+        yield* Console.log(
+          `Loaded ${positiveClips.length} positive, ${negativeClips.length} negative clips`,
+        )
+
+        const model = yield* trainLinearWakewordModel(featureSessions, {
+          positiveClips,
+          negativeClips,
+        })
+
+        yield* saveTrainedWakewordModel(plan.outputModelPath, model)
+
+        const calibrationSnapshot = yield* readCalibrationSnapshot(calibrationPath)
+        const sourceName = calibrationSnapshot?.sourceName ?? "unknown"
+
+        yield* runPostTrainValidationAndTuning({
+          featureSessions,
+          plan,
+          noTuning: config.noTuning,
+          sourceName,
+        })
+
+        let manifestMessage = "Manifest unchanged"
+        if (config.register) {
+          const added = yield* registerWakewordModelInManifest(
+            plan.manifestPath,
+            plan.outputModelFileName,
+          )
+          manifestMessage = added
+            ? `Registered ${plan.outputModelFileName} in ${plan.manifestPath}`
+            : `${plan.outputModelFileName} already present in ${plan.manifestPath}`
+        }
+
+        yield* Console.log(`Training complete for '${plan.modelName}'`)
+        yield* Console.log(`Model saved to: ${plan.outputModelPath}`)
+        yield* Console.log(
+          `Training metrics: positive_mean=${model.metrics.positiveMean.toFixed(3)} negative_mean=${model.metrics.negativeMean.toFixed(3)}`,
+        )
+        yield* Console.log(manifestMessage)
+        return
+      }
+
       const client = yield* PulseAudioClient
       yield* client.connect()
 
-      const { positiveClips, negativeClips } = yield* Effect.gen(function* () {
+      const sourceNameResult = yield* Effect.gen(function* () {
         const serverInfo = yield* client.getServerInfo
         const availableSources = yield* client.listSources
 
@@ -3715,101 +4187,117 @@ const wakewordTrainCommand = Command.make(
         )
 
         const speechRmsRef = yield* Ref.make(resolvedSpeechRms)
-        const positiveClips: Array<Uint8Array> = []
-        const negativeClips: Array<Uint8Array> = []
 
-        yield* Console.log(
-          `Collecting ${config.positiveCount} positive clips for '${plan.modelName}'`,
-        )
-        for (let index = 0; index < config.positiveCount; index += 1) {
-          const clipNumber = index + 1
+        if (!config.captureNegativesOnly) {
+          yield* Console.log(`Capturing 1 silence clip (stay silent)`)
+          yield* Console.log(`[silence 1/1] Stay silent for ${config.clipSeconds}s`)
+          yield* Effect.sleep("300 millis")
 
-          const collectPositiveAttempt = (
-            attempt: number,
-          ): Effect.Effect<Uint8Array, Error, PulseAudioClient> =>
-            Effect.gen(function* () {
-              const currentSpeechRms = yield* Ref.get(speechRmsRef)
+          const silenceClip = yield* recordPcmClip({
+            durationSeconds: config.clipSeconds,
+            fragmentSize: config.fragmentSize,
+            sampleRate: 16_000,
+            channels: 1,
+            sourceName: selectedSourceName,
+          })
 
-              yield* Console.log(
-                `[positive ${clipNumber}/${config.positiveCount} attempt ${attempt}/${config.retryLimit}] Say '${wakePhrase}' (waiting for speech, rms=${currentSpeechRms.toFixed(4)})`,
+          const silencePath = yield* nextWavPath(plan.silenceDir, "silence")
+          yield* writePcmWavFile(silencePath, silenceClip)
+          yield* Console.log(`[silence 1/1] saved`)
+          yield* Effect.sleep(`${config.gapMs} millis`)
+
+          yield* Console.log(
+            `Collecting ${config.positiveCount} positive clips for '${plan.modelName}'`,
+          )
+          for (let index = 0; index < config.positiveCount; index += 1) {
+            const clipNumber = index + 1
+
+            const collectPositiveAttempt = (
+              attempt: number,
+            ): Effect.Effect<Uint8Array, Error, PulseAudioClient> =>
+              Effect.gen(function* () {
+                const currentSpeechRms = yield* Ref.get(speechRmsRef)
+
+                yield* Console.log(
+                  `[positive ${clipNumber}/${config.positiveCount} attempt ${attempt}/${config.retryLimit}] Say '${wakePhrase}' (waiting for speech, rms=${currentSpeechRms.toFixed(4)})`,
+                )
+
+                const clip = yield* recordVoiceActivatedClip({
+                  clipSeconds: config.clipSeconds,
+                  maxWaitSeconds: resolvedMaxWaitSeconds,
+                  speechRmsThreshold: currentSpeechRms,
+                  minActiveChunks: resolvedSpeechChunks,
+                  preRollMs: resolvedPreRollMs,
+                  fragmentSize: config.fragmentSize,
+                  sampleRate: 16_000,
+                  channels: 1,
+                  sourceName: selectedSourceName,
+                })
+
+                const clipRms = pcmRms(clip)
+                const clipPeak = pcmPeak(clip)
+                const minClipRms = Math.max(noiseFloorRms * 2.5, currentSpeechRms * 0.9, 0.003)
+                const minClipPeak = Math.max(minClipRms * 3, 0.01)
+
+                if (clipRms < minClipRms || clipPeak < minClipPeak) {
+                  return yield* new NoSpeechDetectedError({
+                    message: `Captured clip is too quiet (rms ${clipRms.toFixed(4)}, peak ${clipPeak.toFixed(4)}; expected at least rms ${minClipRms.toFixed(4)}, peak ${minClipPeak.toFixed(4)})`,
+                    observedMaxRms: clipRms,
+                    threshold: minClipRms,
+                  })
+                }
+
+                return clip
+              }).pipe(
+                Effect.catchIf(
+                  (error): error is NoSpeechDetectedError => error instanceof NoSpeechDetectedError,
+                  (error) =>
+                    Effect.gen(function* () {
+                      const speechRmsLocked = Option.isSome(config.speechRms)
+                      const currentSpeechRms = yield* Ref.get(speechRmsRef)
+                      const floor = Math.max(0.001, noiseFloorRms * 1.5)
+                      const suggestedThreshold = Math.max(floor, error.observedMaxRms * 0.85)
+
+                      if (!speechRmsLocked) {
+                        const loweredThreshold = clamp(
+                          Math.min(currentSpeechRms * 0.9, suggestedThreshold),
+                          floor,
+                          0.2,
+                        )
+
+                        if (loweredThreshold < currentSpeechRms) {
+                          yield* Ref.set(speechRmsRef, loweredThreshold)
+                          yield* Console.log(
+                            `[positive ${clipNumber}/${config.positiveCount}] Auto-adjusted speech-rms ${currentSpeechRms.toFixed(4)} -> ${loweredThreshold.toFixed(4)}`,
+                          )
+                        }
+                      }
+
+                      if (attempt >= config.retryLimit) {
+                        const effectiveSpeechRms = yield* Ref.get(speechRmsRef)
+                        return yield* new WakewordTrainingError({
+                          message: `[positive ${clipNumber}/${config.positiveCount}] ${error.message}. Final speech-rms was ${effectiveSpeechRms.toFixed(4)}. Run 'pie meter --source ${selectedSourceName}' to inspect live levels.`,
+                        })
+                      }
+
+                      const nextSpeechRms = yield* Ref.get(speechRmsRef)
+
+                      return yield* Console.log(
+                        `[positive ${clipNumber}/${config.positiveCount}] ${error.message}. Retrying... (next speech-rms ${nextSpeechRms.toFixed(4)})`,
+                      ).pipe(Effect.andThen(collectPositiveAttempt(attempt + 1)))
+                    }),
+                ),
               )
 
-              const clip = yield* recordVoiceActivatedClip({
-                clipSeconds: config.clipSeconds,
-                maxWaitSeconds: resolvedMaxWaitSeconds,
-                speechRmsThreshold: currentSpeechRms,
-                minActiveChunks: resolvedSpeechChunks,
-                preRollMs: resolvedPreRollMs,
-                fragmentSize: config.fragmentSize,
-                sampleRate: 16_000,
-                channels: 1,
-                sourceName: selectedSourceName,
-              })
-
-              const clipRms = pcmRms(clip)
-              const clipPeak = pcmPeak(clip)
-              const minClipRms = Math.max(noiseFloorRms * 2.5, currentSpeechRms * 0.9, 0.003)
-              const minClipPeak = Math.max(minClipRms * 3, 0.01)
-
-              if (clipRms < minClipRms || clipPeak < minClipPeak) {
-                return yield* new NoSpeechDetectedError({
-                  message: `Captured clip is too quiet (rms ${clipRms.toFixed(4)}, peak ${clipPeak.toFixed(4)}; expected at least rms ${minClipRms.toFixed(4)}, peak ${minClipPeak.toFixed(4)})`,
-                  observedMaxRms: clipRms,
-                  threshold: minClipRms,
-                })
-              }
-
-              return clip
-            }).pipe(
-              Effect.catchIf(
-                (error): error is NoSpeechDetectedError => error instanceof NoSpeechDetectedError,
-                (error) =>
-                  Effect.gen(function* () {
-                    const speechRmsLocked = Option.isSome(config.speechRms)
-                    const currentSpeechRms = yield* Ref.get(speechRmsRef)
-                    const floor = Math.max(0.001, noiseFloorRms * 1.5)
-                    const suggestedThreshold = Math.max(floor, error.observedMaxRms * 0.85)
-
-                    if (!speechRmsLocked) {
-                      const loweredThreshold = clamp(
-                        Math.min(currentSpeechRms * 0.9, suggestedThreshold),
-                        floor,
-                        0.2,
-                      )
-
-                      if (loweredThreshold < currentSpeechRms) {
-                        yield* Ref.set(speechRmsRef, loweredThreshold)
-                        yield* Console.log(
-                          `[positive ${clipNumber}/${config.positiveCount}] Auto-adjusted speech-rms ${currentSpeechRms.toFixed(4)} -> ${loweredThreshold.toFixed(4)}`,
-                        )
-                      }
-                    }
-
-                    if (attempt >= config.retryLimit) {
-                      const effectiveSpeechRms = yield* Ref.get(speechRmsRef)
-                      return yield* new WakewordTrainingError({
-                        message: `[positive ${clipNumber}/${config.positiveCount}] ${error.message}. Final speech-rms was ${effectiveSpeechRms.toFixed(4)}. Run 'pie meter --source ${selectedSourceName}' to inspect live levels.`,
-                      })
-                    }
-
-                    const nextSpeechRms = yield* Ref.get(speechRmsRef)
-
-                    return yield* Console.log(
-                      `[positive ${clipNumber}/${config.positiveCount}] ${error.message}. Retrying... (next speech-rms ${nextSpeechRms.toFixed(4)})`,
-                    ).pipe(Effect.andThen(collectPositiveAttempt(attempt + 1)))
-                  }),
-              ),
+            const clip = yield* collectPositiveAttempt(1)
+            yield* Console.log(
+              `[positive ${clipNumber}/${config.positiveCount}] accepted clip rms=${pcmRms(clip).toFixed(4)} peak=${pcmPeak(clip).toFixed(4)}`,
             )
 
-          const clip = yield* collectPositiveAttempt(1)
-          yield* Console.log(
-            `[positive ${clipNumber}/${config.positiveCount}] accepted clip rms=${pcmRms(clip).toFixed(4)} peak=${pcmPeak(clip).toFixed(4)}`,
-          )
-
-          positiveClips.push(clip)
-          const outputPath = `${plan.positiveDir}/positive-${String(clipNumber).padStart(3, "0")}.wav`
-          yield* writePcmWavFile(outputPath, clip)
-          yield* Effect.sleep(`${config.gapMs} millis`)
+            const outputPath = yield* nextWavPath(plan.positiveDir, "positive")
+            yield* writePcmWavFile(outputPath, clip)
+            yield* Effect.sleep(`${config.gapMs} millis`)
+          }
         }
 
         yield* Console.log(
@@ -3830,17 +4318,64 @@ const wakewordTrainCommand = Command.make(
             sourceName: selectedSourceName,
           })
 
-          negativeClips.push(clip)
-          const outputPath = `${plan.negativeDir}/negative-${String(clipNumber).padStart(3, "0")}.wav`
+          const outputPath = yield* nextWavPath(plan.negativeDir, "negative")
           yield* writePcmWavFile(outputPath, clip)
           yield* Effect.sleep(`${config.gapMs} millis`)
         }
 
-        return {
-          positiveClips,
-          negativeClips,
+        if (config.captureNegativesOnly) {
+          const positivePaths = yield* Effect.tryPromise({
+            try: () => sortedWavPaths(plan.positiveDir),
+            catch: (cause) =>
+              new WakewordTrainingError({
+                message: `Failed to list positive clips`,
+                cause,
+              }),
+          }).pipe(Effect.orElseSucceed(() => []))
+          const negativePaths = yield* Effect.tryPromise({
+            try: () => sortedWavPaths(plan.negativeDir),
+            catch: (cause) =>
+              new WakewordTrainingError({
+                message: `Failed to list negative clips`,
+                cause,
+              }),
+          }).pipe(Effect.orElseSucceed(() => []))
+          const silencePaths = yield* Effect.tryPromise({
+            try: () => sortedWavPaths(plan.silenceDir),
+            catch: (cause) =>
+              new WakewordTrainingError({
+                message: `Failed to list silence clips`,
+                cause,
+              }),
+          }).pipe(Effect.orElseSucceed(() => []))
+
+          yield* Console.log(
+            `Dataset counts: positive=${positivePaths.length} negative=${negativePaths.length} silence=${silencePaths.length}`,
+          )
+          yield* Console.log(
+            `Negative clips appended. Retrain with: pie wakeword-train --name ${plan.modelName} --train-only`,
+          )
+          return selectedSourceName
         }
+
+        return selectedSourceName
       }).pipe(Effect.ensuring(client.disconnect))
+
+      const selectedSourceName = sourceNameResult
+
+      if (config.captureNegativesOnly) {
+        return
+      }
+
+      yield* validateMinimumClips({ dir: plan.positiveDir, label: "positive", minimum: 3 })
+      yield* validateMinimumClips({ dir: plan.negativeDir, label: "negative", minimum: 3 })
+
+      const positiveClips = yield* loadSavedWavClips(plan.positiveDir)
+      const negativeClips = yield* loadSavedWavClips(plan.negativeDir)
+
+      yield* Console.log(
+        `Training from ${positiveClips.length} positive, ${negativeClips.length} negative saved clips`,
+      )
 
       const model = yield* trainLinearWakewordModel(featureSessions, {
         positiveClips,
@@ -3848,6 +4383,13 @@ const wakewordTrainCommand = Command.make(
       })
 
       yield* saveTrainedWakewordModel(plan.outputModelPath, model)
+
+      yield* runPostTrainValidationAndTuning({
+        featureSessions,
+        plan,
+        noTuning: config.noTuning,
+        sourceName: selectedSourceName,
+      })
 
       let manifestMessage = "Manifest unchanged"
       if (config.register) {
@@ -3863,6 +4405,7 @@ const wakewordTrainCommand = Command.make(
       yield* Console.log(`Training complete for '${plan.modelName}'`)
       yield* Console.log(`Positive clips saved in: ${plan.positiveDir}`)
       yield* Console.log(`Negative clips saved in: ${plan.negativeDir}`)
+      yield* Console.log(`Silence clips saved in: ${plan.silenceDir}`)
       yield* Console.log(`Model saved to: ${plan.outputModelPath}`)
       yield* Console.log(
         `Training metrics: positive_mean=${model.metrics.positiveMean.toFixed(3)} negative_mean=${model.metrics.negativeMean.toFixed(3)}`,

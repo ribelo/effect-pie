@@ -6,6 +6,41 @@ import { EFFECT_PI_CONFIG_DIR } from "../paths.js"
 
 export const STT_CONFIG_PATH = path.join(EFFECT_PI_CONFIG_DIR, "stt.json")
 
+const resolvePromptsDir = (configPath: string): string =>
+  path.join(path.dirname(configPath), "prompts")
+
+const resolveTranscriptionPromptPath = (configPath: string): string =>
+  path.join(resolvePromptsDir(configPath), "transcription.md")
+
+const resolveTranslationPromptPath = (configPath: string): string =>
+  path.join(resolvePromptsDir(configPath), "translation.md")
+
+const DEFAULT_TRANSCRIPTION_PROMPT = `Transcribe the spoken audio in {{language}}.
+
+Rules:
+- Preserve the speaker's wording, intent, tone, and style, even when blunt, harsh, or informal.
+- Preserve mixed Polish/English speech instead of normalizing it to one language.
+- Keep commands, CLI flags, identifiers, API names, package names, filenames, paths, product names, and code tokens unchanged.
+- Do not translate the audio.
+- Use best effort to recover the intended wording when technical speech is unclear, but do not invent meaning that is not supported by the audio.
+- Return only the transcription.
+`
+
+const DEFAULT_TRANSLATION_PROMPT = `Translate the spoken audio from {{source_language}} to {{target_language}}.
+
+Rules:
+- Preserve the speaker's intent, tone, and style, even when blunt, harsh, or informal.
+- Handle mixed Polish/English technical speech naturally.
+- Keep commands, CLI flags, identifiers, API names, package names, filenames, paths, product names, and code tokens unchanged.
+- Keep English technical terms in English when translating them would sound unnatural or reduce clarity.
+- If the audio contains a span that starts with \`dodatkowe instrukcje\` and ends with \`koniec instrukcji\`, treat that span as extra translation instructions for the rest of the utterance.
+- Do not include the \`dodatkowe instrukcje ... koniec instrukcji\` span in the translated output.
+- If those markers are unbalanced or ambiguous, ignore the control-span rule and translate the audio literally instead.
+- Translate surrounding prose clearly and faithfully.
+- Use best effort to resolve mixed-language phrasing from context, but do not invent meaning that is not supported by the audio.
+- Return only the translation.
+`
+
 export type SttRuntimeConfig = {
   readonly schemaVersion: 1
   readonly openrouter: {
@@ -14,10 +49,13 @@ export type SttRuntimeConfig = {
     readonly transcriptionLanguage: string
     readonly translationSourceLanguage: string
     readonly translationTargetLanguage: string
+    readonly wakewordEnabled: boolean
     readonly wakewordDictationSilenceSeconds: number
     readonly wakewordDictationMaxSeconds: number
     readonly wakewordDictationSpeechRmsThreshold: number
   }
+  readonly transcriptionPrompt: string
+  readonly translationPrompt: string
 }
 
 type LegacySttRuntimeConfig = {
@@ -48,10 +86,13 @@ export const defaultSttRuntimeConfig: SttRuntimeConfig = {
     transcriptionLanguage: "English",
     translationSourceLanguage: "English",
     translationTargetLanguage: "English",
+    wakewordEnabled: true,
     wakewordDictationSilenceSeconds: 3,
-    wakewordDictationMaxSeconds: 45,
+    wakewordDictationMaxSeconds: 120,
     wakewordDictationSpeechRmsThreshold: 0.01,
   },
+  transcriptionPrompt: DEFAULT_TRANSCRIPTION_PROMPT,
+  translationPrompt: DEFAULT_TRANSLATION_PROMPT,
 }
 
 export class SttConfigError extends Data.TaggedError("SttConfigError")<{
@@ -64,6 +105,8 @@ const hasNonEmptyString = (value: unknown): value is string =>
 
 const hasPositiveFiniteNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value > 0
+
+const hasBoolean = (value: unknown): value is boolean => typeof value === "boolean"
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null
@@ -90,11 +133,18 @@ const isCurrentSttRuntimeConfig = (value: unknown): value is SttRuntimeConfig =>
     hasNonEmptyString(section["transcriptionLanguage"]) &&
     hasNonEmptyString(section["translationSourceLanguage"]) &&
     hasNonEmptyString(section["translationTargetLanguage"]) &&
+    hasBoolean(section["wakewordEnabled"]) &&
     hasPositiveFiniteNumber(section["wakewordDictationSilenceSeconds"]) &&
     hasPositiveFiniteNumber(section["wakewordDictationMaxSeconds"]) &&
     hasPositiveFiniteNumber(section["wakewordDictationSpeechRmsThreshold"])
   )
 }
+
+const hasCurrentSpecificFields = (section: Record<string, unknown>): boolean =>
+  section["wakewordEnabled"] !== undefined ||
+  section["wakewordDictationSilenceSeconds"] !== undefined ||
+  section["wakewordDictationMaxSeconds"] !== undefined ||
+  section["wakewordDictationSpeechRmsThreshold"] !== undefined
 
 const isLanguageOnlySttRuntimeConfig = (value: unknown): value is LanguageOnlySttRuntimeConfig => {
   if (!isRecord(value)) {
@@ -109,6 +159,10 @@ const isLanguageOnlySttRuntimeConfig = (value: unknown): value is LanguageOnlySt
   }
 
   const section = openrouter
+  if (hasCurrentSpecificFields(section)) {
+    return false
+  }
+
   return (
     hasNonEmptyString(section["transcriptionModel"]) &&
     hasNonEmptyString(section["translationModel"]) &&
@@ -146,10 +200,13 @@ const normalizeSttRuntimeConfig = (config: SttRuntimeConfig): SttRuntimeConfig =
     transcriptionLanguage: config.openrouter.transcriptionLanguage.trim(),
     translationSourceLanguage: config.openrouter.translationSourceLanguage.trim(),
     translationTargetLanguage: config.openrouter.translationTargetLanguage.trim(),
+    wakewordEnabled: config.openrouter.wakewordEnabled,
     wakewordDictationSilenceSeconds: config.openrouter.wakewordDictationSilenceSeconds,
     wakewordDictationMaxSeconds: config.openrouter.wakewordDictationMaxSeconds,
     wakewordDictationSpeechRmsThreshold: config.openrouter.wakewordDictationSpeechRmsThreshold,
   },
+  transcriptionPrompt: config.transcriptionPrompt?.trim() ?? DEFAULT_TRANSCRIPTION_PROMPT,
+  translationPrompt: config.translationPrompt?.trim() ?? DEFAULT_TRANSLATION_PROMPT,
 })
 
 const migrateLegacyConfig = (legacy: LegacySttRuntimeConfig): SttRuntimeConfig =>
@@ -161,10 +218,13 @@ const migrateLegacyConfig = (legacy: LegacySttRuntimeConfig): SttRuntimeConfig =
       transcriptionLanguage: "English",
       translationSourceLanguage: "English",
       translationTargetLanguage: legacy.openrouter.defaultTargetLanguage,
+      wakewordEnabled: true,
       wakewordDictationSilenceSeconds: 3,
-      wakewordDictationMaxSeconds: 45,
+      wakewordDictationMaxSeconds: 120,
       wakewordDictationSpeechRmsThreshold: 0.01,
     },
+    transcriptionPrompt: DEFAULT_TRANSCRIPTION_PROMPT,
+    translationPrompt: DEFAULT_TRANSLATION_PROMPT,
   })
 
 const migrateLanguageOnlyConfig = (config: LanguageOnlySttRuntimeConfig): SttRuntimeConfig =>
@@ -176,10 +236,13 @@ const migrateLanguageOnlyConfig = (config: LanguageOnlySttRuntimeConfig): SttRun
       transcriptionLanguage: config.openrouter.transcriptionLanguage,
       translationSourceLanguage: config.openrouter.translationSourceLanguage,
       translationTargetLanguage: config.openrouter.translationTargetLanguage,
+      wakewordEnabled: true,
       wakewordDictationSilenceSeconds: 3,
-      wakewordDictationMaxSeconds: 45,
+      wakewordDictationMaxSeconds: 120,
       wakewordDictationSpeechRmsThreshold: 0.01,
     },
+    transcriptionPrompt: DEFAULT_TRANSCRIPTION_PROMPT,
+    translationPrompt: DEFAULT_TRANSLATION_PROMPT,
   })
 
 const parseSttRuntimeConfig = (
@@ -225,10 +288,72 @@ const writeConfigFile = (
       }),
   })
 
+const ensurePromptFile = (
+  promptPath: string,
+  defaultContent: string,
+): Effect.Effect<void, SttConfigError> =>
+  Effect.tryPromise({
+    try: async () => {
+      try {
+        await fs.access(promptPath)
+        return
+      } catch {
+        await fs.mkdir(path.dirname(promptPath), { recursive: true })
+        await fs.writeFile(promptPath, defaultContent, "utf8")
+      }
+    },
+    catch: (cause) =>
+      new SttConfigError({
+        message: `Failed to bootstrap prompt file at ${promptPath}`,
+        cause,
+      }),
+  })
+
+const readPromptFile = (promptPath: string): Effect.Effect<string, SttConfigError> =>
+  Effect.tryPromise({
+    try: async () => {
+      const content = await fs.readFile(promptPath, "utf8")
+      return content
+    },
+    catch: (cause) =>
+      new SttConfigError({
+        message: `Failed to read prompt file at ${promptPath}`,
+        cause,
+      }),
+  })
+
+const validateTranscriptionPrompt = (content: string): string | undefined => {
+  const trimmed = content.trim()
+  if (trimmed.length === 0) {
+    return "transcription prompt is empty"
+  }
+  if (!trimmed.includes("{{language}}")) {
+    return "transcription prompt missing required placeholder {{language}}"
+  }
+  return undefined
+}
+
+const validateTranslationPrompt = (content: string): string | undefined => {
+  const trimmed = content.trim()
+  if (trimmed.length === 0) {
+    return "translation prompt is empty"
+  }
+  if (!trimmed.includes("{{source_language}}")) {
+    return "translation prompt missing required placeholder {{source_language}}"
+  }
+  if (!trimmed.includes("{{target_language}}")) {
+    return "translation prompt missing required placeholder {{target_language}}"
+  }
+  return undefined
+}
+
 export const loadSttRuntimeConfig = (
   configPath = STT_CONFIG_PATH,
 ): Effect.Effect<SttRuntimeConfig, SttConfigError> =>
   Effect.gen(function* () {
+    const transcriptionPromptPath = resolveTranscriptionPromptPath(configPath)
+    const translationPromptPath = resolveTranslationPromptPath(configPath)
+
     const raw = yield* Effect.tryPromise({
       try: async (): Promise<string | undefined> => {
         try {
@@ -248,6 +373,8 @@ export const loadSttRuntimeConfig = (
         }),
     })
 
+    let config: SttRuntimeConfig
+
     if (raw !== undefined) {
       const parsedJson = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(raw).pipe(
         Effect.mapError(
@@ -265,11 +392,40 @@ export const loadSttRuntimeConfig = (
           yield* writeConfigFile(configPath, parsed.config)
         }
 
-        return parsed.config
+        config = parsed.config
+      } else {
+        return yield* new SttConfigError({
+          message: `Invalid STT config at ${configPath}: unrecognized config shape or invalid field values`,
+        })
       }
+    } else {
+      config = normalizeSttRuntimeConfig(defaultSttRuntimeConfig)
+      yield* writeConfigFile(configPath, config)
     }
 
-    const defaults = normalizeSttRuntimeConfig(defaultSttRuntimeConfig)
-    yield* writeConfigFile(configPath, defaults)
-    return defaults
+    yield* ensurePromptFile(transcriptionPromptPath, DEFAULT_TRANSCRIPTION_PROMPT)
+    yield* ensurePromptFile(translationPromptPath, DEFAULT_TRANSLATION_PROMPT)
+
+    const transcriptionPrompt = yield* readPromptFile(transcriptionPromptPath)
+    const translationPrompt = yield* readPromptFile(translationPromptPath)
+
+    const transcriptionError = validateTranscriptionPrompt(transcriptionPrompt)
+    if (transcriptionError !== undefined) {
+      return yield* new SttConfigError({
+        message: `Invalid transcription prompt at ${transcriptionPromptPath}: ${transcriptionError}`,
+      })
+    }
+
+    const translationError = validateTranslationPrompt(translationPrompt)
+    if (translationError !== undefined) {
+      return yield* new SttConfigError({
+        message: `Invalid translation prompt at ${translationPromptPath}: ${translationError}`,
+      })
+    }
+
+    return {
+      ...config,
+      transcriptionPrompt,
+      translationPrompt,
+    }
   })
