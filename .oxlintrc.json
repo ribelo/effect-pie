@@ -1,0 +1,148 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "import", "oxc", "eslint", "unicorn", "node"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
+  },
+  "options": {
+    "typeAware": true,
+    "reportUnusedDisableDirectives": "error"
+  },
+  "ignorePatterns": [
+    "**/dist",
+    "**/build",
+    "**/node_modules",
+    "**/.tsbuildinfo",
+    "**/.tmp",
+    "**/.pi",
+    "**/.reference",
+    "assets/openwakeword",
+    "scripts"
+  ],
+  "rules": {
+    "typescript/no-unused-vars": [
+      "warn",
+      {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_"
+      }
+    ],
+    "eslint/no-unused-vars": "off",
+
+    "eslint/eqeqeq": "error",
+    "eslint/array-callback-return": "error",
+    "eslint/no-constructor-return": "error",
+    "eslint/no-self-compare": "error",
+    "eslint/no-promise-executor-return": "error",
+    "eslint/radix": "error",
+    "eslint/no-var": "error",
+    "eslint/no-useless-constructor": "error",
+    "eslint/no-unneeded-ternary": "error",
+    "eslint/no-useless-concat": "error",
+
+    "typescript/no-misused-promises": "error",
+    "typescript/consistent-return": "off",
+    "typescript/switch-exhaustiveness-check": "error",
+    "typescript/only-throw-error": "error",
+    "typescript/no-unsafe-argument": "error",
+    "typescript/no-unsafe-assignment": "error",
+    "typescript/no-unsafe-call": "error",
+    "typescript/no-unsafe-member-access": "error",
+    "typescript/no-unsafe-return": "error",
+    "typescript/strict-boolean-expressions": "warn",
+
+    "typescript/consistent-type-imports": [
+      "error",
+      {
+        "fixStyle": "inline-type-imports"
+      }
+    ],
+    "typescript/no-import-type-side-effects": "error",
+    "import/no-duplicates": "error",
+    "import/no-self-import": "error",
+    "import/no-empty-named-blocks": "error",
+    "import/no-cycle": "error",
+
+    "typescript/no-unnecessary-type-assertion": "error",
+    "typescript/no-unnecessary-type-constraint": "error",
+    "typescript/no-useless-empty-export": "error",
+    "typescript/use-unknown-in-catch-callback-variable": "error",
+    "typescript/no-explicit-any": "warn",
+    "typescript/array-type": [
+      "error",
+      {
+        "default": "generic",
+        "readonly": "generic"
+      }
+    ],
+
+    "unicorn/no-abusive-eslint-disable": "error",
+    "unicorn/prefer-array-flat-map": "error",
+    "unicorn/no-accessor-recursion": "error",
+    "unicorn/prefer-node-protocol": "error",
+    "unicorn/no-instanceof-array": "error",
+    "unicorn/prefer-array-some": "error",
+    "unicorn/no-useless-promise-resolve-reject": "error",
+
+    "oxc/misrefactored-assign-op": "error",
+
+    "node/no-process-env": "warn",
+
+    "eslint/no-console": "error",
+
+    "eslint/no-shadow": "off",
+    "eslint/require-yield": "off",
+    "eslint/no-fallthrough": "off",
+    "eslint/no-await-in-loop": "off",
+    "typescript/no-empty-interface": "off",
+    "typescript/ban-ts-comment": "off",
+    "typescript/no-namespace": "off",
+    "typescript/no-non-null-assertion": "off",
+    "typescript/no-dynamic-delete": "off",
+    "typescript/no-invalid-void-type": "off",
+    "typescript/no-unsafe-function-type": "off",
+    "typescript/unified-signatures": "off",
+    "typescript/no-empty-object-type": "off",
+    "typescript/no-confusing-non-null-assertion": "off",
+    "unicorn/no-new-array": "off",
+    "unicorn/consistent-function-scoping": "off",
+    "unicorn/no-array-sort": "off",
+    "unicorn/no-array-reverse": "off",
+    "unicorn/prefer-set-has": "off",
+    "oxc/no-map-spread": "off",
+    "eslint/object-shorthand": "off"
+  },
+  "overrides": [
+    {
+      "files": ["src/stt/openrouter.ts"],
+      "rules": {
+        "typescript/no-unsafe-type-assertion": "off"
+      }
+    },
+    {
+      "files": ["**/*.tsx"],
+      "rules": {
+        "typescript/no-unsafe-return": "off"
+      }
+    },
+    {
+      "files": ["**/test/**", "**/*.test.ts", "**/*.spec.ts", "**/*.spec.mts"],
+      "rules": {
+        "eslint/no-console": "off",
+        "typescript/no-floating-promises": "off",
+        "typescript/no-explicit-any": "off",
+        "typescript/no-unsafe-argument": "off",
+        "typescript/no-unsafe-assignment": "off",
+        "typescript/no-unsafe-call": "off",
+        "typescript/no-unsafe-member-access": "off",
+        "typescript/no-unsafe-return": "off",
+        "typescript/no-unsafe-type-assertion": "off",
+        "typescript/no-unnecessary-type-assertion": "off",
+        "typescript/strict-boolean-expressions": "off",
+        "node/no-process-env": "off"
+      }
+    }
+  ]
+}

@@ -1,6 +1,6 @@
-import { NodeRuntime } from "@effect/platform-node";
-import { Effect } from "effect";
+import { NodeRuntime } from "@effect/platform-node"
+import { Effect } from "effect"
 
-const main = Effect.log("pie");
+const main = Effect.log("pie")
 
-main.pipe(NodeRuntime.runMain);
+main.pipe(NodeRuntime.runMain)

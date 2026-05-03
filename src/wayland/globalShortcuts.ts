@@ -1,109 +1,114 @@
-import * as dbusNext from "dbus-next";
-import type { Message as DbusMessage, MessageBus, Variant as DbusVariant } from "dbus-next";
-import { Effect } from "effect";
+import * as dbusNext from "dbus-next"
+import type { Message as DbusMessage, MessageBus, Variant as DbusVariant } from "dbus-next"
+import { Effect } from "effect"
 
-const { Message, MessageType, Variant, sessionBus } = dbusNext;
+const { Message, MessageType, Variant, sessionBus } = dbusNext
 
-const PORTAL_DESKTOP_SERVICE = "org.freedesktop.portal.Desktop";
-const PORTAL_DESKTOP_PATH = "/org/freedesktop/portal/desktop";
-const GLOBAL_SHORTCUTS_INTERFACE = "org.freedesktop.portal.GlobalShortcuts";
-const SESSION_INTERFACE = "org.freedesktop.portal.Session";
-const REQUEST_INTERFACE = "org.freedesktop.portal.Request";
-const REQUEST_RESPONSE_TIMEOUT_SECONDS = 30;
-const DBUS_CONNECT_TIMEOUT_SECONDS = 5;
+const PORTAL_DESKTOP_SERVICE = "org.freedesktop.portal.Desktop"
+const PORTAL_DESKTOP_PATH = "/org/freedesktop/portal/desktop"
+const GLOBAL_SHORTCUTS_INTERFACE = "org.freedesktop.portal.GlobalShortcuts"
+const SESSION_INTERFACE = "org.freedesktop.portal.Session"
+const REQUEST_INTERFACE = "org.freedesktop.portal.Request"
+const REQUEST_RESPONSE_TIMEOUT_SECONDS = 30
+const DBUS_CONNECT_TIMEOUT_SECONDS = 5
 
-const requestHandlePattern = /^\/org\/freedesktop\/portal\/desktop\/request\/([^/]+)\/[^/]+$/;
-const objectPathPattern = /\/org\/freedesktop\/portal\/desktop\/[A-Za-z0-9_/-]+/;
-const requestResponseCodePattern = /\bua\{sv\}\s+(\d+)\b/;
+const requestHandlePattern = /^\/org\/freedesktop\/portal\/desktop\/request\/([^/]+)\/[^/]+$/
+const objectPathPattern = /\/org\/freedesktop\/portal\/desktop\/[A-Za-z0-9_/-]+/
+const requestResponseCodePattern = /\bua\{sv\}\s+(\d+)\b/
 const requestResponseSessionHandlePattern =
-  /"?session_handle"?\s+[os]\s+"(\/org\/freedesktop\/portal\/desktop\/session\/[A-Za-z0-9_/-]+)"/;
+  /"?session_handle"?\s+[os]\s+"(\/org\/freedesktop\/portal\/desktop\/session\/[A-Za-z0-9_/-]+)"/
 
-type PortalVariantDict = Record<string, DbusVariant<unknown>>;
+type PortalVariantDict = Record<string, DbusVariant<unknown>>
 
 type PortalRequestResponse = {
-  readonly requestHandle: string;
-  readonly responseCode: number;
-  readonly results: PortalVariantDict;
-};
+  readonly requestHandle: string
+  readonly responseCode: number
+  readonly results: PortalVariantDict
+}
 
 export class GlobalShortcutsPortalError extends Error {
-  readonly stderr: string | undefined;
+  readonly stderr: string | undefined
 
   constructor(message: string, options?: { readonly cause?: unknown; readonly stderr?: string }) {
-    super(message, options?.cause === undefined ? undefined : { cause: options.cause });
-    this.name = "GlobalShortcutsPortalError";
-    this.stderr = options?.stderr;
+    super(message, options?.cause === undefined ? undefined : { cause: options.cause })
+    this.name = "GlobalShortcutsPortalError"
+    this.stderr = options?.stderr
   }
 }
 
 export type PortalShortcutSpec = {
-  readonly id: string;
-  readonly description: string;
-  readonly preferredTrigger: string;
-};
+  readonly id: string
+  readonly description: string
+  readonly preferredTrigger: string
+}
 
 export type PortalShortcutSession = {
-  readonly shortcut: PortalShortcutSpec;
-  readonly createRequestHandle: string;
-  readonly bindRequestHandle: string;
-  readonly sessionHandle: string;
-};
+  readonly shortcut: PortalShortcutSpec
+  readonly createRequestHandle: string
+  readonly bindRequestHandle: string
+  readonly sessionHandle: string
+}
 
-const sessionBuses = new Map<string, MessageBus>();
+const sessionBuses = new Map<string, MessageBus>()
 
 const randomToken = (prefix: string): string =>
-  `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 
 export const parseObjectPathFromBusctlCallOutput = (output: string): string | undefined => {
-  const match = output.match(objectPathPattern);
-  return match === null ? undefined : match[0];
-};
+  const match = output.match(objectPathPattern)
+  return match === null ? undefined : match[0]
+}
 
 export const deriveSessionHandleFromRequestHandle = (
   requestHandle: string,
   sessionToken: string,
 ): string | undefined => {
-  const match = requestHandle.match(requestHandlePattern);
+  const match = requestHandle.match(requestHandlePattern)
   if (match === null) {
-    return undefined;
+    return undefined
   }
 
-  const senderId = match[1];
-  return `/org/freedesktop/portal/desktop/session/${senderId}/${sessionToken}`;
-};
+  const senderId = match[1]
+  return `/org/freedesktop/portal/desktop/session/${senderId}/${sessionToken}`
+}
 
 export const deriveRequestHandleFromSender = (
   sender: string,
   handleToken: string,
 ): string | undefined => {
   if (!sender.startsWith(":")) {
-    return undefined;
+    return undefined
   }
 
-  const senderId = sender.slice(1).replaceAll(".", "_");
-  return `/org/freedesktop/portal/desktop/request/${senderId}/${handleToken}`;
-};
+  const senderId = sender.slice(1).replaceAll(".", "_")
+  return `/org/freedesktop/portal/desktop/request/${senderId}/${handleToken}`
+}
 
 export const parseRequestResponseCodeFromBusctlWaitOutput = (
   output: string,
 ): number | undefined => {
-  const match = output.match(requestResponseCodePattern);
+  const match = output.match(requestResponseCodePattern)
   if (match === null) {
-    return undefined;
+    return undefined
   }
 
-  const responseCode = Number.parseInt(match[1], 10);
-  return Number.isNaN(responseCode) ? undefined : responseCode;
-};
+  const responseCodeText = match[1]
+  if (responseCodeText === undefined) {
+    return undefined
+  }
+
+  const responseCode = Number.parseInt(responseCodeText, 10)
+  return Number.isNaN(responseCode) ? undefined : responseCode
+}
 
 export const parseSessionHandleFromRequestResponseOutput = (output: string): string | undefined => {
-  const match = output.match(requestResponseSessionHandlePattern);
-  return match === null ? undefined : match[1];
-};
+  const match = output.match(requestResponseSessionHandlePattern)
+  return match === null ? undefined : match[1]
+}
 
 export const buildCreateSessionOptionsArgs = (tokens: {
-  readonly handleToken: string;
-  readonly sessionHandleToken: string;
+  readonly handleToken: string
+  readonly sessionHandleToken: string
 }): ReadonlyArray<string> => [
   "2",
   "handle_token",
@@ -112,12 +117,12 @@ export const buildCreateSessionOptionsArgs = (tokens: {
   "session_handle_token",
   "s",
   tokens.sessionHandleToken,
-];
+]
 
 export const buildBindShortcutsArgs = (config: {
-  readonly sessionHandle: string;
-  readonly shortcut: PortalShortcutSpec;
-  readonly parentWindow: string;
+  readonly sessionHandle: string
+  readonly shortcut: PortalShortcutSpec
+  readonly parentWindow: string
 }): ReadonlyArray<string> => [
   config.sessionHandle,
   "1",
@@ -131,47 +136,47 @@ export const buildBindShortcutsArgs = (config: {
   config.shortcut.preferredTrigger,
   config.parentWindow,
   "0",
-];
+]
 
 const asPortalError = (cause: unknown, fallbackMessage: string): GlobalShortcutsPortalError => {
   if (cause instanceof GlobalShortcutsPortalError) {
-    return cause;
+    return cause
   }
 
   if (cause instanceof Error) {
-    return new GlobalShortcutsPortalError(`${fallbackMessage}: ${cause.message}`, { cause });
+    return new GlobalShortcutsPortalError(`${fallbackMessage}: ${cause.message}`, { cause })
   }
 
-  return new GlobalShortcutsPortalError(fallbackMessage, { cause });
-};
+  return new GlobalShortcutsPortalError(fallbackMessage, { cause })
+}
 
 const connectSessionBus = async (): Promise<MessageBus> => {
-  const bus = sessionBus();
+  const bus = sessionBus()
 
   await new Promise<void>((resolve, reject) => {
-    let finished = false;
+    let finished = false
 
     const finish = (callback: () => void): void => {
       if (finished) {
-        return;
+        return
       }
 
-      finished = true;
-      bus.off("connect", onConnect);
-      bus.off("error", onError);
-      clearTimeout(timeout);
-      callback();
-    };
+      finished = true
+      bus.off("connect", onConnect)
+      bus.off("error", onError)
+      clearTimeout(timeout)
+      callback()
+    }
 
     const onConnect = (): void => {
-      finish(resolve);
-    };
+      finish(resolve)
+    }
 
     const onError = (error: unknown): void => {
       finish(() => {
-        reject(error);
-      });
-    };
+        reject(error)
+      })
+    }
 
     const timeout = setTimeout(() => {
       finish(() => {
@@ -179,30 +184,30 @@ const connectSessionBus = async (): Promise<MessageBus> => {
           new GlobalShortcutsPortalError(
             `Timed out connecting to session D-Bus after ${DBUS_CONNECT_TIMEOUT_SECONDS} seconds`,
           ),
-        );
-      });
-    }, DBUS_CONNECT_TIMEOUT_SECONDS * 1000);
+        )
+      })
+    }, DBUS_CONNECT_TIMEOUT_SECONDS * 1000)
 
-    bus.on("connect", onConnect);
-    bus.on("error", onError);
+    bus.on("connect", onConnect)
+    bus.on("error", onError)
 
-    const sender = (bus as MessageBus & { readonly name?: unknown }).name;
+    const sender = (bus as MessageBus & { readonly name?: unknown }).name
     if (typeof sender === "string" && sender.length > 0) {
-      finish(resolve);
+      finish(resolve)
     }
-  });
+  })
 
-  return bus;
-};
+  return bus
+}
 
 const callPortalMethod = async (config: {
-  readonly bus: MessageBus;
-  readonly destination?: string;
-  readonly path: string;
-  readonly interfaceName: string;
-  readonly member: string;
-  readonly signature?: string;
-  readonly body?: ReadonlyArray<unknown>;
+  readonly bus: MessageBus
+  readonly destination?: string
+  readonly path: string
+  readonly interfaceName: string
+  readonly member: string
+  readonly signature?: string
+  readonly body?: ReadonlyArray<unknown>
 }): Promise<DbusMessage> => {
   const reply = await config.bus.call(
     new Message({
@@ -213,175 +218,182 @@ const callPortalMethod = async (config: {
       ...(config.signature === undefined ? {} : { signature: config.signature }),
       body: config.body === undefined ? [] : [...config.body],
     }),
-  );
+  )
 
   if (reply === null) {
     throw new GlobalShortcutsPortalError(
       `No reply received for ${config.interfaceName}.${config.member}`,
-    );
+    )
   }
 
   if (reply.type === MessageType.ERROR) {
     const errorText =
       reply.body.length > 0 && typeof reply.body[0] === "string"
         ? reply.body[0]
-        : "Unknown D-Bus error";
+        : "Unknown D-Bus error"
 
     throw new GlobalShortcutsPortalError(
       `${config.interfaceName}.${config.member} failed: ${reply.errorName} :: ${errorText}`,
-    );
+    )
   }
 
   if (reply.type !== MessageType.METHOD_RETURN) {
     throw new GlobalShortcutsPortalError(
       `${config.interfaceName}.${config.member} returned unexpected D-Bus message type ${reply.type}`,
-    );
+    )
   }
 
-  return reply;
-};
+  return reply
+}
 
 const isPortalVariant = (value: unknown): value is DbusVariant<unknown> =>
-  typeof value === "object" && value !== null && "signature" in value && "value" in value;
+  typeof value === "object" && value !== null && "signature" in value && "value" in value
+
+const isPortalVariantDict = (value: unknown): value is PortalVariantDict =>
+  typeof value === "object" &&
+  value !== null &&
+  Object.values(value).every((entry) => isPortalVariant(entry))
 
 const parseSessionHandleFromResponseResults = (results: PortalVariantDict): string | undefined => {
-  const value = results.session_handle;
+  const value = results["session_handle"]
   if (!isPortalVariant(value) || typeof value.value !== "string") {
-    return undefined;
+    return undefined
   }
 
-  return value.value;
-};
+  return value.value
+}
 
 const parseRequestHandleFromMethodReply = (reply: DbusMessage, operation: string): string => {
-  const handle = reply.body[0];
+  const body: ReadonlyArray<unknown> = Array.isArray(reply.body) ? reply.body : []
+  const handle = body[0]
   if (
     typeof handle !== "string" ||
     !handle.startsWith("/org/freedesktop/portal/desktop/request/")
   ) {
     throw new GlobalShortcutsPortalError(
       `${operation} did not return a valid request handle. Reply body: ${JSON.stringify(reply.body)}`,
-    );
+    )
   }
 
-  return handle;
-};
+  return handle
+}
 
 const waitForRequestResponseByHandleToken = (
   bus: MessageBus,
   handleToken: string,
   operation: string,
 ): {
-  readonly promise: Promise<PortalRequestResponse>;
-  readonly cancel: () => void;
+  readonly promise: Promise<PortalRequestResponse>
+  readonly cancel: () => void
 } => {
-  let done = false;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let done = false
+  let timeout: ReturnType<typeof setTimeout> | undefined
 
   const cleanup = (): void => {
     if (done) {
-      return;
+      return
     }
 
-    done = true;
+    done = true
     if (timeout !== undefined) {
-      clearTimeout(timeout);
+      clearTimeout(timeout)
     }
-    bus.off("message", onMessage);
-  };
+    bus.off("message", onMessage)
+  }
 
   const onMessage = (message: DbusMessage): void => {
     if (done) {
-      return;
+      return
     }
 
     if (message.type !== MessageType.SIGNAL) {
-      return;
+      return
     }
 
     if (message.interface !== REQUEST_INTERFACE || message.member !== "Response") {
-      return;
+      return
     }
 
     if (typeof message.path !== "string" || !message.path.endsWith(`/${handleToken}`)) {
-      return;
+      return
     }
 
-    const responseCode = message.body[0];
-    const results = message.body[1];
+    const body: ReadonlyArray<unknown> = Array.isArray(message.body) ? message.body : []
+    const responseCode = body[0]
+    const results = body[1]
 
     if (typeof responseCode !== "number") {
-      cleanup();
+      cleanup()
       rejectPromise(
         new GlobalShortcutsPortalError(
           `Could not parse ${operation} response code from portal response body: ${JSON.stringify(message.body)}`,
         ),
-      );
-      return;
+      )
+      return
     }
 
-    if (typeof results !== "object" || results === null) {
-      cleanup();
+    if (!isPortalVariantDict(results)) {
+      cleanup()
       rejectPromise(
         new GlobalShortcutsPortalError(
           `Could not parse ${operation} response results from portal response body: ${JSON.stringify(message.body)}`,
         ),
-      );
-      return;
+      )
+      return
     }
 
-    cleanup();
+    cleanup()
     resolvePromise({
       requestHandle: message.path,
       responseCode,
-      results: results as PortalVariantDict,
-    });
-  };
+      results,
+    })
+  }
 
-  let resolvePromise: (response: PortalRequestResponse) => void = () => undefined;
-  let rejectPromise: (error: GlobalShortcutsPortalError) => void = () => undefined;
+  let resolvePromise: (response: PortalRequestResponse) => void = () => undefined
+  let rejectPromise: (error: GlobalShortcutsPortalError) => void = () => undefined
 
   const promise = new Promise<PortalRequestResponse>((resolve, reject) => {
-    resolvePromise = resolve;
-    rejectPromise = reject;
+    resolvePromise = resolve
+    rejectPromise = reject
 
     timeout = setTimeout(() => {
-      cleanup();
+      cleanup()
       reject(
         new GlobalShortcutsPortalError(
           `${operation} did not receive a portal response within ${REQUEST_RESPONSE_TIMEOUT_SECONDS} seconds. ` +
             "This usually means xdg-desktop-portal did not emit Request::Response.",
         ),
-      );
-    }, REQUEST_RESPONSE_TIMEOUT_SECONDS * 1000);
+      )
+    }, REQUEST_RESPONSE_TIMEOUT_SECONDS * 1000)
 
-    bus.on("message", onMessage);
-  });
+    bus.on("message", onMessage)
+  })
 
   return {
     promise,
     cancel: cleanup,
-  };
-};
+  }
+}
 
 const formatPortalResults = (results: PortalVariantDict): string => {
   const entries = Object.entries(results).map(([key, value]) => {
     if (!isPortalVariant(value)) {
-      return `${key}=<non-variant>`;
+      return `${key}=<non-variant>`
     }
 
-    return `${key}=${value.signature}:${JSON.stringify(value.value)}`;
-  });
+    return `${key}=${value.signature}:${JSON.stringify(value.value)}`
+  })
 
-  return entries.length === 0 ? "<empty>" : entries.join(", ");
-};
+  return entries.length === 0 ? "<empty>" : entries.join(", ")
+}
 
 const ensureSuccessfulPortalResponse = (
   response: PortalRequestResponse,
   operation: string,
 ): void => {
   if (response.responseCode === 0) {
-    return;
+    return
   }
 
   const reason =
@@ -389,12 +401,12 @@ const ensureSuccessfulPortalResponse = (
       ? "cancelled by user or compositor"
       : response.responseCode === 2
         ? "failed by portal/backend"
-        : "returned unexpected status";
+        : "returned unexpected status"
 
   throw new GlobalShortcutsPortalError(
     `${operation} was not successful (${reason}, code ${response.responseCode}). Request handle: ${response.requestHandle}. Response results: ${formatPortalResults(response.results)}`,
-  );
-};
+  )
+}
 
 const listDbusNames = async (
   bus: MessageBus,
@@ -406,52 +418,53 @@ const listDbusNames = async (
     path: "/org/freedesktop/DBus",
     interfaceName: "org.freedesktop.DBus",
     member,
-  });
+  })
 
-  const names = reply.body[0];
+  const body: ReadonlyArray<unknown> = Array.isArray(reply.body) ? reply.body : []
+  const names = body[0]
   if (!Array.isArray(names) || !names.every((name) => typeof name === "string")) {
-    return [];
+    return []
   }
 
-  return names;
-};
+  return names
+}
 
 const diagnoseBindFailure = async (bus: MessageBus): Promise<string | undefined> => {
   try {
     const [names, activatableNames] = await Promise.all([
       listDbusNames(bus, "ListNames"),
       listDbusNames(bus, "ListActivatableNames"),
-    ]);
+    ])
 
-    const hasGnomeImpl = names.includes("org.freedesktop.impl.portal.desktop.gnome");
+    const hasGnomeImpl = names.includes("org.freedesktop.impl.portal.desktop.gnome")
     const hasProvider =
       names.includes("org.gnome.Settings.GlobalShortcutsProvider") ||
-      activatableNames.includes("org.gnome.Settings.GlobalShortcutsProvider");
+      activatableNames.includes("org.gnome.Settings.GlobalShortcutsProvider")
 
     if (hasGnomeImpl && !hasProvider) {
       return (
         "Detected GNOME portal backend, but 'org.gnome.Settings.GlobalShortcutsProvider' is unavailable. " +
         "Install the GNOME Control Center global-shortcuts-provider service or switch to a portal backend that supports GlobalShortcuts in your session."
-      );
+      )
     }
   } catch {
-    return undefined;
+    return undefined
   }
 
-  return undefined;
-};
+  return undefined
+}
 
 const buildCreateSessionOptions = (tokens: {
-  readonly handleToken: string;
-  readonly sessionHandleToken: string;
+  readonly handleToken: string
+  readonly sessionHandleToken: string
 }): Record<string, DbusVariant<string>> => ({
   handle_token: new Variant("s", tokens.handleToken),
   session_handle_token: new Variant("s", tokens.sessionHandleToken),
-});
+})
 
 const buildBindShortcutsOptions = (handleToken: string): Record<string, DbusVariant<string>> => ({
   handle_token: new Variant("s", handleToken),
-});
+})
 
 const buildPortalShortcutTuple = (
   shortcut: PortalShortcutSpec,
@@ -461,37 +474,37 @@ const buildPortalShortcutTuple = (
     description: new Variant("s", shortcut.description),
     preferred_trigger: new Variant("s", shortcut.preferredTrigger),
   },
-];
+]
 
 const findBusctlExecutable = Effect.sync(() => {
-  const executable = Bun.which("busctl");
+  const executable = Bun.which("busctl")
   if (executable === null) {
     throw new GlobalShortcutsPortalError(
       "busctl is required for portal signal monitoring but was not found in PATH",
-    );
+    )
   }
 
-  return executable;
-});
+  return executable
+})
 
 export const setupGlobalShortcutSession = (config: {
-  readonly shortcut: PortalShortcutSpec;
-  readonly parentWindow: string;
+  readonly shortcut: PortalShortcutSpec
+  readonly parentWindow: string
 }): Effect.Effect<PortalShortcutSession, GlobalShortcutsPortalError> =>
   Effect.tryPromise({
     try: async () => {
-      const bus = await connectSessionBus();
+      const bus = await connectSessionBus()
 
       try {
-        const createHandleToken = randomToken("pie_create_req");
-        const sessionHandleToken = randomToken("pie_session");
-        const bindHandleToken = randomToken("pie_bind_req");
+        const createHandleToken = randomToken("pie_create_req")
+        const sessionHandleToken = randomToken("pie_session")
+        const bindHandleToken = randomToken("pie_bind_req")
 
         const pendingCreateResponse = waitForRequestResponseByHandleToken(
           bus,
           createHandleToken,
           "CreateSession",
-        );
+        )
 
         const createReply = await callPortalMethod({
           bus,
@@ -505,30 +518,30 @@ export const setupGlobalShortcutSession = (config: {
               sessionHandleToken,
             }),
           ],
-        }).catch((error) => {
-          pendingCreateResponse.cancel();
-          throw error;
-        });
+        }).catch((error: unknown) => {
+          pendingCreateResponse.cancel()
+          throw error
+        })
 
-        const createRequestHandle = parseRequestHandleFromMethodReply(createReply, "CreateSession");
-        const createResponse = await pendingCreateResponse.promise;
-        ensureSuccessfulPortalResponse(createResponse, "CreateSession");
+        const createRequestHandle = parseRequestHandleFromMethodReply(createReply, "CreateSession")
+        const createResponse = await pendingCreateResponse.promise
+        ensureSuccessfulPortalResponse(createResponse, "CreateSession")
 
         const sessionHandle =
           parseSessionHandleFromResponseResults(createResponse.results) ??
-          deriveSessionHandleFromRequestHandle(createRequestHandle, sessionHandleToken);
+          deriveSessionHandleFromRequestHandle(createRequestHandle, sessionHandleToken)
 
         if (sessionHandle === undefined) {
           throw new GlobalShortcutsPortalError(
             `Could not determine session handle from CreateSession response for ${createRequestHandle}`,
-          );
+          )
         }
 
         const pendingBindResponse = waitForRequestResponseByHandleToken(
           bus,
           bindHandleToken,
           "BindShortcuts",
-        );
+        )
 
         const bindReply = await callPortalMethod({
           bus,
@@ -542,54 +555,54 @@ export const setupGlobalShortcutSession = (config: {
             config.parentWindow,
             buildBindShortcutsOptions(bindHandleToken),
           ],
-        }).catch((error) => {
-          pendingBindResponse.cancel();
-          throw error;
-        });
+        }).catch((error: unknown) => {
+          pendingBindResponse.cancel()
+          throw error
+        })
 
-        const bindRequestHandle = parseRequestHandleFromMethodReply(bindReply, "BindShortcuts");
-        const bindResponse = await pendingBindResponse.promise;
+        const bindRequestHandle = parseRequestHandleFromMethodReply(bindReply, "BindShortcuts")
+        const bindResponse = await pendingBindResponse.promise
 
         if (bindResponse.responseCode !== 0) {
-          const diagnostic = await diagnoseBindFailure(bus);
-          const suffix = diagnostic === undefined ? "" : ` Hint: ${diagnostic}`;
+          const diagnostic = await diagnoseBindFailure(bus)
+          const suffix = diagnostic === undefined ? "" : ` Hint: ${diagnostic}`
           const reason =
             bindResponse.responseCode === 1
               ? "cancelled by user or compositor"
               : bindResponse.responseCode === 2
                 ? "failed by portal/backend"
-                : "returned unexpected status";
+                : "returned unexpected status"
 
           throw new GlobalShortcutsPortalError(
             `BindShortcuts was not successful (${reason}, code ${bindResponse.responseCode}). ` +
               `Request handle: ${bindResponse.requestHandle}. Response results: ${formatPortalResults(bindResponse.results)}.${suffix}`,
-          );
+          )
         }
 
-        sessionBuses.set(sessionHandle, bus);
+        sessionBuses.set(sessionHandle, bus)
 
         return {
           shortcut: config.shortcut,
           createRequestHandle,
           bindRequestHandle,
           sessionHandle,
-        };
+        }
       } catch (error) {
-        bus.disconnect();
-        throw error;
+        bus.disconnect()
+        throw error
       }
     },
     catch: (cause) => asPortalError(cause, "Failed to set up portal global shortcut session"),
-  });
+  })
 
 export const closeGlobalShortcutSession = (
   sessionHandle: string,
 ): Effect.Effect<void, GlobalShortcutsPortalError> =>
   Effect.tryPromise({
     try: async () => {
-      const bus = sessionBuses.get(sessionHandle);
+      const bus = sessionBuses.get(sessionHandle)
       if (bus === undefined) {
-        return;
+        return
       }
 
       try {
@@ -598,19 +611,19 @@ export const closeGlobalShortcutSession = (
           path: sessionHandle,
           interfaceName: SESSION_INTERFACE,
           member: "Close",
-        });
+        })
       } finally {
-        sessionBuses.delete(sessionHandle);
-        bus.disconnect();
+        sessionBuses.delete(sessionHandle)
+        bus.disconnect()
       }
     },
     catch: (cause) => asPortalError(cause, "Failed to close portal global shortcut session"),
-  });
+  })
 
 export const monitorPortalSignals = (): Effect.Effect<never, GlobalShortcutsPortalError> =>
   Effect.scoped(
     Effect.gen(function* () {
-      const busctlExecutable = yield* findBusctlExecutable;
+      const busctlExecutable = yield* findBusctlExecutable
 
       const monitor = yield* Effect.acquireRelease(
         Effect.sync(() =>
@@ -621,14 +634,14 @@ export const monitorPortalSignals = (): Effect.Effect<never, GlobalShortcutsPort
         ),
         (process) =>
           Effect.sync(() => {
-            process.kill();
+            process.kill()
           }).pipe(Effect.ignore),
-      );
+      )
 
-      const exitCode = yield* Effect.promise(() => monitor.exited);
+      const exitCode = yield* Effect.promise(() => monitor.exited)
 
       return yield* Effect.fail(
         new GlobalShortcutsPortalError(`busctl monitor exited unexpectedly with code ${exitCode}`),
-      );
+      )
     }),
-  );
+  )

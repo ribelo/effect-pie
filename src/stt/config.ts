@@ -1,44 +1,44 @@
-import { Data, Effect, Schema } from "effect";
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
+import { Data, Effect, Schema } from "effect"
+import * as fs from "node:fs/promises"
+import * as path from "node:path"
 
-import { EFFECT_PI_CONFIG_DIR } from "../paths.js";
+import { EFFECT_PI_CONFIG_DIR } from "../paths.js"
 
-export const STT_CONFIG_PATH = path.join(EFFECT_PI_CONFIG_DIR, "stt.json");
+export const STT_CONFIG_PATH = path.join(EFFECT_PI_CONFIG_DIR, "stt.json")
 
 export type SttRuntimeConfig = {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 1
   readonly openrouter: {
-    readonly transcriptionModel: string;
-    readonly translationModel: string;
-    readonly transcriptionLanguage: string;
-    readonly translationSourceLanguage: string;
-    readonly translationTargetLanguage: string;
-    readonly wakewordDictationSilenceSeconds: number;
-    readonly wakewordDictationMaxSeconds: number;
-    readonly wakewordDictationSpeechRmsThreshold: number;
-  };
-};
+    readonly transcriptionModel: string
+    readonly translationModel: string
+    readonly transcriptionLanguage: string
+    readonly translationSourceLanguage: string
+    readonly translationTargetLanguage: string
+    readonly wakewordDictationSilenceSeconds: number
+    readonly wakewordDictationMaxSeconds: number
+    readonly wakewordDictationSpeechRmsThreshold: number
+  }
+}
 
 type LegacySttRuntimeConfig = {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 1
   readonly openrouter: {
-    readonly transcriptionModel: string;
-    readonly translationModel: string;
-    readonly defaultTargetLanguage: string;
-  };
-};
+    readonly transcriptionModel: string
+    readonly translationModel: string
+    readonly defaultTargetLanguage: string
+  }
+}
 
 type LanguageOnlySttRuntimeConfig = {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 1
   readonly openrouter: {
-    readonly transcriptionModel: string;
-    readonly translationModel: string;
-    readonly transcriptionLanguage: string;
-    readonly translationSourceLanguage: string;
-    readonly translationTargetLanguage: string;
-  };
-};
+    readonly transcriptionModel: string
+    readonly translationModel: string
+    readonly transcriptionLanguage: string
+    readonly translationSourceLanguage: string
+    readonly translationTargetLanguage: string
+  }
+}
 
 export const defaultSttRuntimeConfig: SttRuntimeConfig = {
   schemaVersion: 1,
@@ -52,85 +52,91 @@ export const defaultSttRuntimeConfig: SttRuntimeConfig = {
     wakewordDictationMaxSeconds: 45,
     wakewordDictationSpeechRmsThreshold: 0.01,
   },
-};
+}
 
 export class SttConfigError extends Data.TaggedError("SttConfigError")<{
-  readonly message: string;
-  readonly cause?: unknown;
+  readonly message: string
+  readonly cause?: unknown
 }> {}
 
 const hasNonEmptyString = (value: unknown): value is string =>
-  typeof value === "string" && value.trim().length > 0;
+  typeof value === "string" && value.trim().length > 0
 
 const hasPositiveFiniteNumber = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value) && value > 0;
+  typeof value === "number" && Number.isFinite(value) && value > 0
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null
+
+const isErrnoException = (cause: unknown): cause is NodeJS.ErrnoException =>
+  isRecord(cause) && typeof cause["code"] === "string"
 
 const isCurrentSttRuntimeConfig = (value: unknown): value is SttRuntimeConfig => {
-  if (typeof value !== "object" || value === null) {
-    return false;
+  if (!isRecord(value)) {
+    return false
   }
 
-  const config = value as Record<string, unknown>;
-  const openrouter = config.openrouter;
+  const config = value
+  const openrouter = config["openrouter"]
 
-  if (config.schemaVersion !== 1 || typeof openrouter !== "object" || openrouter === null) {
-    return false;
+  if (config["schemaVersion"] !== 1 || !isRecord(openrouter)) {
+    return false
   }
 
-  const section = openrouter as Record<string, unknown>;
+  const section = openrouter
   return (
-    hasNonEmptyString(section.transcriptionModel) &&
-    hasNonEmptyString(section.translationModel) &&
-    hasNonEmptyString(section.transcriptionLanguage) &&
-    hasNonEmptyString(section.translationSourceLanguage) &&
-    hasNonEmptyString(section.translationTargetLanguage) &&
-    hasPositiveFiniteNumber(section.wakewordDictationSilenceSeconds) &&
-    hasPositiveFiniteNumber(section.wakewordDictationMaxSeconds) &&
-    hasPositiveFiniteNumber(section.wakewordDictationSpeechRmsThreshold)
-  );
-};
+    hasNonEmptyString(section["transcriptionModel"]) &&
+    hasNonEmptyString(section["translationModel"]) &&
+    hasNonEmptyString(section["transcriptionLanguage"]) &&
+    hasNonEmptyString(section["translationSourceLanguage"]) &&
+    hasNonEmptyString(section["translationTargetLanguage"]) &&
+    hasPositiveFiniteNumber(section["wakewordDictationSilenceSeconds"]) &&
+    hasPositiveFiniteNumber(section["wakewordDictationMaxSeconds"]) &&
+    hasPositiveFiniteNumber(section["wakewordDictationSpeechRmsThreshold"])
+  )
+}
 
 const isLanguageOnlySttRuntimeConfig = (value: unknown): value is LanguageOnlySttRuntimeConfig => {
-  if (typeof value !== "object" || value === null) {
-    return false;
+  if (!isRecord(value)) {
+    return false
   }
 
-  const config = value as Record<string, unknown>;
-  const openrouter = config.openrouter;
+  const config = value
+  const openrouter = config["openrouter"]
 
-  if (config.schemaVersion !== 1 || typeof openrouter !== "object" || openrouter === null) {
-    return false;
+  if (config["schemaVersion"] !== 1 || !isRecord(openrouter)) {
+    return false
   }
 
-  const section = openrouter as Record<string, unknown>;
+  const section = openrouter
   return (
-    hasNonEmptyString(section.transcriptionModel) &&
-    hasNonEmptyString(section.translationModel) &&
-    hasNonEmptyString(section.transcriptionLanguage) &&
-    hasNonEmptyString(section.translationSourceLanguage) &&
-    hasNonEmptyString(section.translationTargetLanguage)
-  );
-};
+    hasNonEmptyString(section["transcriptionModel"]) &&
+    hasNonEmptyString(section["translationModel"]) &&
+    hasNonEmptyString(section["transcriptionLanguage"]) &&
+    hasNonEmptyString(section["translationSourceLanguage"]) &&
+    hasNonEmptyString(section["translationTargetLanguage"])
+  )
+}
 
 const isLegacySttRuntimeConfig = (value: unknown): value is LegacySttRuntimeConfig => {
-  if (typeof value !== "object" || value === null) {
-    return false;
+  if (!isRecord(value)) {
+    return false
   }
 
-  const config = value as Record<string, unknown>;
-  const openrouter = config.openrouter;
+  const config = value
+  const openrouter = config["openrouter"]
 
-  if (config.schemaVersion !== 1 || typeof openrouter !== "object" || openrouter === null) {
-    return false;
+  if (config["schemaVersion"] !== 1 || !isRecord(openrouter)) {
+    return false
   }
 
-  const section = openrouter as Record<string, unknown>;
+  const section = openrouter
   return (
-    hasNonEmptyString(section.transcriptionModel) &&
-    hasNonEmptyString(section.translationModel) &&
-    hasNonEmptyString(section.defaultTargetLanguage)
-  );
-};
+    hasNonEmptyString(section["transcriptionModel"]) &&
+    hasNonEmptyString(section["translationModel"]) &&
+    hasNonEmptyString(section["defaultTargetLanguage"])
+  )
+}
 
 const normalizeSttRuntimeConfig = (config: SttRuntimeConfig): SttRuntimeConfig => ({
   schemaVersion: 1,
@@ -144,7 +150,7 @@ const normalizeSttRuntimeConfig = (config: SttRuntimeConfig): SttRuntimeConfig =
     wakewordDictationMaxSeconds: config.openrouter.wakewordDictationMaxSeconds,
     wakewordDictationSpeechRmsThreshold: config.openrouter.wakewordDictationSpeechRmsThreshold,
   },
-});
+})
 
 const migrateLegacyConfig = (legacy: LegacySttRuntimeConfig): SttRuntimeConfig =>
   normalizeSttRuntimeConfig({
@@ -159,7 +165,7 @@ const migrateLegacyConfig = (legacy: LegacySttRuntimeConfig): SttRuntimeConfig =
       wakewordDictationMaxSeconds: 45,
       wakewordDictationSpeechRmsThreshold: 0.01,
     },
-  });
+  })
 
 const migrateLanguageOnlyConfig = (config: LanguageOnlySttRuntimeConfig): SttRuntimeConfig =>
   normalizeSttRuntimeConfig({
@@ -174,7 +180,7 @@ const migrateLanguageOnlyConfig = (config: LanguageOnlySttRuntimeConfig): SttRun
       wakewordDictationMaxSeconds: 45,
       wakewordDictationSpeechRmsThreshold: 0.01,
     },
-  });
+  })
 
 const parseSttRuntimeConfig = (
   value: unknown,
@@ -183,25 +189,25 @@ const parseSttRuntimeConfig = (
     return {
       config: normalizeSttRuntimeConfig(value),
       migrated: false,
-    };
+    }
   }
 
   if (isLanguageOnlySttRuntimeConfig(value)) {
     return {
       config: migrateLanguageOnlyConfig(value),
       migrated: true,
-    };
+    }
   }
 
   if (isLegacySttRuntimeConfig(value)) {
     return {
       config: migrateLegacyConfig(value),
       migrated: true,
-    };
+    }
   }
 
-  return undefined;
-};
+  return undefined
+}
 
 const writeConfigFile = (
   configPath: string,
@@ -209,15 +215,15 @@ const writeConfigFile = (
 ): Effect.Effect<void, SttConfigError> =>
   Effect.tryPromise({
     try: async () => {
-      await fs.mkdir(path.dirname(configPath), { recursive: true });
-      await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+      await fs.mkdir(path.dirname(configPath), { recursive: true })
+      await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8")
     },
     catch: (cause) =>
       new SttConfigError({
         message: `Failed to write STT config at ${configPath}`,
         cause,
       }),
-  });
+  })
 
 export const loadSttRuntimeConfig = (
   configPath = STT_CONFIG_PATH,
@@ -226,13 +232,13 @@ export const loadSttRuntimeConfig = (
     const raw = yield* Effect.tryPromise({
       try: async (): Promise<string | undefined> => {
         try {
-          return await fs.readFile(configPath, "utf8");
+          return await fs.readFile(configPath, "utf8")
         } catch (cause) {
-          if ((cause as NodeJS.ErrnoException).code === "ENOENT") {
-            return undefined;
+          if (isErrnoException(cause) && cause.code === "ENOENT") {
+            return undefined
           }
 
-          throw cause;
+          throw cause
         }
       },
       catch: (cause) =>
@@ -240,7 +246,7 @@ export const loadSttRuntimeConfig = (
           message: `Failed to load STT config from ${configPath}`,
           cause,
         }),
-    });
+    })
 
     if (raw !== undefined) {
       const parsedJson = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(raw).pipe(
@@ -251,19 +257,19 @@ export const loadSttRuntimeConfig = (
               cause,
             }),
         ),
-      );
+      )
 
-      const parsed = parseSttRuntimeConfig(parsedJson);
+      const parsed = parseSttRuntimeConfig(parsedJson)
       if (parsed !== undefined) {
         if (parsed.migrated) {
-          yield* writeConfigFile(configPath, parsed.config);
+          yield* writeConfigFile(configPath, parsed.config)
         }
 
-        return parsed.config;
+        return parsed.config
       }
     }
 
-    const defaults = normalizeSttRuntimeConfig(defaultSttRuntimeConfig);
-    yield* writeConfigFile(configPath, defaults);
-    return defaults;
-  });
+    const defaults = normalizeSttRuntimeConfig(defaultSttRuntimeConfig)
+    yield* writeConfigFile(configPath, defaults)
+    return defaults
+  })

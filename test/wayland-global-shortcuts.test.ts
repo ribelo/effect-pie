@@ -1,5 +1,5 @@
-import { test } from "node:test";
-import * as assert from "node:assert/strict";
+import { test } from "node:test"
+import * as assert from "node:assert/strict"
 
 import {
   buildBindShortcutsArgs,
@@ -8,7 +8,7 @@ import {
   parseObjectPathFromBusctlCallOutput,
   parseRequestResponseCodeFromBusctlWaitOutput,
   parseSessionHandleFromRequestResponseOutput,
-} from "../src/wayland/globalShortcuts.ts";
+} from "../src/wayland/globalShortcuts.ts"
 
 test("buildCreateSessionOptionsArgs serializes portal tokens", () => {
   assert.deepStrictEqual(
@@ -17,8 +17,8 @@ test("buildCreateSessionOptionsArgs serializes portal tokens", () => {
       sessionHandleToken: "session_token_2",
     }),
     ["2", "handle_token", "s", "handle_token_1", "session_handle_token", "s", "session_token_2"],
-  );
-});
+  )
+})
 
 test("buildBindShortcutsArgs serializes shortcut payload", () => {
   assert.deepStrictEqual(
@@ -45,8 +45,8 @@ test("buildBindShortcutsArgs serializes shortcut payload", () => {
       "",
       "0",
     ],
-  );
-});
+  )
+})
 
 test("deriveSessionHandleFromRequestHandle builds expected session path", () => {
   assert.strictEqual(
@@ -55,10 +55,10 @@ test("deriveSessionHandleFromRequestHandle builds expected session path", () => 
       "pie_session_xyz999",
     ),
     "/org/freedesktop/portal/desktop/session/1_42/pie_session_xyz999",
-  );
+  )
 
-  assert.strictEqual(deriveSessionHandleFromRequestHandle("/invalid/path", "session"), undefined);
-});
+  assert.strictEqual(deriveSessionHandleFromRequestHandle("/invalid/path", "session"), undefined)
+})
 
 test("parseObjectPathFromBusctlCallOutput extracts object path", () => {
   assert.strictEqual(
@@ -66,21 +66,21 @@ test("parseObjectPathFromBusctlCallOutput extracts object path", () => {
       'o "/org/freedesktop/portal/desktop/request/1_42/pie_req_abc123"',
     ),
     "/org/freedesktop/portal/desktop/request/1_42/pie_req_abc123",
-  );
+  )
 
-  assert.strictEqual(parseObjectPathFromBusctlCallOutput("unexpected output"), undefined);
-});
+  assert.strictEqual(parseObjectPathFromBusctlCallOutput("unexpected output"), undefined)
+})
 
 test("parseRequestResponseCodeFromBusctlWaitOutput extracts response code", () => {
-  assert.strictEqual(parseRequestResponseCodeFromBusctlWaitOutput("ua{sv} 0 0"), 0);
+  assert.strictEqual(parseRequestResponseCodeFromBusctlWaitOutput("ua{sv} 0 0"), 0)
   assert.strictEqual(
     parseRequestResponseCodeFromBusctlWaitOutput(
       'ua{sv} 2 1 "session_handle" s "/org/freedesktop/portal/desktop/session/1_42/token"',
     ),
     2,
-  );
-  assert.strictEqual(parseRequestResponseCodeFromBusctlWaitOutput("invalid output"), undefined);
-});
+  )
+  assert.strictEqual(parseRequestResponseCodeFromBusctlWaitOutput("invalid output"), undefined)
+})
 
 test("parseSessionHandleFromRequestResponseOutput extracts session handle", () => {
   assert.strictEqual(
@@ -88,14 +88,14 @@ test("parseSessionHandleFromRequestResponseOutput extracts session handle", () =
       'ua{sv} 0 1 "session_handle" s "/org/freedesktop/portal/desktop/session/1_42/token"',
     ),
     "/org/freedesktop/portal/desktop/session/1_42/token",
-  );
+  )
 
   assert.strictEqual(
     parseSessionHandleFromRequestResponseOutput(
       'ua{sv} 0 1 "session_handle" o "/org/freedesktop/portal/desktop/session/1_42/token"',
     ),
     "/org/freedesktop/portal/desktop/session/1_42/token",
-  );
+  )
 
-  assert.strictEqual(parseSessionHandleFromRequestResponseOutput("ua{sv} 0 0"), undefined);
-});
+  assert.strictEqual(parseSessionHandleFromRequestResponseOutput("ua{sv} 0 0"), undefined)
+})

@@ -1,26 +1,28 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "ES2023",
+    "lib": ["ES2023"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "types": ["bun"],
     "moduleDetection": "force",
     "verbatimModuleSyntax": true,
     "rewriteRelativeImportExtensions": true,
-
-    "strict": true,
-    "exactOptionalPropertyTypes": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": false,
-    "noImplicitOverride": true,
-    "noUncheckedIndexedAccess": false,
-
-    "incremental": true,
-    "composite": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "skipLibCheck": true,
     "resolveJsonModule": true,
-    "types": ["bun"],
+    "isolatedModules": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "erasableSyntaxOnly": true,
+    "noErrorTruncation": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
 
     "plugins": [
       {
@@ -28,6 +30,6 @@
       }
     ]
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "test/**/*.ts"],
   "exclude": ["node_modules", "**/dist", "**/out", "**/coverage", "**/.cache"]
 }

@@ -1,42 +1,64 @@
-import * as Data from "effect/Data";
-import * as Effect from "effect/Effect";
-import { promises as fs } from "node:fs";
-import { createRequire } from "node:module";
-import * as path from "node:path";
+import * as Data from "effect/Data"
+import * as Effect from "effect/Effect"
+import { promises as fs } from "node:fs"
+import { createRequire } from "node:module"
+import * as path from "node:path"
 
-import { BUNDLED_OPENWAKEWORD_ASSET_DIR, EFFECT_PI_OPENWAKEWORD_DATA_DIR } from "../paths.js";
+import { BUNDLED_OPENWAKEWORD_ASSET_DIR, EFFECT_PI_OPENWAKEWORD_DATA_DIR } from "../paths.js"
 import {
   OPENWAKEWORD_RUNTIME_PACKAGE,
   OPENWAKEWORD_RUNTIME_VERSION,
   type ResolvedWakewordAssets,
   type WakewordAssetManifest,
-} from "./defs.js";
+} from "./defs.js"
 
 export class WakewordAssetError extends Data.TaggedError("WakewordAssetError")<{
-  readonly message: string;
-  readonly cause?: unknown;
+  readonly message: string
+  readonly cause?: unknown
 }> {}
 
 export type WakewordAssetOptions = {
-  readonly rootDir?: string;
-  readonly wakewordModels?: ReadonlyArray<string>;
-  readonly validateRuntime?: boolean;
-  readonly validateWakewordModels?: boolean;
-  readonly validateFeatureModels?: boolean;
-};
+  readonly rootDir?: string
+  readonly wakewordModels?: ReadonlyArray<string>
+  readonly validateRuntime?: boolean
+  readonly validateWakewordModels?: boolean
+  readonly validateFeatureModels?: boolean
+}
 
-const defaultRootDir = EFFECT_PI_OPENWAKEWORD_DATA_DIR;
-const requireFromModule = createRequire(import.meta.url);
+const defaultRootDir = EFFECT_PI_OPENWAKEWORD_DATA_DIR
+const requireFromModule = createRequire(import.meta.url)
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null
+
+const isWakewordAssetManifest = (value: unknown): value is WakewordAssetManifest => {
+  if (!isRecord(value) || !isRecord(value["runtime"]) || !isRecord(value["models"])) {
+    return false
+  }
+
+  const runtime = value["runtime"]
+  const models = value["models"]
+
+  return (
+    value["schemaVersion"] === 1 &&
+    typeof runtime["package"] === "string" &&
+    typeof runtime["version"] === "string" &&
+    typeof models["melspectrogram"] === "string" &&
+    typeof models["embedding"] === "string" &&
+    Array.isArray(models["wakewords"]) &&
+    models["wakewords"].every((entry) => typeof entry === "string")
+  )
+}
 
 const ensureReadableFile = (filePath: string): Effect.Effect<void, WakewordAssetError> =>
   Effect.tryPromise({
     try: async () => {
-      const stat = await fs.stat(filePath);
+      const stat = await fs.stat(filePath)
       if (!stat.isFile()) {
-        throw new WakewordAssetError({ message: "path is not a file" });
+        throw new WakewordAssetError({ message: "path is not a file" })
       }
       if (stat.size === 0) {
-        throw new WakewordAssetError({ message: "file is empty" });
+        throw new WakewordAssetError({ message: "file is empty" })
       }
     },
     catch: (cause) =>
@@ -44,10 +66,10 @@ const ensureReadableFile = (filePath: string): Effect.Effect<void, WakewordAsset
         message: `Missing or invalid model asset: ${filePath}. Install required feature models with 'bun run wakeword:install-feature-models --melspectrogram-sha256 <sha256> --embedding-sha256 <sha256>'.`,
         cause,
       }),
-  });
+  })
 
-const FEATURE_PLACEHOLDER_MARKER = "pie placeholder feature model file";
-const MIN_FEATURE_MODEL_BYTES = 4_096;
+const FEATURE_PLACEHOLDER_MARKER = "pie placeholder feature model file"
+const MIN_FEATURE_MODEL_BYTES = 4_096
 
 const ensureRealFeatureOnnxFile = (
   filePath: string,
@@ -55,23 +77,23 @@ const ensureRealFeatureOnnxFile = (
 ): Effect.Effect<void, WakewordAssetError> =>
   Effect.tryPromise({
     try: async () => {
-      const stat = await fs.stat(filePath);
+      const stat = await fs.stat(filePath)
       if (!stat.isFile()) {
-        throw new WakewordAssetError({ message: "path is not a file" });
+        throw new WakewordAssetError({ message: "path is not a file" })
       }
 
       if (stat.size < MIN_FEATURE_MODEL_BYTES) {
         throw new WakewordAssetError({
           message: `feature model is too small (${stat.size} bytes). Real ONNX model is required`,
-        });
+        })
       }
 
-      const raw = await fs.readFile(filePath);
-      const preview = raw.subarray(0, 256).toString("utf8").toLowerCase();
+      const raw = await fs.readFile(filePath)
+      const preview = raw.subarray(0, 256).toString("utf8").toLowerCase()
       if (preview.includes(FEATURE_PLACEHOLDER_MARKER)) {
         throw new WakewordAssetError({
           message: "feature model placeholder marker detected",
-        });
+        })
       }
     },
     catch: (cause) =>
@@ -79,39 +101,45 @@ const ensureRealFeatureOnnxFile = (
         message: `Invalid ${label} feature model at ${filePath}. Install real openWakeWord ONNX feature models before training or detection.`,
         cause,
       }),
-  });
+  })
 
 const normalizeWakewordModelName = (entry: string): string => {
-  const base = path.basename(entry);
+  const base = path.basename(entry)
   if (base.endsWith(".onnx")) {
-    return base.slice(0, -".onnx".length);
+    return base.slice(0, -".onnx".length)
   }
   if (base.endsWith(".json")) {
-    return base.slice(0, -".json".length);
+    return base.slice(0, -".json".length)
   }
-  return base;
-};
+  return base
+}
 
 const toWakewordModelPath = (rootDir: string, entry: string): string => {
-  const hasKnownExtension = entry.endsWith(".onnx") || entry.endsWith(".json");
-  const fileName = hasKnownExtension ? entry : `${entry}.onnx`;
+  const hasKnownExtension = entry.endsWith(".onnx") || entry.endsWith(".json")
+  const fileName = hasKnownExtension ? entry : `${entry}.onnx`
   return path.isAbsolute(fileName)
     ? fileName
-    : path.join(rootDir, "wakewords", path.basename(fileName));
-};
+    : path.join(rootDir, "wakewords", path.basename(fileName))
+}
 
 const readManifest = (
   manifestPath: string,
 ): Effect.Effect<WakewordAssetManifest, WakewordAssetError> =>
   Effect.tryPromise({
     try: async () => {
-      const raw = await fs.readFile(manifestPath, "utf8");
-      const parsed = JSON.parse(raw) as WakewordAssetManifest;
+      const raw = await fs.readFile(manifestPath, "utf8")
+      const parsed: unknown = JSON.parse(raw)
+
+      if (!isWakewordAssetManifest(parsed)) {
+        throw new WakewordAssetError({
+          message: `Invalid wakeword manifest shape at ${manifestPath}`,
+        })
+      }
 
       if (parsed.schemaVersion !== 1) {
         throw new WakewordAssetError({
           message: `Unsupported wakeword manifest schema version: ${String(parsed.schemaVersion)}`,
-        });
+        })
       }
 
       if (
@@ -123,17 +151,17 @@ const readManifest = (
       ) {
         throw new WakewordAssetError({
           message: "Wakeword manifest is missing required keys",
-        });
+        })
       }
 
-      return parsed;
+      return parsed
     },
     catch: (cause) =>
       new WakewordAssetError({
         message: `Failed to read wakeword manifest at ${manifestPath}`,
         cause,
       }),
-  });
+  })
 
 const validateRuntimePin = (
   runtimePackage: string,
@@ -147,23 +175,25 @@ const validateRuntimePin = (
       ) {
         throw new WakewordAssetError({
           message: `Expected runtime ${OPENWAKEWORD_RUNTIME_PACKAGE}@${OPENWAKEWORD_RUNTIME_VERSION}, got ${runtimePackage}@${runtimeVersion}`,
-        });
+        })
       }
 
-      const entryPath = requireFromModule.resolve(runtimePackage);
-      const marker = `node_modules/${runtimePackage}/`;
-      const idx = entryPath.lastIndexOf(marker);
+      const entryPath = requireFromModule.resolve(runtimePackage)
+      const marker = `node_modules/${runtimePackage}/`
+      const idx = entryPath.lastIndexOf(marker)
       const packageJsonPath =
         idx >= 0
           ? path.join(entryPath.slice(0, idx + marker.length), "package.json")
-          : requireFromModule.resolve(`${runtimePackage}/package.json`);
-      const raw = await fs.readFile(packageJsonPath, "utf8");
-      const pkg = JSON.parse(raw) as { readonly version?: string };
+          : requireFromModule.resolve(`${runtimePackage}/package.json`)
+      const raw = await fs.readFile(packageJsonPath, "utf8")
+      const pkg: unknown = JSON.parse(raw)
+      const version =
+        isRecord(pkg) && typeof pkg["version"] === "string" ? pkg["version"] : undefined
 
-      if (pkg.version !== runtimeVersion) {
+      if (version !== runtimeVersion) {
         throw new WakewordAssetError({
-          message: `Installed ${runtimePackage} version ${pkg.version ?? "<unknown>"} does not match required ${runtimeVersion}`,
-        });
+          message: `Installed ${runtimePackage} version ${version ?? "<unknown>"} does not match required ${runtimeVersion}`,
+        })
       }
     },
     catch: (cause) =>
@@ -171,71 +201,71 @@ const validateRuntimePin = (
         message: `Wakeword runtime validation failed. Install ${runtimePackage}@${runtimeVersion} with npm before starting wakeword detection.`,
         cause,
       }),
-  });
+  })
 
 const copyFileIfExists = async (sourcePath: string, targetPath: string): Promise<void> => {
   try {
-    const stat = await fs.stat(sourcePath);
+    const stat = await fs.stat(sourcePath)
     if (!stat.isFile()) {
-      return;
+      return
     }
   } catch {
-    return;
+    return
   }
 
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  await fs.copyFile(sourcePath, targetPath);
-};
+  await fs.mkdir(path.dirname(targetPath), { recursive: true })
+  await fs.copyFile(sourcePath, targetPath)
+}
 
 const ensureDefaultAssetRoot = (targetRootDir: string): Effect.Effect<void, WakewordAssetError> =>
   Effect.tryPromise({
     try: async () => {
-      const targetManifestPath = path.join(targetRootDir, "manifest.json");
-      const sourceManifestPath = path.join(BUNDLED_OPENWAKEWORD_ASSET_DIR, "manifest.json");
+      const targetManifestPath = path.join(targetRootDir, "manifest.json")
+      const sourceManifestPath = path.join(BUNDLED_OPENWAKEWORD_ASSET_DIR, "manifest.json")
 
       const targetManifestExists = await fs
         .access(targetManifestPath)
         .then(() => true)
-        .catch(() => false);
+        .catch(() => false)
 
       if (targetManifestExists) {
-        return;
+        return
       }
 
       const sourceManifestExists = await fs
         .access(sourceManifestPath)
         .then(() => true)
-        .catch(() => false);
+        .catch(() => false)
 
       if (!sourceManifestExists) {
-        return;
+        return
       }
 
-      await fs.mkdir(targetRootDir, { recursive: true });
-      await fs.copyFile(sourceManifestPath, targetManifestPath);
+      await fs.mkdir(targetRootDir, { recursive: true })
+      await fs.copyFile(sourceManifestPath, targetManifestPath)
 
       await copyFileIfExists(
         path.join(BUNDLED_OPENWAKEWORD_ASSET_DIR, "melspectrogram.onnx"),
         path.join(targetRootDir, "melspectrogram.onnx"),
-      );
+      )
       await copyFileIfExists(
         path.join(BUNDLED_OPENWAKEWORD_ASSET_DIR, "embedding_model.onnx"),
         path.join(targetRootDir, "embedding_model.onnx"),
-      );
+      )
 
-      const sourceWakewordsDir = path.join(BUNDLED_OPENWAKEWORD_ASSET_DIR, "wakewords");
-      const targetWakewordsDir = path.join(targetRootDir, "wakewords");
-      await fs.mkdir(targetWakewordsDir, { recursive: true });
+      const sourceWakewordsDir = path.join(BUNDLED_OPENWAKEWORD_ASSET_DIR, "wakewords")
+      const targetWakewordsDir = path.join(targetRootDir, "wakewords")
+      await fs.mkdir(targetWakewordsDir, { recursive: true })
 
       const sourceEntries = await fs
         .readdir(sourceWakewordsDir)
-        .catch(() => [] as ReadonlyArray<string>);
+        .catch(() => [] as ReadonlyArray<string>)
 
       for (const entry of sourceEntries) {
-        const sourcePath = path.join(sourceWakewordsDir, entry);
-        const targetPath = path.join(targetWakewordsDir, entry);
+        const sourcePath = path.join(sourceWakewordsDir, entry)
+        const targetPath = path.join(targetWakewordsDir, entry)
 
-        await copyFileIfExists(sourcePath, targetPath);
+        await copyFileIfExists(sourcePath, targetPath)
       }
     },
     catch: (cause) =>
@@ -243,36 +273,36 @@ const ensureDefaultAssetRoot = (targetRootDir: string): Effect.Effect<void, Wake
         message: `Failed to initialize default wakeword data directory at ${targetRootDir}`,
         cause,
       }),
-  });
+  })
 
 export const resolveWakewordAssets = (
   options: WakewordAssetOptions = {},
 ): Effect.Effect<ResolvedWakewordAssets, WakewordAssetError> =>
   Effect.gen(function* () {
-    const usingDefaultRoot = options.rootDir === undefined;
-    const rootDir = path.resolve(options.rootDir ?? defaultRootDir);
-    const manifestPath = path.join(rootDir, "manifest.json");
+    const usingDefaultRoot = options.rootDir === undefined
+    const rootDir = path.resolve(options.rootDir ?? defaultRootDir)
+    const manifestPath = path.join(rootDir, "manifest.json")
 
     if (usingDefaultRoot) {
-      yield* ensureDefaultAssetRoot(rootDir);
+      yield* ensureDefaultAssetRoot(rootDir)
     }
 
-    const manifest = yield* readManifest(manifestPath);
+    const manifest = yield* readManifest(manifestPath)
 
     const wakewordEntries =
       options.wakewordModels && options.wakewordModels.length > 0
         ? options.wakewordModels
-        : manifest.models.wakewords;
+        : manifest.models.wakewords
 
     if ((options.validateWakewordModels ?? true) && wakewordEntries.length === 0) {
       return yield* new WakewordAssetError({
         message: "Wakeword manifest does not declare any wakeword model files",
-      });
+      })
     }
 
     const wakewordModelPairs = wakewordEntries.map(
       (entry) => [normalizeWakewordModelName(entry), toWakewordModelPath(rootDir, entry)] as const,
-    );
+    )
 
     const resolved: ResolvedWakewordAssets = {
       rootDir,
@@ -282,34 +312,34 @@ export const resolveWakewordAssets = (
       wakewordModelPaths: Object.fromEntries(wakewordModelPairs),
       runtimePackage: manifest.runtime.package,
       runtimeVersion: manifest.runtime.version,
-    };
+    }
 
-    return resolved;
-  });
+    return resolved
+  })
 
 export const validateWakewordAssets = (
   options: WakewordAssetOptions = {},
 ): Effect.Effect<ResolvedWakewordAssets, WakewordAssetError> =>
   Effect.gen(function* () {
-    const resolved = yield* resolveWakewordAssets(options);
+    const resolved = yield* resolveWakewordAssets(options)
 
-    yield* ensureReadableFile(resolved.melspectrogramModelPath);
-    yield* ensureReadableFile(resolved.embeddingModelPath);
+    yield* ensureReadableFile(resolved.melspectrogramModelPath)
+    yield* ensureReadableFile(resolved.embeddingModelPath)
 
     if (options.validateFeatureModels ?? true) {
-      yield* ensureRealFeatureOnnxFile(resolved.melspectrogramModelPath, "melspectrogram");
-      yield* ensureRealFeatureOnnxFile(resolved.embeddingModelPath, "embedding");
+      yield* ensureRealFeatureOnnxFile(resolved.melspectrogramModelPath, "melspectrogram")
+      yield* ensureRealFeatureOnnxFile(resolved.embeddingModelPath, "embedding")
     }
 
     if (options.validateWakewordModels ?? true) {
       for (const wakewordModelPath of Object.values(resolved.wakewordModelPaths)) {
-        yield* ensureReadableFile(wakewordModelPath);
+        yield* ensureReadableFile(wakewordModelPath)
       }
     }
 
     if (options.validateRuntime ?? true) {
-      yield* validateRuntimePin(resolved.runtimePackage, resolved.runtimeVersion);
+      yield* validateRuntimePin(resolved.runtimePackage, resolved.runtimeVersion)
     }
 
-    return resolved;
-  });
+    return resolved
+  })

@@ -8,10 +8,10 @@
   "scripts": {
     "prepare": "effect-language-service patch",
     "check": "tsgo -p tsconfig.check.json --noEmit",
-    "lint": "oxlint .",
-    "lint:fix": "oxlint . --fix",
-    "format": "oxfmt --write .",
-    "format:check": "oxfmt --check .",
+    "lint": "bunx oxlint .",
+    "lint:fix": "bunx oxlint . --fix",
+    "format": "bunx oxfmt .",
+    "format:check": "bunx oxfmt --check .",
     "test": "bun test",
     "effect:diagnostics": "bunx effect-language-service diagnostics --project tsconfig.json --format pretty --progress",
     "cli": "bun run src/cli.ts",
@@ -29,8 +29,10 @@
   "devDependencies": {
     "@effect/language-service": "^0.71.0",
     "@types/bun": "latest",
-    "oxfmt": "^0.26.0",
-    "oxlint": "^1.41.0",
+    "oxfmt": "latest",
+    "oxlint": "latest",
+    "oxlint-tsgolint": "0.17.3",
     "typescript": "^5.9.3"
-  }
+  },
+  "packageManager": "bun@1.3.11"
 }
