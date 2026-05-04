@@ -120,7 +120,7 @@ Keep the project rule simple: follow the reference completely, or do not start t
 
 ## Issue Tracking
 
-Uses beads (`bd`) for task tracking.
+Uses backlog for task tracking.
 
 ### Definition of Ready (DoR)
 
@@ -132,7 +132,7 @@ Uses beads (`bd`) for task tracking.
 
 - Code compiles and passes gate
 - Tests cover the change
-- Beads issue updated/closed
+- Backlog issue updated/closed
 
 ## Workflow
 
@@ -150,8 +150,8 @@ When ending a work session:
 
 1. File issues for follow-up work.
 2. Run `bun run gate`.
-3. Update beads status.
-4. `git pull --rebase && bd sync && git push`.
+3. Update backlog status.
+4. `git pull --rebase && git push`.
 5. Verify `git status` is up to date with origin.
 
 Work is not complete until push succeeds. Do not leave finished work stranded locally.

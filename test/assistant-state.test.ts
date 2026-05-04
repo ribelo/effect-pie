@@ -222,7 +222,7 @@ test("assistantInjectionFailure returns to idle", () => {
 })
 
 test("assistantShutdown returns idle from any state", () => {
-  const held = assistantPttHold(assistantIdle, "transcribe")
+  assistantPttHold(assistantIdle, "transcribe")
   const state = assistantShutdown()
   assert.deepStrictEqual(state, assistantIdle)
 })

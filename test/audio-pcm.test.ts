@@ -6,7 +6,6 @@ import {
   DEFAULT_AUTO_GAIN_MAX,
   DEFAULT_AUTO_GAIN_PEAK_LIMIT,
   DEFAULT_AUTO_GAIN_TARGET_RMS,
-  MIN_GAIN_TO_APPLY,
   normalizePcmS16leTargetRms,
   pcmPeak,
   pcmRms,

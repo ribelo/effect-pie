@@ -1,6 +1,6 @@
 import { Console, Effect } from "effect"
 
-export const notifyWarning = (title: string, message: string): Effect.Effect<void> =>
+export const notifyWarning = (title: string, message: string): Effect.Effect<void, Error> =>
   Effect.tryPromise({
     try: async () => {
       const proc = Bun.spawn(["notify-send", "--urgency=normal", title, message])
@@ -15,5 +15,4 @@ export const notifyWarning = (title: string, message: string): Effect.Effect<voi
     Effect.tapError((cause) =>
       Console.log(`Notification failed: ${cause instanceof Error ? cause.message : String(cause)}`),
     ),
-    Effect.catch(() => Effect.void),
   )

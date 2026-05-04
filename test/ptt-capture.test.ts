@@ -105,8 +105,6 @@ test("pttCaptureDurationMs returns 0 for idle", () => {
 test("regression: duration must be computed from captureStartedAtRef, not idle state", () => {
   const startedAt = 1000
   const now = 3500
-  const capturing = pttCaptureStart(pttCaptureIdle, startedAt)
-  const postRoll = pttCaptureRelease(capturing, 1500)
   // Bug pattern from src/cli.ts: after finalizing, callers computed
   // duration as pttCaptureDurationMs(pttCaptureIdle, now) which loses startedAt.
   const buggyDuration = pttCaptureDurationMs(pttCaptureIdle, now)

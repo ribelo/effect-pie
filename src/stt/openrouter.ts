@@ -4,11 +4,9 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 import type * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
+import { buildPcmWavHeader, isRecord } from "../utils/runtime.js"
 
 const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null
 
 const extractStructuredFieldText = (
   value: unknown,
@@ -64,31 +62,10 @@ export const renderTemplate = (
 ): string => template.replace(/\{\{(\w+)\}\}/g, (_, key: string) => variables[key] ?? "")
 
 export const encodePcm16MonoWav = (pcmBytes: Uint8Array, sampleRate: number): Uint8Array => {
-  const header = new ArrayBuffer(44)
-  const view = new DataView(header)
-
-  const writeString = (offset: number, value: string): void => {
-    for (let index = 0; index < value.length; index += 1) {
-      view.setUint8(offset + index, value.charCodeAt(index))
-    }
-  }
-
-  writeString(0, "RIFF")
-  view.setUint32(4, 36 + pcmBytes.length, true)
-  writeString(8, "WAVE")
-  writeString(12, "fmt ")
-  view.setUint32(16, 16, true)
-  view.setUint16(20, 1, true)
-  view.setUint16(22, 1, true)
-  view.setUint32(24, sampleRate, true)
-  view.setUint32(28, sampleRate * 2, true)
-  view.setUint16(32, 2, true)
-  view.setUint16(34, 16, true)
-  writeString(36, "data")
-  view.setUint32(40, pcmBytes.length, true)
+  const header = buildPcmWavHeader(pcmBytes.length, sampleRate)
 
   const wavData = new Uint8Array(44 + pcmBytes.length)
-  wavData.set(new Uint8Array(header), 0)
+  wavData.set(header, 0)
   wavData.set(pcmBytes, 44)
   return wavData
 }

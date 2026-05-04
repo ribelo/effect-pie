@@ -1,7 +1,7 @@
 import { Data, Effect } from "effect"
 
 import { detectDesktopSessionType, type DesktopSessionType } from "../desktop/session.js"
-import { typeTextWithWtype, WtypeError } from "../wayland/wtype.js"
+import { typeTextWithWtype, type WtypeError } from "../wayland/wtype.js"
 import { typeTextWithXdotool, type XdotoolError } from "../x11/xdotool.js"
 
 export type TextInjectionBackend = "wtype" | "xdotool"
@@ -31,24 +31,6 @@ export const chooseTextInjectionBackend = (
   return undefined
 }
 
-export const chooseFallbackTextInjectionBackend = (
-  primaryBackend: TextInjectionBackend,
-  env: NodeJS.ProcessEnv = process.env,
-): TextInjectionBackend | undefined => {
-  const hasWayland = (env["WAYLAND_DISPLAY"] ?? "").trim().length > 0
-  const hasX11 = (env["DISPLAY"] ?? "").trim().length > 0
-
-  if (primaryBackend === "wtype" && hasX11) {
-    return "xdotool"
-  }
-
-  if (primaryBackend === "xdotool" && hasWayland) {
-    return "wtype"
-  }
-
-  return undefined
-}
-
 export const normalizeTextForInjection = (text: string): string =>
   text
     .replace(/\r\n/g, "\n")
@@ -61,20 +43,6 @@ const runTextInjectionBackend = (
   text: string,
 ): Effect.Effect<void, WtypeError | XdotoolError> =>
   backend === "wtype" ? typeTextWithWtype(text) : typeTextWithXdotool(text)
-
-const isRecoverableBackendError = (error: WtypeError | XdotoolError): boolean => {
-  if (error instanceof WtypeError) {
-    return (
-      error.message.includes("was not found in PATH") ||
-      error.message.toLowerCase().includes("wayland connection failed")
-    )
-  }
-
-  return (
-    error.message.includes("was not found in PATH") ||
-    error.message.toLowerCase().includes("can't open display")
-  )
-}
 
 export const typeTextInFocusedApp = (
   text: string,
@@ -97,22 +65,8 @@ export const typeTextInFocusedApp = (
       })
     }
 
-    const fallbackBackend = chooseFallbackTextInjectionBackend(primaryBackend)
-
     const resolvedBackend = yield* runTextInjectionBackend(primaryBackend, normalizedText).pipe(
       Effect.as(primaryBackend),
-      Effect.catchIf(
-        (_error): _error is WtypeError | XdotoolError => true,
-        (error) => {
-          if (fallbackBackend === undefined || !isRecoverableBackendError(error)) {
-            return Effect.fail(error)
-          }
-
-          return runTextInjectionBackend(fallbackBackend, normalizedText).pipe(
-            Effect.as(fallbackBackend),
-          )
-        },
-      ),
     )
 
     return {

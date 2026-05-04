@@ -221,3 +221,18 @@ export const defaultRecordStreamOptions = (
     properties: overrides.properties ?? {},
   }
 }
+
+export const makePcmRecordOptions = (overrides: {
+  readonly channels?: number
+  readonly rate: number
+  readonly fragmentSize: number
+  readonly sourceName: string | undefined
+}): { sampleSpec: SampleSpec; fragmentSize: number; sourceName: string | null } => ({
+  sampleSpec: {
+    format: PA_SAMPLE_FORMAT.S16LE,
+    channels: overrides.channels ?? 1,
+    rate: overrides.rate,
+  },
+  fragmentSize: overrides.fragmentSize,
+  sourceName: overrides.sourceName ?? null,
+})

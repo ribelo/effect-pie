@@ -1,4 +1,5 @@
 import { Effect } from "effect"
+import { readStreamText } from "../utils/subprocess.js"
 
 export class XdotoolError extends Error {
   readonly stderr: string | undefined
@@ -9,15 +10,6 @@ export class XdotoolError extends Error {
     this.stderr = options?.stderr
   }
 }
-
-const readStreamText = async (stream: ReadableStream<Uint8Array> | null): Promise<string> => {
-  if (stream === null) {
-    return ""
-  }
-
-  return await new Response(stream).text()
-}
-
 export const buildXdotoolCommandArgs = (xdotoolExecutable: string, text: string): Array<string> => [
   xdotoolExecutable,
   "type",
@@ -41,12 +33,8 @@ const findXdotoolExecutable = Effect.try({
       : new XdotoolError("Failed to resolve xdotool", { cause }),
 })
 
-const validateInputText = (text: string): Effect.Effect<void, XdotoolError> =>
-  text.trim().length > 0 ? Effect.void : Effect.fail(new XdotoolError("--text must not be empty"))
-
 export const typeTextWithXdotool = (text: string): Effect.Effect<void, XdotoolError> =>
   Effect.gen(function* () {
-    yield* validateInputText(text)
     const xdotoolExecutable = yield* findXdotoolExecutable
 
     const commandArgs = buildXdotoolCommandArgs(xdotoolExecutable, text)

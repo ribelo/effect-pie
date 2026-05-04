@@ -3,6 +3,8 @@ import * as Effect from "effect/Effect"
 import { promises as fs } from "node:fs"
 
 import type { ResolvedWakewordAssets } from "./defs.js"
+import { isRecord } from "../utils/runtime.js"
+import { flattenMatrix } from "./signal.js"
 
 export class WakewordRuntimeError extends Data.TaggedError("WakewordRuntimeError")<{
   readonly message: string
@@ -66,9 +68,6 @@ type LinearWakewordModelFile = {
   readonly logitScale?: number
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null
-
 const isOrtModule = (value: unknown): value is OrtModule =>
   isRecord(value) &&
   isRecord(value["InferenceSession"]) &&
@@ -112,23 +111,6 @@ const sigmoid = (x: number): number => 1 / (1 + Math.exp(-x))
 
 const toFloat32Array = (value: Float32Array | ReadonlyArray<number>): Float32Array =>
   value instanceof Float32Array ? value : Float32Array.from(value)
-
-const flattenMatrix = (rows: ReadonlyArray<Float32Array>): Float32Array => {
-  if (rows.length === 0) {
-    return new Float32Array()
-  }
-
-  const width = rows[0]?.length ?? 0
-  const out = new Float32Array(rows.length * width)
-
-  let offset = 0
-  for (const row of rows) {
-    out.set(row, offset)
-    offset += row.length
-  }
-
-  return out
-}
 
 const readOutputTensor = (outputs: Record<string, unknown>, outputName: string): OrtTensor => {
   const output = outputs[outputName] ?? Object.values(outputs)[0]
@@ -294,58 +276,60 @@ const toOnnxScoringModel = (session: OnnxSession): WakewordScoringModel => {
 export const loadLinearWakewordModel = (
   modelPath: string,
 ): Effect.Effect<WakewordScoringModel, WakewordRuntimeError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const raw = await fs.readFile(modelPath, "utf8")
-      const parsed: unknown = JSON.parse(raw)
-
-      if (!isLinearWakewordModelFile(parsed)) {
-        throw new WakewordRuntimeError({
-          message: "Invalid linear wakeword model format",
-        })
-      }
-
-      const weights = Float32Array.from(parsed.weights)
-      const inferredLogitScale = Math.max(1, Math.abs(parsed.bias) / 8)
-      const logitScale = parsed.logitScale ?? inferredLogitScale
-
-      return {
-        requiredFrames: parsed.frameCount,
-        expectedFeatureSize: parsed.featureSize,
-        score: (featureWindow) =>
-          Effect.sync(() => {
-            const featureCount = featureWindow[0]?.length ?? 0
-            if (featureCount !== parsed.featureSize) {
-              throw new WakewordRuntimeError({
-                message: `Linear wakeword model feature mismatch: expected ${parsed.featureSize}, got ${featureCount}`,
-              })
-            }
-
-            const mean = new Float32Array(parsed.featureSize)
-            for (const frame of featureWindow) {
-              for (let index = 0; index < mean.length; index += 1) {
-                mean[index] = (mean[index] ?? 0) + (frame[index] ?? 0)
-              }
-            }
-
-            for (let index = 0; index < mean.length; index += 1) {
-              mean[index] = (mean[index] ?? 0) / Math.max(1, featureWindow.length)
-            }
-
-            let rawScore = parsed.bias
-            for (let index = 0; index < mean.length; index += 1) {
-              rawScore += (weights[index] ?? 0) * (mean[index] ?? 0)
-            }
-
-            return sigmoid(rawScore / logitScale)
+  Effect.gen(function* () {
+    const raw = yield* Effect.promise(() => fs.readFile(modelPath, "utf8")).pipe(
+      Effect.mapError(
+        (cause) =>
+          new WakewordRuntimeError({
+            message: `Failed to load linear wakeword model at ${modelPath}`,
+            cause,
           }),
-      } satisfies WakewordScoringModel
-    },
-    catch: (cause) =>
-      new WakewordRuntimeError({
-        message: `Failed to load linear wakeword model at ${modelPath}`,
-        cause,
-      }),
+      ),
+    )
+
+    const parsed: unknown = JSON.parse(raw)
+
+    if (!isLinearWakewordModelFile(parsed)) {
+      return yield* new WakewordRuntimeError({
+        message: "Invalid linear wakeword model format",
+      })
+    }
+
+    const weights = Float32Array.from(parsed.weights)
+    const inferredLogitScale = Math.max(1, Math.abs(parsed.bias) / 8)
+    const logitScale = parsed.logitScale ?? inferredLogitScale
+
+    return {
+      requiredFrames: parsed.frameCount,
+      expectedFeatureSize: parsed.featureSize,
+      score: (featureWindow) =>
+        Effect.sync(() => {
+          const featureCount = featureWindow[0]?.length ?? 0
+          if (featureCount !== parsed.featureSize) {
+            throw new WakewordRuntimeError({
+              message: `Linear wakeword model feature mismatch: expected ${parsed.featureSize}, got ${featureCount}`,
+            })
+          }
+
+          const mean = new Float32Array(parsed.featureSize)
+          for (const frame of featureWindow) {
+            for (let index = 0; index < mean.length; index += 1) {
+              mean[index] = (mean[index] ?? 0) + (frame[index] ?? 0)
+            }
+          }
+
+          for (let index = 0; index < mean.length; index += 1) {
+            mean[index] = (mean[index] ?? 0) / Math.max(1, featureWindow.length)
+          }
+
+          let rawScore = parsed.bias
+          for (let index = 0; index < mean.length; index += 1) {
+            rawScore += (weights[index] ?? 0) * (mean[index] ?? 0)
+          }
+
+          return sigmoid(rawScore / logitScale)
+        }),
+    } satisfies WakewordScoringModel
   })
 
 export const loadWakewordFeatureSessions = (

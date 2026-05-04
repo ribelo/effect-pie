@@ -86,7 +86,7 @@ export const createWakewordTelemetryStream = (
                 frame,
               })
 
-              const triggerEvents = config.trigger.processFrame(frame)
+              const triggerEvents = yield* config.trigger.processFrame(frame)
               for (const event of triggerEvents) {
                 yield* Queue.offer(queue, {
                   type: "trigger",

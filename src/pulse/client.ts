@@ -48,6 +48,11 @@ export class PulseAudioClientError extends Data.TaggedError("PulseAudioClientErr
   readonly cause?: unknown
 }> {}
 
+export class PulseAudioAuthError extends Data.TaggedError("PulseAudioAuthError")<{
+  readonly message: string
+  readonly cause?: unknown
+}> {}
+
 export type ConnectOptions = {
   readonly socketPath?: string
   readonly cookie?: Uint8Array
@@ -90,16 +95,18 @@ const isErrnoException = (cause: unknown): cause is NodeJS.ErrnoException =>
 const loadCookie = Effect.tryPromise({
   try: () => fs.readFile(PA_DEFAULT_COOKIE_PATH),
   catch: (cause) =>
-    new PulseAudioClientError({
-      message: "failed to load PulseAudio authentication cookie",
-      cause,
-    }),
-}).pipe(
-  Effect.catchIf(
-    (error) => isErrnoException(error.cause) && error.cause.code === "ENOENT",
-    () => Effect.void.pipe(Effect.as(undefined as Uint8Array | undefined)),
-  ),
-)
+    isErrnoException(cause) && cause.code === "ENOENT"
+      ? new PulseAudioAuthError({
+          message:
+            `PulseAudio authentication cookie not found at ${PA_DEFAULT_COOKIE_PATH}. ` +
+            "Ensure PulseAudio is running (pulseaudio --start) or set PULSE_COOKIE.",
+          cause,
+        })
+      : new PulseAudioAuthError({
+          message: "Failed to load PulseAudio authentication cookie",
+          cause,
+        }),
+})
 
 const appendChunk = (left: Uint8Array, right: Uint8Array): Uint8Array => {
   if (left.length === 0) {
@@ -356,7 +363,17 @@ const make = (defaults: PulseAudioClientConfig) =>
         const protocolVersion =
           options?.protocolVersion ?? defaults.protocolVersion ?? PA_NATIVE_PROTOCOL_VERSION
 
-        const cookie = options?.cookie ?? (yield* loadCookie)
+        const cookie =
+          options?.cookie ??
+          (yield* loadCookie.pipe(
+            Effect.mapError(
+              (cause) =>
+                new PulseAudioClientError({
+                  message: cause.message,
+                  cause,
+                }),
+            ),
+          ))
 
         const authVersion = yield* awaitReply(
           connection,

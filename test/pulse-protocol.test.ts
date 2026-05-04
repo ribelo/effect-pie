@@ -242,6 +242,100 @@ describe("pulse protocol", () => {
     })
   })
 
+  test("round-trips empty and Unicode strings", () => {
+    const writer = new TagStructWriter()
+    writer.addString("")
+    writer.addString("zażółć gęślą jaźń")
+    writer.addString("🌟🎤🎧")
+
+    const reader = new TagStructReader(writer.finalize())
+    assert.strictEqual(reader.getString(), "")
+    assert.strictEqual(reader.getString(), "zażółć gęślą jaźń")
+    assert.strictEqual(reader.getString(), "🌟🎤🎧")
+    assert.strictEqual(reader.hasRemaining(), false)
+  })
+
+  test("round-trips null string and mixed string/null sequence", () => {
+    const writer = new TagStructWriter()
+    writer.addString("first")
+    writer.addString(null)
+    writer.addString("after-null")
+    writer.addString(null)
+
+    const reader = new TagStructReader(writer.finalize())
+    assert.strictEqual(reader.getString(), "first")
+    assert.strictEqual(reader.getString(), null)
+    assert.strictEqual(reader.getString(), "after-null")
+    assert.strictEqual(reader.getString(), null)
+    assert.strictEqual(reader.hasRemaining(), false)
+  })
+
+  test("round-trips boolean true and false", () => {
+    const writer = new TagStructWriter()
+    writer.addBool(true)
+    writer.addBool(false)
+    writer.addBool(true)
+
+    const reader = new TagStructReader(writer.finalize())
+    assert.strictEqual(reader.getBool(), true)
+    assert.strictEqual(reader.getBool(), false)
+    assert.strictEqual(reader.getBool(), true)
+    assert.strictEqual(reader.hasRemaining(), false)
+  })
+
+  test("round-trips sample specs with various formats and rates", () => {
+    const writer = new TagStructWriter()
+    writer.addSampleSpec({ format: PA_SAMPLE_FORMAT.S16LE, channels: 2, rate: 44_100 })
+    writer.addSampleSpec({ format: PA_SAMPLE_FORMAT.S16BE, channels: 1, rate: 8_000 })
+    writer.addSampleSpec({ format: PA_SAMPLE_FORMAT.FLOAT32LE, channels: 1, rate: 48_000 })
+
+    const reader = new TagStructReader(writer.finalize())
+    assert.deepStrictEqual(reader.getSampleSpec(), {
+      format: PA_SAMPLE_FORMAT.S16LE,
+      channels: 2,
+      rate: 44_100,
+    })
+    assert.deepStrictEqual(reader.getSampleSpec(), {
+      format: PA_SAMPLE_FORMAT.S16BE,
+      channels: 1,
+      rate: 8_000,
+    })
+    assert.deepStrictEqual(reader.getSampleSpec(), {
+      format: PA_SAMPLE_FORMAT.FLOAT32LE,
+      channels: 1,
+      rate: 48_000,
+    })
+    assert.strictEqual(reader.hasRemaining(), false)
+  })
+
+  test("round-trips property lists including empty", () => {
+    const writer = new TagStructWriter()
+    writer.addProps({})
+    writer.addProps({ "application.name": "pie" })
+    writer.addProps({ key: "value", "media.role": "production" })
+
+    const reader = new TagStructReader(writer.finalize())
+    assert.deepStrictEqual(reader.getProps(), {})
+    assert.deepStrictEqual(reader.getProps(), { "application.name": "pie" })
+    assert.deepStrictEqual(reader.getProps(), { key: "value", "media.role": "production" })
+    assert.strictEqual(reader.hasRemaining(), false)
+  })
+
+  test("round-trips writer expansion when capacity exceeded", () => {
+    const writer = new TagStructWriter(8)
+    writer.addUInt32(1)
+    writer.addUInt32(2)
+    writer.addUInt32(3)
+    writer.addString("hello world")
+
+    const reader = new TagStructReader(writer.finalize())
+    assert.strictEqual(reader.getUInt32(), 1)
+    assert.strictEqual(reader.getUInt32(), 2)
+    assert.strictEqual(reader.getUInt32(), 3)
+    assert.strictEqual(reader.getString(), "hello world")
+    assert.strictEqual(reader.hasRemaining(), false)
+  })
+
   test("builds simple query commands", () => {
     const serverInfo = buildGetServerInfoCommand()
     const sourceList = buildGetSourceListCommand()

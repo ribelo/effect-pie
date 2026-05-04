@@ -12,7 +12,6 @@ import {
   nextWavPath,
   sortedWavPaths,
   validateMinimumClips,
-  WakewordTrainingError,
 } from "../src/wakeword/training.js"
 
 const writeValidWav = async (outputPath: string, pcmBytes: Uint8Array, sampleRate = 16_000) => {

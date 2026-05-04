@@ -1,4 +1,5 @@
 import { Effect } from "effect"
+import { readStreamText } from "../utils/subprocess.js"
 
 export class WtypeError extends Error {
   readonly stderr: string | undefined
@@ -9,15 +10,6 @@ export class WtypeError extends Error {
     this.stderr = options?.stderr
   }
 }
-
-const readStreamText = async (stream: ReadableStream<Uint8Array> | null): Promise<string> => {
-  if (stream === null) {
-    return ""
-  }
-
-  return await new Response(stream).text()
-}
-
 const DEFAULT_DIRECT_COMMAND_TIMEOUT_MS = 30_000
 const DEFAULT_CLIPBOARD_COMMAND_TIMEOUT_MS = 2_000
 const MAX_COMMAND_TIMEOUT_MS = 2_147_483_647
@@ -165,9 +157,6 @@ const findOptionalWlCopyExecutable = (): string | undefined => Bun.which("wl-cop
 
 const findOptionalWlPasteExecutable = (): string | undefined => Bun.which("wl-paste") ?? undefined
 
-const validateInputText = (text: string): Effect.Effect<void, WtypeError> =>
-  text.trim().length > 0 ? Effect.void : Effect.fail(new WtypeError("--text must not be empty"))
-
 const typeTextWithWtypeDirect = (
   wtypeExecutable: string,
   text: string,
@@ -248,7 +237,6 @@ export const typeTextWithWtype = (
   },
 ): Effect.Effect<void, WtypeError> =>
   Effect.gen(function* () {
-    yield* validateInputText(text)
     const wtypeExecutable = yield* findWtypeExecutable
     const mode = options?.mode ?? resolveWtypeInjectionMode()
     const directCommandTimeoutMs = yield* resolveCommandTimeoutMs(

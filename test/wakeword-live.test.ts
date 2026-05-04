@@ -49,12 +49,14 @@ test(
       reset: Effect.void,
     }
 
-    const trigger = createWakewordTriggerMachine({
-      threshold: 0.5,
-      smoothingWindow: 1,
-      consecutiveFrames: 1,
-      cooldownMs: 200,
-    })
+    const trigger = Effect.runSync(
+      createWakewordTriggerMachine({
+        threshold: 0.5,
+        smoothingWindow: 1,
+        consecutiveFrames: 1,
+        cooldownMs: 200,
+      }),
+    )
 
     const program = createWakewordTelemetryStream({
       pipeline,

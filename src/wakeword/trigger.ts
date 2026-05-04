@@ -1,3 +1,5 @@
+import { Effect, Ref } from "effect"
+
 import type { WakewordScoreFrame, WakewordTriggerEvent } from "./defs.js"
 
 export type WakewordTriggerConfig = {
@@ -11,10 +13,6 @@ type TriggerModelState = {
   recentScores: Array<number>
   consecutiveAboveThreshold: number
   cooldownUntilMs: number
-}
-
-type TriggerState = {
-  readonly modelStates: Record<string, TriggerModelState>
 }
 
 const defaultConfig: WakewordTriggerConfig = {
@@ -32,88 +30,86 @@ const average = (values: ReadonlyArray<number>): number => {
   return sum / values.length
 }
 
-const getModelState = (state: TriggerState, model: string): TriggerModelState => {
-  const existing = state.modelStates[model]
-  if (existing) {
-    return existing
-  }
-
-  const created: TriggerModelState = {
-    recentScores: [],
-    consecutiveAboveThreshold: 0,
-    cooldownUntilMs: 0,
-  }
-
-  state.modelStates[model] = created
-  return created
-}
-
 export type WakewordTriggerMachine = {
-  readonly processFrame: (frame: WakewordScoreFrame) => ReadonlyArray<WakewordTriggerEvent>
-  readonly reset: () => void
+  readonly processFrame: (
+    frame: WakewordScoreFrame,
+  ) => Effect.Effect<ReadonlyArray<WakewordTriggerEvent>>
+  readonly reset: Effect.Effect<void>
 }
 
 export const createWakewordTriggerMachine = (
   partialConfig: Partial<WakewordTriggerConfig> = {},
-): WakewordTriggerMachine => {
-  const config: WakewordTriggerConfig = {
-    ...defaultConfig,
-    ...partialConfig,
-  }
-
-  const state: TriggerState = {
-    modelStates: {},
-  }
-
-  const processFrame = (frame: WakewordScoreFrame): ReadonlyArray<WakewordTriggerEvent> => {
-    const events: Array<WakewordTriggerEvent> = []
-
-    for (const [model, rawScore] of Object.entries(frame.scores)) {
-      const modelState = getModelState(state, model)
-      modelState.recentScores.push(rawScore)
-
-      while (modelState.recentScores.length > config.smoothingWindow) {
-        modelState.recentScores.shift()
-      }
-
-      const smoothedScore = average(modelState.recentScores)
-
-      if (smoothedScore >= config.threshold) {
-        modelState.consecutiveAboveThreshold += 1
-      } else {
-        modelState.consecutiveAboveThreshold = 0
-      }
-
-      if (frame.timestampMs < modelState.cooldownUntilMs) {
-        continue
-      }
-
-      if (modelState.consecutiveAboveThreshold < config.consecutiveFrames) {
-        continue
-      }
-
-      modelState.cooldownUntilMs = frame.timestampMs + config.cooldownMs
-      modelState.consecutiveAboveThreshold = 0
-
-      events.push({
-        timestampMs: frame.timestampMs,
-        model,
-        score: smoothedScore,
-        rawScore,
-      })
+): Effect.Effect<WakewordTriggerMachine> =>
+  Effect.gen(function* () {
+    const config: WakewordTriggerConfig = {
+      ...defaultConfig,
+      ...partialConfig,
     }
 
-    return events
-  }
+    const modelStatesRef = yield* Ref.make<Map<string, TriggerModelState>>(new Map())
 
-  return {
-    processFrame,
-    reset: () => {
-      for (const modelState of Object.values(state.modelStates)) {
-        modelState.recentScores = []
-        modelState.consecutiveAboveThreshold = 0
-        modelState.cooldownUntilMs = 0
+    const getOrCreateModelState = (
+      map: Map<string, TriggerModelState>,
+      model: string,
+    ): TriggerModelState => {
+      const existing = map.get(model)
+      if (existing !== undefined) {
+        return existing
       }
-    },
-  }
-}
+      const created: TriggerModelState = {
+        recentScores: [],
+        consecutiveAboveThreshold: 0,
+        cooldownUntilMs: 0,
+      }
+      map.set(model, created)
+      return created
+    }
+
+    const processFrame = (
+      frame: WakewordScoreFrame,
+    ): Effect.Effect<ReadonlyArray<WakewordTriggerEvent>> =>
+      Ref.modify(modelStatesRef, (map) => {
+        const events: Array<WakewordTriggerEvent> = []
+
+        for (const [model, rawScore] of Object.entries(frame.scores)) {
+          const modelState = getOrCreateModelState(map, model)
+          modelState.recentScores.push(rawScore)
+
+          while (modelState.recentScores.length > config.smoothingWindow) {
+            modelState.recentScores.shift()
+          }
+
+          const smoothedScore = average(modelState.recentScores)
+
+          if (smoothedScore >= config.threshold) {
+            modelState.consecutiveAboveThreshold += 1
+          } else {
+            modelState.consecutiveAboveThreshold = 0
+          }
+
+          if (frame.timestampMs < modelState.cooldownUntilMs) {
+            continue
+          }
+
+          if (modelState.consecutiveAboveThreshold < config.consecutiveFrames) {
+            continue
+          }
+
+          modelState.cooldownUntilMs = frame.timestampMs + config.cooldownMs
+          modelState.consecutiveAboveThreshold = 0
+
+          events.push({
+            timestampMs: frame.timestampMs,
+            model,
+            score: smoothedScore,
+            rawScore,
+          })
+        }
+
+        return [events, map] as const
+      })
+
+    const reset = Ref.set(modelStatesRef, new Map())
+
+    return { processFrame, reset }
+  })

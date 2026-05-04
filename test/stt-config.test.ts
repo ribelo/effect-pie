@@ -71,7 +71,7 @@ test("loadSttRuntimeConfig loads custom model and language configuration", async
   assert.strictEqual(config.openrouter.wakewordDictationSpeechRmsThreshold, 0.02)
 })
 
-test("loadSttRuntimeConfig migrates language-only config with dictation defaults", async () => {
+test("loadSttRuntimeConfig rejects language-only config without wakeword fields", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "pie-stt-"))
   const configPath = path.join(tempDir, "stt.json")
 
@@ -94,18 +94,11 @@ test("loadSttRuntimeConfig migrates language-only config with dictation defaults
     "utf8",
   )
 
-  const config = await Effect.runPromise(loadSttRuntimeConfig(configPath))
-
-  assert.strictEqual(config.openrouter.transcriptionLanguage, "Polish")
-  assert.strictEqual(config.openrouter.translationSourceLanguage, "Polish")
-  assert.strictEqual(config.openrouter.translationTargetLanguage, "English")
-  assert.strictEqual(config.openrouter.wakewordEnabled, true)
-  assert.strictEqual(config.openrouter.wakewordDictationSilenceSeconds, 3)
-  assert.strictEqual(config.openrouter.wakewordDictationMaxSeconds, 120)
-  assert.strictEqual(config.openrouter.wakewordDictationSpeechRmsThreshold, 0.01)
+  const exit = await Effect.runPromiseExit(loadSttRuntimeConfig(configPath))
+  assert.strictEqual(Exit.isFailure(exit), true)
 })
 
-test("loadSttRuntimeConfig migrates legacy defaultTargetLanguage config", async () => {
+test("loadSttRuntimeConfig rejects legacy defaultTargetLanguage config", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "pie-stt-"))
   const configPath = path.join(tempDir, "stt.json")
 
@@ -126,19 +119,8 @@ test("loadSttRuntimeConfig migrates legacy defaultTargetLanguage config", async 
     "utf8",
   )
 
-  const config = await Effect.runPromise(loadSttRuntimeConfig(configPath))
-
-  assert.strictEqual(config.openrouter.transcriptionLanguage, "English")
-  assert.strictEqual(config.openrouter.translationSourceLanguage, "English")
-  assert.strictEqual(config.openrouter.translationTargetLanguage, "Polish")
-  assert.strictEqual(config.openrouter.wakewordEnabled, true)
-  assert.strictEqual(config.openrouter.wakewordDictationSilenceSeconds, 3)
-  assert.strictEqual(config.openrouter.wakewordDictationMaxSeconds, 120)
-  assert.strictEqual(config.openrouter.wakewordDictationSpeechRmsThreshold, 0.01)
-
-  const migratedRaw = await readFile(configPath, "utf8")
-  assert.ok(migratedRaw.includes("translationTargetLanguage"))
-  assert.ok(!migratedRaw.includes("defaultTargetLanguage"))
+  const exit = await Effect.runPromiseExit(loadSttRuntimeConfig(configPath))
+  assert.strictEqual(Exit.isFailure(exit), true)
 })
 
 test("loadSttRuntimeConfig preserves wakewordEnabled false", async () => {

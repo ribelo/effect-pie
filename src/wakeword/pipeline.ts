@@ -13,6 +13,7 @@ import {
   type WakewordScoreFrame,
 } from "./defs.js"
 import type { OnnxSession, WakewordModelSessions, WakewordRuntimeError } from "./onnx.js"
+import { flattenMatrix, toFrameMatrix, transformMelspectrogram } from "./signal.js"
 
 export class WakewordPipelineError extends Data.TaggedError("WakewordPipelineError")<{
   readonly message: string
@@ -75,40 +76,6 @@ const resolveConfig = (config: WakewordPipelineConfig): ResolvedPipelineConfig =
 const makeInitialMelBuffer = (frames: number, bins: number): Array<Float32Array> =>
   Array.from({ length: frames }, () => Float32Array.from({ length: bins }, () => 1))
 
-const toFrameMatrix = (data: Float32Array, featureCount: number): Array<Float32Array> => {
-  if (featureCount <= 0) {
-    return []
-  }
-
-  const frameCount = Math.floor(data.length / featureCount)
-  const frames: Array<Float32Array> = []
-
-  for (let frame = 0; frame < frameCount; frame += 1) {
-    const start = frame * featureCount
-    const row = data.slice(start, start + featureCount)
-    frames.push(row)
-  }
-
-  return frames
-}
-
-const flattenMatrix = (rows: ReadonlyArray<Float32Array>): Float32Array => {
-  if (rows.length === 0) {
-    return new Float32Array()
-  }
-
-  const width = rows[0]?.length ?? 0
-  const data = new Float32Array(rows.length * width)
-
-  let offset = 0
-  for (const row of rows) {
-    data.set(row, offset)
-    offset += row.length
-  }
-
-  return data
-}
-
 const trimArrayInPlace = (target: Array<unknown>, maxLength: number): void => {
   if (target.length <= maxLength) {
     return
@@ -166,14 +133,6 @@ const runSession = (
           }),
       ),
     )
-
-const transformMelspectrogram = (data: Float32Array): Float32Array => {
-  const transformed = new Float32Array(data.length)
-  for (let index = 0; index < data.length; index += 1) {
-    transformed[index] = (data[index] ?? 0) / 10 + 2
-  }
-  return transformed
-}
 
 export const makeWakewordPipeline = (
   models: WakewordModelSessions,

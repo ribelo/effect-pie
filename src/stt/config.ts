@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises"
 import * as path from "node:path"
 
 import { EFFECT_PI_CONFIG_DIR } from "../paths.js"
+import { isRecord } from "../utils/runtime.js"
 
 export const STT_CONFIG_PATH = path.join(EFFECT_PI_CONFIG_DIR, "stt.json")
 
@@ -58,26 +59,6 @@ export type SttRuntimeConfig = {
   readonly translationPrompt: string
 }
 
-type LegacySttRuntimeConfig = {
-  readonly schemaVersion: 1
-  readonly openrouter: {
-    readonly transcriptionModel: string
-    readonly translationModel: string
-    readonly defaultTargetLanguage: string
-  }
-}
-
-type LanguageOnlySttRuntimeConfig = {
-  readonly schemaVersion: 1
-  readonly openrouter: {
-    readonly transcriptionModel: string
-    readonly translationModel: string
-    readonly transcriptionLanguage: string
-    readonly translationSourceLanguage: string
-    readonly translationTargetLanguage: string
-  }
-}
-
 export const defaultSttRuntimeConfig: SttRuntimeConfig = {
   schemaVersion: 1,
   openrouter: {
@@ -108,13 +89,10 @@ const hasPositiveFiniteNumber = (value: unknown): value is number =>
 
 const hasBoolean = (value: unknown): value is boolean => typeof value === "boolean"
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null
-
 const isErrnoException = (cause: unknown): cause is NodeJS.ErrnoException =>
   isRecord(cause) && typeof cause["code"] === "string"
 
-const isCurrentSttRuntimeConfig = (value: unknown): value is SttRuntimeConfig => {
+const isSttRuntimeConfig = (value: unknown): value is SttRuntimeConfig => {
   if (!isRecord(value)) {
     return false
   }
@@ -140,58 +118,6 @@ const isCurrentSttRuntimeConfig = (value: unknown): value is SttRuntimeConfig =>
   )
 }
 
-const hasCurrentSpecificFields = (section: Record<string, unknown>): boolean =>
-  section["wakewordEnabled"] !== undefined ||
-  section["wakewordDictationSilenceSeconds"] !== undefined ||
-  section["wakewordDictationMaxSeconds"] !== undefined ||
-  section["wakewordDictationSpeechRmsThreshold"] !== undefined
-
-const isLanguageOnlySttRuntimeConfig = (value: unknown): value is LanguageOnlySttRuntimeConfig => {
-  if (!isRecord(value)) {
-    return false
-  }
-
-  const config = value
-  const openrouter = config["openrouter"]
-
-  if (config["schemaVersion"] !== 1 || !isRecord(openrouter)) {
-    return false
-  }
-
-  const section = openrouter
-  if (hasCurrentSpecificFields(section)) {
-    return false
-  }
-
-  return (
-    hasNonEmptyString(section["transcriptionModel"]) &&
-    hasNonEmptyString(section["translationModel"]) &&
-    hasNonEmptyString(section["transcriptionLanguage"]) &&
-    hasNonEmptyString(section["translationSourceLanguage"]) &&
-    hasNonEmptyString(section["translationTargetLanguage"])
-  )
-}
-
-const isLegacySttRuntimeConfig = (value: unknown): value is LegacySttRuntimeConfig => {
-  if (!isRecord(value)) {
-    return false
-  }
-
-  const config = value
-  const openrouter = config["openrouter"]
-
-  if (config["schemaVersion"] !== 1 || !isRecord(openrouter)) {
-    return false
-  }
-
-  const section = openrouter
-  return (
-    hasNonEmptyString(section["transcriptionModel"]) &&
-    hasNonEmptyString(section["translationModel"]) &&
-    hasNonEmptyString(section["defaultTargetLanguage"])
-  )
-}
-
 const normalizeSttRuntimeConfig = (config: SttRuntimeConfig): SttRuntimeConfig => ({
   schemaVersion: 1,
   openrouter: {
@@ -209,64 +135,9 @@ const normalizeSttRuntimeConfig = (config: SttRuntimeConfig): SttRuntimeConfig =
   translationPrompt: config.translationPrompt?.trim() ?? DEFAULT_TRANSLATION_PROMPT,
 })
 
-const migrateLegacyConfig = (legacy: LegacySttRuntimeConfig): SttRuntimeConfig =>
-  normalizeSttRuntimeConfig({
-    schemaVersion: 1,
-    openrouter: {
-      transcriptionModel: legacy.openrouter.transcriptionModel,
-      translationModel: legacy.openrouter.translationModel,
-      transcriptionLanguage: "English",
-      translationSourceLanguage: "English",
-      translationTargetLanguage: legacy.openrouter.defaultTargetLanguage,
-      wakewordEnabled: true,
-      wakewordDictationSilenceSeconds: 3,
-      wakewordDictationMaxSeconds: 120,
-      wakewordDictationSpeechRmsThreshold: 0.01,
-    },
-    transcriptionPrompt: DEFAULT_TRANSCRIPTION_PROMPT,
-    translationPrompt: DEFAULT_TRANSLATION_PROMPT,
-  })
-
-const migrateLanguageOnlyConfig = (config: LanguageOnlySttRuntimeConfig): SttRuntimeConfig =>
-  normalizeSttRuntimeConfig({
-    schemaVersion: 1,
-    openrouter: {
-      transcriptionModel: config.openrouter.transcriptionModel,
-      translationModel: config.openrouter.translationModel,
-      transcriptionLanguage: config.openrouter.transcriptionLanguage,
-      translationSourceLanguage: config.openrouter.translationSourceLanguage,
-      translationTargetLanguage: config.openrouter.translationTargetLanguage,
-      wakewordEnabled: true,
-      wakewordDictationSilenceSeconds: 3,
-      wakewordDictationMaxSeconds: 120,
-      wakewordDictationSpeechRmsThreshold: 0.01,
-    },
-    transcriptionPrompt: DEFAULT_TRANSCRIPTION_PROMPT,
-    translationPrompt: DEFAULT_TRANSLATION_PROMPT,
-  })
-
-const parseSttRuntimeConfig = (
-  value: unknown,
-): { readonly config: SttRuntimeConfig; readonly migrated: boolean } | undefined => {
-  if (isCurrentSttRuntimeConfig(value)) {
-    return {
-      config: normalizeSttRuntimeConfig(value),
-      migrated: false,
-    }
-  }
-
-  if (isLanguageOnlySttRuntimeConfig(value)) {
-    return {
-      config: migrateLanguageOnlyConfig(value),
-      migrated: true,
-    }
-  }
-
-  if (isLegacySttRuntimeConfig(value)) {
-    return {
-      config: migrateLegacyConfig(value),
-      migrated: true,
-    }
+const parseSttRuntimeConfig = (value: unknown): SttRuntimeConfig | undefined => {
+  if (isSttRuntimeConfig(value)) {
+    return normalizeSttRuntimeConfig(value)
   }
 
   return undefined
@@ -388,14 +259,10 @@ export const loadSttRuntimeConfig = (
 
       const parsed = parseSttRuntimeConfig(parsedJson)
       if (parsed !== undefined) {
-        if (parsed.migrated) {
-          yield* writeConfigFile(configPath, parsed.config)
-        }
-
-        config = parsed.config
+        config = parsed
       } else {
         return yield* new SttConfigError({
-          message: `Invalid STT config at ${configPath}: unrecognized config shape or invalid field values`,
+          message: `Unrecognized STT config at ${configPath}. Delete ${configPath} and let the runtime recreate it from defaults.`,
         })
       }
     } else {

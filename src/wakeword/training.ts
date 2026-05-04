@@ -4,12 +4,14 @@ import { promises as fs } from "node:fs"
 import * as path from "node:path"
 
 import { EFFECT_PI_OPENWAKEWORD_DATA_DIR } from "../paths.js"
+import { buildPcmWavHeader, isRecord } from "../utils/runtime.js"
 import {
   OPENWAKEWORD_MEL_BINS,
   OPENWAKEWORD_MEL_WINDOW_FRAMES,
   OPENWAKEWORD_SAMPLE_RATE,
 } from "./defs.js"
 import type { WakewordFeatureSessions, WakewordRuntimeError } from "./onnx.js"
+import { flattenMatrix, toFrameMatrix, transformMelspectrogram } from "./signal.js"
 
 export class WakewordTrainingError extends Data.TaggedError("WakewordTrainingError")<{
   readonly message: string
@@ -65,47 +67,6 @@ const sanitizeModelName = (name: string): string =>
     .replace(/^_+|_+$/g, "")
 
 const sigmoid = (x: number): number => 1 / (1 + Math.exp(-x))
-
-const toFrameMatrix = (data: Float32Array, featureCount: number): Array<Float32Array> => {
-  if (featureCount <= 0) {
-    return []
-  }
-
-  const frameCount = Math.floor(data.length / featureCount)
-  const frames: Array<Float32Array> = []
-
-  for (let frame = 0; frame < frameCount; frame += 1) {
-    const start = frame * featureCount
-    frames.push(data.slice(start, start + featureCount))
-  }
-
-  return frames
-}
-
-const flattenMatrix = (rows: ReadonlyArray<Float32Array>): Float32Array => {
-  if (rows.length === 0) {
-    return new Float32Array()
-  }
-
-  const width = rows[0]?.length ?? 0
-  const out = new Float32Array(rows.length * width)
-
-  let offset = 0
-  for (const row of rows) {
-    out.set(row, offset)
-    offset += row.length
-  }
-
-  return out
-}
-
-const transformMelspectrogram = (data: Float32Array): Float32Array => {
-  const transformed = new Float32Array(data.length)
-  for (let index = 0; index < data.length; index += 1) {
-    transformed[index] = (data[index] ?? 0) / 10 + 2
-  }
-  return transformed
-}
 
 const averageVectors = (vectors: ReadonlyArray<Float32Array>): Float32Array => {
   if (vectors.length === 0) {
@@ -300,9 +261,6 @@ type WakewordManifest = {
   }
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null
-
 const isWakewordManifest = (value: unknown): value is WakewordManifest =>
   isRecord(value) &&
   isRecord(value["runtime"]) &&
@@ -355,31 +313,10 @@ export const writePcmWavFile = (
 ): Effect.Effect<void, WakewordTrainingError> =>
   Effect.tryPromise({
     try: async () => {
-      const header = new ArrayBuffer(44)
-      const view = new DataView(header)
-
-      const writeString = (offset: number, value: string): void => {
-        for (let index = 0; index < value.length; index += 1) {
-          view.setUint8(offset + index, value.charCodeAt(index))
-        }
-      }
-
-      writeString(0, "RIFF")
-      view.setUint32(4, 36 + pcmBytes.length, true)
-      writeString(8, "WAVE")
-      writeString(12, "fmt ")
-      view.setUint32(16, 16, true)
-      view.setUint16(20, 1, true)
-      view.setUint16(22, 1, true)
-      view.setUint32(24, sampleRate, true)
-      view.setUint32(28, sampleRate * 2, true)
-      view.setUint16(32, 2, true)
-      view.setUint16(34, 16, true)
-      writeString(36, "data")
-      view.setUint32(40, pcmBytes.length, true)
+      const header = buildPcmWavHeader(pcmBytes.length, sampleRate)
 
       const wavData = new Uint8Array(44 + pcmBytes.length)
-      wavData.set(new Uint8Array(header), 0)
+      wavData.set(header, 0)
       wavData.set(pcmBytes, 44)
 
       await fs.mkdir(path.dirname(outputPath), { recursive: true })
