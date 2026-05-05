@@ -1,5 +1,5 @@
 import * as Context from "effect/Context"
-import { Data, Effect } from "effect"
+import { Console, Data, Effect } from "effect"
 import * as Layer from "effect/Layer"
 
 import {
@@ -7,6 +7,7 @@ import {
   type DesktopSessionType,
   type SessionDetectionError,
 } from "../desktop/session.js"
+import type { AssistantState } from "../assistant/diagnostics.js"
 import { typeTextWithWtype } from "../wayland/wtype.js"
 import { typeTextWithXdotool } from "../x11/xdotool.js"
 
@@ -101,6 +102,65 @@ export const TextInjectionBackendLive = Layer.effect(
 
     return x11Backend
   }),
+)
+
+export type InjectionDiagnostics = {
+  readonly setState: (state: AssistantState) => void
+  readonly injectionStart: (length: number) => void
+  readonly injectionComplete: () => void
+  readonly injectionFailure: (message: string) => void
+}
+
+export const injectTranscript = Effect.fn("pie/input/textInjection.injectTranscript")(
+  function* (config: {
+    readonly text: string
+    readonly logPrefix: string
+    readonly inject?: boolean
+    readonly diagnostics?: InjectionDiagnostics | undefined
+  }): Effect.fn.Return<
+    TextInjectionResult | undefined,
+    TextInjectionError | SessionDetectionError,
+    DesktopSession | TextInjectionBackendService
+  > {
+    const trimmedText = config.text.trim()
+    if (trimmedText.length === 0) {
+      yield* Console.log(`[${config.logPrefix}] Ignored empty transcript`)
+      config.diagnostics?.setState("idle")
+      return undefined
+    }
+
+    yield* Console.log(`[${config.logPrefix}] ${trimmedText}`)
+
+    if (config.inject === false) {
+      return undefined
+    }
+
+    yield* Console.log(`[${config.logPrefix}] Will type (start)`)
+    yield* Console.log(trimmedText)
+    yield* Console.log(`[${config.logPrefix}] Will type (end)`)
+
+    config.diagnostics?.setState("injection")
+    config.diagnostics?.injectionStart(trimmedText.length)
+
+    const result = yield* typeTextInFocusedApp(trimmedText).pipe(
+      Effect.tapError((cause) =>
+        Effect.sync(() => {
+          config.diagnostics?.injectionFailure(
+            cause instanceof Error ? cause.message : String(cause),
+          )
+        }),
+      ),
+    )
+
+    config.diagnostics?.injectionComplete()
+    config.diagnostics?.setState("idle")
+
+    yield* Console.log(
+      `[${config.logPrefix}] Typed ${result.text.length} chars with ${result.backend}`,
+    )
+
+    return result
+  },
 )
 
 export const typeTextInFocusedApp = Effect.fn("pie/input/textInjection.typeTextInFocusedApp")(

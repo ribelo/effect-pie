@@ -8,7 +8,7 @@ import { createRecordStream } from "../pulse/stream.js"
 import { MIN_GAIN_TO_APPLY, normalizePcmForStt, pcmPeak, pcmRms } from "../audio/pcm.js"
 import { loadSttRuntimeConfig, STT_CONFIG_PATH, type SttConfigError } from "../stt/config.js"
 import { OpenRouterSttService, type OpenRouterSttError } from "../stt/openrouter.js"
-import { typeTextInFocusedApp, type TextInjectionBackendService } from "../input/textInjection.js"
+import { injectTranscript, type TextInjectionBackendService } from "../input/textInjection.js"
 import type { DesktopSession } from "../desktop/session.js"
 import { notifyWarning } from "../desktop/notification.js"
 import {
@@ -475,26 +475,14 @@ export const pttTranscribeCommand = Command.make(
                 ),
               )
 
-            const text = transcript.trim()
-            if (text.length === 0) {
-              yield* Console.log("[ptt-transcribe] Ignored empty transcript")
-              return
-            }
-
-            yield* Console.log(`[ptt-transcribe] ${text}`)
-
-            if (!config.inject) {
-              return
-            }
-
-            const result = yield* typeTextInFocusedApp(text).pipe(
+            yield* injectTranscript({
+              text: transcript,
+              logPrefix: "ptt-transcribe",
+              inject: config.inject,
+            }).pipe(
               Effect.mapError((cause) =>
                 toPttKeyboardError(`Failed to inject transcript text: ${cause.message}`, cause),
               ),
-            )
-
-            yield* Console.log(
-              `[ptt-transcribe] Typed ${result.text.length} chars with ${result.backend} (${result.sessionType})`,
             )
           }),
       })
@@ -576,26 +564,14 @@ export const pttTranslateCommand = Command.make(
                 ),
               )
 
-            const text = translated.trim()
-            if (text.length === 0) {
-              yield* Console.log("[ptt-translate] Ignored empty translation")
-              return
-            }
-
-            yield* Console.log(`[ptt-translate] ${text}`)
-
-            if (!config.inject) {
-              return
-            }
-
-            const result = yield* typeTextInFocusedApp(text).pipe(
+            yield* injectTranscript({
+              text: translated,
+              logPrefix: "ptt-translate",
+              inject: config.inject,
+            }).pipe(
               Effect.mapError((cause) =>
                 toPttKeyboardError(`Failed to inject translated text: ${cause.message}`, cause),
               ),
-            )
-
-            yield* Console.log(
-              `[ptt-translate] Typed ${result.text.length} chars with ${result.backend} (${result.sessionType})`,
             )
           }),
       })

@@ -5,11 +5,7 @@ import { makePcmRecordOptions } from "../../pulse/defs.js"
 import { createRecordStream } from "../../pulse/stream.js"
 import { MIN_GAIN_TO_APPLY, normalizePcmForStt, pcmPeak, pcmRms } from "../../audio/pcm.js"
 import { KeyboardMonitorService, type PttKeyboardError } from "../../keyboard/monitor.js"
-import {
-  typeTextInFocusedApp,
-  normalizeTextForInjection,
-  type TextInjectionBackendService,
-} from "../../input/textInjection.js"
+import { injectTranscript, type TextInjectionBackendService } from "../../input/textInjection.js"
 import type { DesktopSession } from "../../desktop/session.js"
 import type { AssistantDiagnostics } from "../../assistant/diagnostics.js"
 import { notifyWarning } from "../../desktop/notification.js"
@@ -311,39 +307,14 @@ export const runAssistantPttCombinedLoop = (config: {
               )
             config.diagnostics?.sttComplete(transcript.length)
 
-            const text = transcript.trim()
-            const injectableText = normalizeTextForInjection(text)
-
-            if (injectableText.length === 0) {
-              yield* Console.log("[assistant-ptt-transcribe] Ignored empty transcript")
-              config.diagnostics?.setState("idle")
-              return
-            }
-
-            yield* Console.log("[assistant-ptt-transcribe] Will type (start)")
-            yield* Console.log(injectableText)
-            yield* Console.log("[assistant-ptt-transcribe] Will type (end)")
-
-            config.diagnostics?.setState("injection")
-            config.diagnostics?.injectionStart(injectableText.length)
-            const typed = yield* typeTextInFocusedApp(injectableText).pipe(
-              Effect.mapError((cause) => {
-                config.diagnostics?.injectionFailure(
-                  cause instanceof Error ? cause.message : String(cause),
-                )
-                return toPttKeyboardError(
-                  cause instanceof Error
-                    ? `Failed to type transcript text: ${cause.message}`
-                    : "Failed to type transcript text",
-                  cause,
-                )
-              }),
-            )
-            config.diagnostics?.injectionComplete()
-            config.diagnostics?.setState("idle")
-
-            yield* Console.log(
-              `[assistant-ptt-transcribe] Typed ${typed.text.length} chars with ${typed.backend} (${typed.sessionType})`,
+            yield* injectTranscript({
+              text: transcript,
+              logPrefix: "assistant-ptt-transcribe",
+              diagnostics: config.diagnostics,
+            }).pipe(
+              Effect.mapError((cause) =>
+                toPttKeyboardError(`Failed to type transcript text: ${cause.message}`, cause),
+              ),
             )
             return
           }
@@ -368,39 +339,14 @@ export const runAssistantPttCombinedLoop = (config: {
             )
           config.diagnostics?.sttComplete(translated.length)
 
-          const text = translated.trim()
-          const injectableText = normalizeTextForInjection(text)
-
-          if (injectableText.length === 0) {
-            yield* Console.log("[assistant-ptt-translate] Ignored empty translation")
-            config.diagnostics?.setState("idle")
-            return
-          }
-
-          yield* Console.log("[assistant-ptt-translate] Will type (start)")
-          yield* Console.log(injectableText)
-          yield* Console.log("[assistant-ptt-translate] Will type (end)")
-
-          config.diagnostics?.setState("injection")
-          config.diagnostics?.injectionStart(injectableText.length)
-          const typed = yield* typeTextInFocusedApp(injectableText).pipe(
-            Effect.mapError((cause) => {
-              config.diagnostics?.injectionFailure(
-                cause instanceof Error ? cause.message : String(cause),
-              )
-              return toPttKeyboardError(
-                cause instanceof Error
-                  ? `Failed to type translated text: ${cause.message}`
-                  : "Failed to type translated text",
-                cause,
-              )
-            }),
-          )
-          config.diagnostics?.injectionComplete()
-          config.diagnostics?.setState("idle")
-
-          yield* Console.log(
-            `[assistant-ptt-translate] Typed ${typed.text.length} chars with ${typed.backend} (${typed.sessionType})`,
+          yield* injectTranscript({
+            text: translated,
+            logPrefix: "assistant-ptt-translate",
+            diagnostics: config.diagnostics,
+          }).pipe(
+            Effect.mapError((cause) =>
+              toPttKeyboardError(`Failed to type translated text: ${cause.message}`, cause),
+            ),
           )
         }).pipe(Effect.ensuring(Ref.set(config.pttActiveRef, false)))
       }

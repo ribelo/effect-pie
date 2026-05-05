@@ -8,11 +8,7 @@ import { createWakewordTelemetryStream } from "../../wakeword/live.js"
 import { loadWakewordModelSessions, type WakewordRuntimeError } from "../../wakeword/onnx.js"
 import { makeWakewordPipeline, type WakewordPipelineError } from "../../wakeword/pipeline.js"
 import { createWakewordTriggerMachine } from "../../wakeword/trigger.js"
-import {
-  typeTextInFocusedApp,
-  normalizeTextForInjection,
-  type TextInjectionBackendService,
-} from "../../input/textInjection.js"
+import { injectTranscript, type TextInjectionBackendService } from "../../input/textInjection.js"
 import type { DesktopSession } from "../../desktop/session.js"
 import type { AssistantDiagnostics } from "../../assistant/diagnostics.js"
 import { recordPcmUntilTrailingSilence } from "../audioCapture.js"
@@ -228,22 +224,11 @@ export const runAssistantWakewordTranscribeLoop = (config: {
 
               config.diagnostics?.sttComplete(transcript.length)
 
-              const text = transcript.trim()
-              const injectableText = normalizeTextForInjection(text)
-
-              if (injectableText.length === 0) {
-                yield* Console.log("[wakeword-transcribe] Ignored empty transcript")
-                config.diagnostics?.setState("idle")
-                return
-              }
-
-              yield* Console.log("[wakeword-transcribe] Will type (start)")
-              yield* Console.log(injectableText)
-              yield* Console.log("[wakeword-transcribe] Will type (end)")
-
-              config.diagnostics?.setState("injection")
-              config.diagnostics?.injectionStart(injectableText.length)
-              const typed = yield* typeTextInFocusedApp(injectableText).pipe(
+              yield* injectTranscript({
+                text: transcript,
+                logPrefix: "wakeword-transcribe",
+                diagnostics: config.diagnostics,
+              }).pipe(
                 Effect.mapError(
                   (cause) =>
                     new CliError({
@@ -251,12 +236,6 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                       cause,
                     }),
                 ),
-              )
-              config.diagnostics?.injectionComplete()
-              config.diagnostics?.setState("idle")
-
-              yield* Console.log(
-                `[wakeword-transcribe] Typed ${typed.text.length} chars with ${typed.backend} (${typed.sessionType})`,
               )
             }).pipe(
               Effect.catch((cause: CliError) => {
