@@ -5,6 +5,7 @@ import { Command, Flag } from "effect/unstable/cli"
 import { PulseAudioClient } from "./pulse/client.js"
 import { layer as keyboardLayer } from "./keyboard/monitor.js"
 import { DesktopSession } from "./desktop/session.js"
+import { TextInjectionBackendLive } from "./input/textInjection.js"
 
 import { sourcesCommand } from "./commands/sources.js"
 import { meterCommand } from "./commands/meter.js"
@@ -55,11 +56,14 @@ export const rootCommand = Command.make(
   ]),
 )
 
+const textInjectionLayer = Layer.provide(TextInjectionBackendLive, DesktopSession.live)
+
 const runtimeLayer = Layer.mergeAll(
   BunServices.layer,
   PulseAudioClient.layer(),
   keyboardLayer,
   DesktopSession.live,
+  textInjectionLayer,
 )
 
 const main = Command.run(rootCommand, { version: "0.1.0" }).pipe(Effect.provide(runtimeLayer))

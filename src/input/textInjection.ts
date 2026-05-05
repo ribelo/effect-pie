@@ -1,4 +1,6 @@
+import * as Context from "effect/Context"
 import { Data, Effect } from "effect"
+import * as Layer from "effect/Layer"
 
 import {
   DesktopSession,
@@ -46,32 +48,60 @@ export const normalizeTextForInjection = (text: string): string =>
     .replace(/[\r\u2028\u2029]/g, "\n")
     .trim()
 
-const runTextInjectionBackend = (
-  backend: TextInjectionBackend,
-  text: string,
-): Effect.Effect<void, TextInjectionError> => {
-  if (backend === "wtype") {
-    return typeTextWithWtype(text).pipe(
+export class TextInjectionBackendService extends Context.Service<
+  TextInjectionBackendService,
+  {
+    readonly backend: TextInjectionBackend
+    readonly typeText: (text: string) => Effect.Effect<void, TextInjectionError>
+  }
+>()("pie/input/TextInjectionBackendService") {}
+
+const waylandBackend = TextInjectionBackendService.of({
+  backend: "wtype",
+  typeText: (text) =>
+    typeTextWithWtype(text).pipe(
       Effect.mapError(
         (cause) =>
           new TextInjectionError({
-            message: `${backend} text injection failed`,
+            message: "wtype text injection failed",
             cause,
           }),
       ),
-    )
-  }
-
-  return typeTextWithXdotool(text).pipe(
-    Effect.mapError(
-      (cause) =>
-        new TextInjectionError({
-          message: `${backend} text injection failed`,
-          cause,
-        }),
     ),
-  )
-}
+})
+
+const x11Backend = TextInjectionBackendService.of({
+  backend: "xdotool",
+  typeText: (text) =>
+    typeTextWithXdotool(text).pipe(
+      Effect.mapError(
+        (cause) =>
+          new TextInjectionError({
+            message: "xdotool text injection failed",
+            cause,
+          }),
+      ),
+    ),
+})
+
+export const WaylandTextInjectionLive = Layer.succeed(TextInjectionBackendService, waylandBackend)
+
+export const X11TextInjectionLive = Layer.succeed(TextInjectionBackendService, x11Backend)
+
+export const TextInjectionBackendLive = Layer.effect(
+  TextInjectionBackendService,
+  Effect.gen(function* () {
+    const desktopSession = yield* Effect.service(DesktopSession)
+    const sessionType = yield* desktopSession.detect
+    const backend = yield* chooseTextInjectionBackend(sessionType)
+
+    if (backend === "wtype") {
+      return waylandBackend
+    }
+
+    return x11Backend
+  }),
+)
 
 export const typeTextInFocusedApp = Effect.fn("pie/input/textInjection.typeTextInFocusedApp")(
   function* (
@@ -79,7 +109,7 @@ export const typeTextInFocusedApp = Effect.fn("pie/input/textInjection.typeTextI
   ): Effect.fn.Return<
     TextInjectionResult,
     TextInjectionError | SessionDetectionError,
-    DesktopSession
+    DesktopSession | TextInjectionBackendService
   > {
     const normalizedText = normalizeTextForInjection(text)
     if (normalizedText.length === 0) {
@@ -90,15 +120,13 @@ export const typeTextInFocusedApp = Effect.fn("pie/input/textInjection.typeTextI
 
     const desktopSession = yield* Effect.service(DesktopSession)
     const sessionType = yield* desktopSession.detect
-    const primaryBackend = yield* chooseTextInjectionBackend(sessionType)
 
-    yield* runTextInjectionBackend(primaryBackend, normalizedText)
-
-    const resolvedBackend = primaryBackend
+    const backend = yield* Effect.service(TextInjectionBackendService)
+    yield* backend.typeText(normalizedText)
 
     return {
       sessionType,
-      backend: resolvedBackend,
+      backend: backend.backend,
       text: normalizedText,
     }
   },

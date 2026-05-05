@@ -12,7 +12,7 @@ import {
   transcribePcmWithOpenRouter,
   type OpenRouterSttError,
 } from "../stt/openrouter.js"
-import { typeTextInFocusedApp } from "../input/textInjection.js"
+import { typeTextInFocusedApp, type TextInjectionBackendService } from "../input/textInjection.js"
 import type { DesktopSession } from "../desktop/session.js"
 import { notifyWarning } from "../desktop/notification.js"
 import {
@@ -62,7 +62,9 @@ type KeyboardMonitorPttConfig = {
   readonly fragmentSize: number
   readonly logPrefix: string
   readonly armedMessage: (trigger: PttTriggerBinding) => string
-  readonly onClip: (clip: PttCapturedClip) => Effect.Effect<void, PttKeyboardError, DesktopSession>
+  readonly onClip: (
+    clip: PttCapturedClip,
+  ) => Effect.Effect<void, PttKeyboardError, DesktopSession | TextInjectionBackendService>
 }
 
 const pttKeycodeFlag = optionalPositiveIntegerFlag(
@@ -86,7 +88,7 @@ export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMoni
 ): Effect.fn.Return<
   never,
   PttKeyboardError,
-  PulseAudioClient | KeyboardMonitorService | DesktopSession
+  PulseAudioClient | KeyboardMonitorService | DesktopSession | TextInjectionBackendService
 > {
   return yield* Effect.scoped(
     Effect.gen(function* () {
