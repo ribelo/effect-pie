@@ -52,23 +52,16 @@ import {
   readDetectionTuningSnapshot,
   type WakewordSnapshotError,
 } from "./wakewordHelpers.js"
-
-const DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE = "ok_pie.json"
-const DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM = 65478
-const DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM = 65479
-const DEFAULT_ASSISTANT_SAMPLE_RATE = 16_000
-const DEFAULT_ASSISTANT_WAKEWORD_FRAGMENT_SIZE = 1024
-const DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE = 4096
-const DEFAULT_ASSISTANT_MIN_DURATION_MS = 120
-const DEFAULT_ASSISTANT_WAKEWORD_SPEECH_START_TIMEOUT_SECONDS = 8
-const resolveWakewordSpeechStartTimeoutSeconds = (config: {
-  readonly silenceSeconds: number
-  readonly maxSeconds: number
-}): number =>
-  Math.min(
-    config.maxSeconds,
-    Math.max(DEFAULT_ASSISTANT_WAKEWORD_SPEECH_START_TIMEOUT_SECONDS, config.silenceSeconds + 2),
-  )
+import {
+  DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE,
+  DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM,
+  DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM,
+  DEFAULT_ASSISTANT_SAMPLE_RATE,
+  DEFAULT_ASSISTANT_WAKEWORD_FRAGMENT_SIZE,
+  DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
+  DEFAULT_ASSISTANT_MIN_DURATION_MS,
+  resolveWakewordSpeechStartTimeoutSeconds,
+} from "./assistant/constants.js"
 
 const normalizeWakewordModelName = (modelName: string): string =>
   modelName.endsWith(".json") ? modelName.slice(0, -".json".length) : modelName
