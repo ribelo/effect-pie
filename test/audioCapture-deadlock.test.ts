@@ -14,6 +14,7 @@ const FailingPulseClient = {
   listSources: Effect.fail(new PulseAudioClientError({ message: "no sources" })),
   openRecordStream: () => Effect.fail(new PulseAudioClientError({ message: "socket failed" })),
   closeRecordStream: () => Effect.void,
+  acquireRecordStream: () => Effect.fail(new PulseAudioClientError({ message: "socket failed" })),
 } as const
 
 const config = {

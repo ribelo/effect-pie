@@ -220,6 +220,9 @@ export class PulseAudioClient extends Context.Service<
       options?: Partial<RecordStreamOptions>,
     ) => Effect.Effect<OpenRecordStream, PulseAudioClientError | PulseAudioParseError>
     readonly closeRecordStream: (streamIndex: number) => Effect.Effect<void, PulseAudioClientError>
+    readonly acquireRecordStream: (
+      options?: Partial<RecordStreamOptions>,
+    ) => Effect.Effect<OpenRecordStream, PulseAudioClientError | PulseAudioParseError, Scope.Scope>
   }
 >()("pie/pulse/PulseAudioClient") {
   static readonly layer = (config: PulseAudioClientConfig = {}): Layer.Layer<PulseAudioClient> =>
@@ -529,6 +532,13 @@ const make = (defaults: PulseAudioClientConfig) =>
         )
       })
 
+    const acquireRecordStream = (
+      options?: Partial<RecordStreamOptions>,
+    ): Effect.Effect<OpenRecordStream, PulseAudioClientError | PulseAudioParseError, Scope.Scope> =>
+      Effect.acquireRelease(openRecordStream(options), (opened) =>
+        closeRecordStream(opened.info.streamIndex).pipe(Effect.exit, Effect.asVoid),
+      )
+
     yield* Effect.addFinalizer(() => disconnectCurrent)
 
     return PulseAudioClient.of({
@@ -536,5 +546,6 @@ const make = (defaults: PulseAudioClientConfig) =>
       listSources,
       openRecordStream,
       closeRecordStream,
+      acquireRecordStream,
     })
   })

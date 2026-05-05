@@ -14,11 +14,7 @@ export const createRecordStream = (
   Stream.unwrap(
     Effect.gen(function* () {
       const client = yield* Effect.service(PulseAudioClient)
-      const opened = yield* client.openRecordStream(options)
-
-      yield* Effect.addFinalizer(() =>
-        client.closeRecordStream(opened.info.streamIndex).pipe(Effect.exit, Effect.asVoid),
-      )
+      const opened = yield* client.acquireRecordStream(options)
 
       return Stream.fromQueue(opened.queue)
     }),
