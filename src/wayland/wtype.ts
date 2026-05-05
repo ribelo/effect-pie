@@ -30,7 +30,11 @@ const runCommand = (
         const stderrStream = process.stderr
 
         const [exitCode, stdout, stderr] = await Promise.race([
-          Promise.all([process.exited, readStreamText(stdoutStream), readStreamText(stderrStream)]),
+          Promise.all([
+            process.exited,
+            Effect.runPromise(readStreamText(stdoutStream)),
+            Effect.runPromise(readStreamText(stderrStream)),
+          ]),
           new Promise<never>((_resolve, reject) => {
             timeout = setTimeout(() => {
               try {

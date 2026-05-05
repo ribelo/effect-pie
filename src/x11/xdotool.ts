@@ -46,8 +46,8 @@ export const typeTextWithXdotool = Effect.fn("pie/x11/xdotool.typeTextWithXdotoo
         const [exitCode, _stdout, stderr] = await Promise.race([
           Promise.all([
             process.exited,
-            readStreamText(process.stdout),
-            readStreamText(process.stderr),
+            Effect.runPromise(readStreamText(process.stdout)),
+            Effect.runPromise(readStreamText(process.stderr)),
           ]),
           new Promise<never>((_resolve, reject) => {
             timeout = setTimeout(() => {

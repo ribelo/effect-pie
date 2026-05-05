@@ -1,9 +1,19 @@
-export const readStreamText = async (
+import { Data, Effect } from "effect"
+
+export class SubprocessError extends Data.TaggedError("SubprocessError")<{
+  readonly message: string
+  readonly cause?: unknown
+}> {}
+
+export const readStreamText = (
   stream: ReadableStream<Uint8Array> | null,
-): Promise<string> => {
+): Effect.Effect<string, SubprocessError> => {
   if (stream === null) {
-    return ""
+    return Effect.succeed("")
   }
 
-  return await new Response(stream).text()
+  return Effect.tryPromise({
+    try: async () => await new Response(stream).text(),
+    catch: (cause) => new SubprocessError({ message: "Failed to read subprocess stream", cause }),
+  })
 }
