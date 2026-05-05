@@ -1,6 +1,10 @@
 import { Data, Effect } from "effect"
 
-import { detectDesktopSessionType, type DesktopSessionType } from "../desktop/session.js"
+import {
+  DesktopSession,
+  type DesktopSessionType,
+  type SessionDetectionError,
+} from "../desktop/session.js"
 import { typeTextWithWtype } from "../wayland/wtype.js"
 import { typeTextWithXdotool } from "../x11/xdotool.js"
 
@@ -70,7 +74,13 @@ const runTextInjectionBackend = (
 }
 
 export const typeTextInFocusedApp = Effect.fn("pie/input/textInjection.typeTextInFocusedApp")(
-  function* (text: string): Effect.fn.Return<TextInjectionResult, TextInjectionError> {
+  function* (
+    text: string,
+  ): Effect.fn.Return<
+    TextInjectionResult,
+    TextInjectionError | SessionDetectionError,
+    DesktopSession
+  > {
     const normalizedText = normalizeTextForInjection(text)
     if (normalizedText.length === 0) {
       return yield* new TextInjectionError({
@@ -78,7 +88,8 @@ export const typeTextInFocusedApp = Effect.fn("pie/input/textInjection.typeTextI
       })
     }
 
-    const sessionType = detectDesktopSessionType()
+    const desktopSession = yield* Effect.service(DesktopSession)
+    const sessionType = yield* desktopSession.detect
     const primaryBackend = yield* chooseTextInjectionBackend(sessionType)
 
     yield* runTextInjectionBackend(primaryBackend, normalizedText)

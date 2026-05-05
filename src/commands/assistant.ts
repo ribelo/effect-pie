@@ -18,6 +18,7 @@ import { loadWakewordModelSessions, type WakewordRuntimeError } from "../wakewor
 import { makeWakewordPipeline, type WakewordPipelineError } from "../wakeword/pipeline.js"
 import { createWakewordTriggerMachine } from "../wakeword/trigger.js"
 import { typeTextInFocusedApp, normalizeTextForInjection } from "../input/textInjection.js"
+import type { DesktopSession } from "../desktop/session.js"
 import { AssistantDiagnostics, isShellTraceEnabled } from "../assistant/diagnostics.js"
 import { notifyWarning } from "../desktop/notification.js"
 import {
@@ -181,7 +182,7 @@ const runAssistantWakewordTranscribeLoop = (config: {
     mode: AssistantRecordingMode | undefined,
   ) => Effect.Effect<void, CliError>
   readonly diagnostics?: AssistantDiagnostics | undefined
-}): Effect.Effect<void, CliError, PulseAudioClient> =>
+}): Effect.Effect<void, CliError, PulseAudioClient | DesktopSession> =>
   Effect.scoped(
     Effect.gen(function* () {
       const outerScope = yield* Effect.scope
@@ -421,7 +422,11 @@ const runAssistantPttCombinedLoop = (config: {
   readonly diagnostics?: AssistantDiagnostics | undefined
   readonly pttTranscribeKeysym: Option.Option<number>
   readonly pttTranslateKeysym: Option.Option<number>
-}): Effect.Effect<never, CliError | PttKeyboardError, PulseAudioClient | KeyboardMonitorService> =>
+}): Effect.Effect<
+  never,
+  CliError | PttKeyboardError,
+  PulseAudioClient | KeyboardMonitorService | DesktopSession
+> =>
   Effect.scoped(
     Effect.gen(function* () {
       const transcribeKeysym = Option.getOrElse(
@@ -770,7 +775,7 @@ export const runAssistantDefaultCommand = Effect.fn(
 }): Effect.fn.Return<
   void,
   CliError | SttConfigError | PttKeyboardError | Error,
-  PulseAudioClient | KeyboardMonitorService
+  PulseAudioClient | KeyboardMonitorService | DesktopSession
 > {
   const sttConfig = yield* loadSttRuntimeConfig().pipe(
     Effect.mapError(

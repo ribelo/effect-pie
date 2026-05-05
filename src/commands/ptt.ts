@@ -13,6 +13,7 @@ import {
   type OpenRouterSttError,
 } from "../stt/openrouter.js"
 import { typeTextInFocusedApp } from "../input/textInjection.js"
+import type { DesktopSession } from "../desktop/session.js"
 import { notifyWarning } from "../desktop/notification.js"
 import {
   pttCaptureIdle,
@@ -61,7 +62,7 @@ type KeyboardMonitorPttConfig = {
   readonly fragmentSize: number
   readonly logPrefix: string
   readonly armedMessage: (trigger: PttTriggerBinding) => string
-  readonly onClip: (clip: PttCapturedClip) => Effect.Effect<void, PttKeyboardError>
+  readonly onClip: (clip: PttCapturedClip) => Effect.Effect<void, PttKeyboardError, DesktopSession>
 }
 
 const pttKeycodeFlag = optionalPositiveIntegerFlag(
@@ -82,7 +83,11 @@ export const toPttKeyboardError = (message: string, cause: unknown): PttKeyboard
 
 export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMonitorPtt")(function* (
   config: KeyboardMonitorPttConfig,
-): Effect.fn.Return<never, PttKeyboardError, PulseAudioClient | KeyboardMonitorService> {
+): Effect.fn.Return<
+  never,
+  PttKeyboardError,
+  PulseAudioClient | KeyboardMonitorService | DesktopSession
+> {
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const keyboard = yield* KeyboardMonitorService
