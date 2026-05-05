@@ -201,19 +201,25 @@ const validateRuntimePin = (
       }),
   })
 
-const copyFileIfExists = async (sourcePath: string, targetPath: string): Promise<void> => {
+export const copyFileIfExists = async (sourcePath: string, targetPath: string): Promise<void> => {
   try {
     const stat = await fs.stat(sourcePath)
     if (!stat.isFile()) {
       return
     }
-  } catch {
-    return
+  } catch (error) {
+    if (isEnoent(error)) {
+      return
+    }
+    throw error
   }
 
   await fs.mkdir(path.dirname(targetPath), { recursive: true })
   await fs.copyFile(sourcePath, targetPath)
 }
+
+const isEnoent = (error: unknown): error is { readonly code: "ENOENT" } =>
+  typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
 
 const ensureDefaultAssetRoot = (targetRootDir: string): Effect.Effect<void, WakewordAssetError> =>
   Effect.tryPromise({
@@ -236,7 +242,9 @@ const ensureDefaultAssetRoot = (targetRootDir: string): Effect.Effect<void, Wake
         .catch(() => false)
 
       if (!sourceManifestExists) {
-        return
+        throw new WakewordAssetError({
+          message: `Bundled wakeword source manifest not found at ${sourceManifestPath}. Expected bundled assets to be present when using default asset root.`,
+        })
       }
 
       await fs.mkdir(targetRootDir, { recursive: true })
@@ -273,10 +281,10 @@ const ensureDefaultAssetRoot = (targetRootDir: string): Effect.Effect<void, Wake
       }),
   })
 
-export const resolveWakewordAssets = (
-  options: WakewordAssetOptions = {},
-): Effect.Effect<ResolvedWakewordAssets, WakewordAssetError> =>
-  Effect.gen(function* () {
+export const resolveWakewordAssets = Effect.fn("pie/wakeword/assets.resolveWakewordAssets")(
+  function* (
+    options: WakewordAssetOptions = {},
+  ): Effect.fn.Return<ResolvedWakewordAssets, WakewordAssetError> {
     const usingDefaultRoot = options.rootDir === undefined
     const rootDir = path.resolve(options.rootDir ?? defaultRootDir)
     const manifestPath = path.join(rootDir, "manifest.json")
@@ -313,12 +321,13 @@ export const resolveWakewordAssets = (
     }
 
     return resolved
-  })
+  },
+)
 
-export const validateWakewordAssets = (
-  options: WakewordAssetOptions = {},
-): Effect.Effect<ResolvedWakewordAssets, WakewordAssetError> =>
-  Effect.gen(function* () {
+export const validateWakewordAssets = Effect.fn("pie/wakeword/assets.validateWakewordAssets")(
+  function* (
+    options: WakewordAssetOptions = {},
+  ): Effect.fn.Return<ResolvedWakewordAssets, WakewordAssetError> {
     const resolved = yield* resolveWakewordAssets(options)
 
     yield* ensureReadableFile(resolved.melspectrogramModelPath)
@@ -340,4 +349,5 @@ export const validateWakewordAssets = (
     }
 
     return resolved
-  })
+  },
+)

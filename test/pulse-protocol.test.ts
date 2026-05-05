@@ -1,6 +1,8 @@
 import { describe, test } from "node:test"
 import * as assert from "node:assert/strict"
 
+import { Result } from "effect"
+
 import {
   buildAuthCommand,
   buildCreateRecordStreamCommand,
@@ -9,6 +11,7 @@ import {
   buildGetSourceListCommand,
   buildSetClientNameCommand,
   parseCreateRecordStreamResponse,
+  parseProtocolCompatibility,
   parseServerInfoResponse,
   parseSourceListResponse,
 } from "../src/pulse/commands.ts"
@@ -81,8 +84,10 @@ describe("pulse protocol", () => {
 
   test("builds auth command packets", () => {
     const cookie = new Uint8Array(PA_NATIVE_COOKIE_LENGTH).fill(7)
-    const auth = buildAuthCommand(cookie, 32)
+    const authResult = buildAuthCommand(cookie, 32)
+    assert.strictEqual(Result.isSuccess(authResult), true)
 
+    const auth = Result.getOrThrow(authResult)
     const { header, payload } = splitFramedPacket(auth.bytes)
     const reader = new TagStructReader(payload)
 
@@ -92,6 +97,17 @@ describe("pulse protocol", () => {
     assert.strictEqual(reader.getUInt32(), 32)
     assert.deepStrictEqual(reader.getArbitrary(), cookie)
     assert.strictEqual(reader.hasRemaining(), false)
+  })
+
+  test("rejects invalid cookie length for auth command", () => {
+    const shortCookie = new Uint8Array(4)
+    const authResult = buildAuthCommand(shortCookie, 32)
+    assert.strictEqual(Result.isFailure(authResult), true)
+  })
+
+  test("parses protocol compatibility", () => {
+    assert.strictEqual(Result.isSuccess(parseProtocolCompatibility(35)), true)
+    assert.strictEqual(Result.isFailure(parseProtocolCompatibility(10)), true)
   })
 
   test("builds set client name command with proplist", () => {

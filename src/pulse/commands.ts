@@ -1,3 +1,5 @@
+import { Result } from "effect"
+
 import {
   PA_COMMAND,
   PA_NATIVE_COOKIE_LENGTH,
@@ -68,16 +70,18 @@ export const parseErrorCode = (payload: Uint8Array): number | null => {
 export const buildAuthCommand = (
   cookie?: Uint8Array,
   protocolVersion = PA_NATIVE_PROTOCOL_VERSION,
-): CommandPacket => {
+): Result.Result<CommandPacket, string> => {
   const authCookie = cookie ?? new Uint8Array(PA_NATIVE_COOKIE_LENGTH)
   if (authCookie.length !== PA_NATIVE_COOKIE_LENGTH) {
-    throw new Error(`invalid pulse cookie length: ${authCookie.length}`)
+    return Result.fail(`invalid pulse cookie length: ${authCookie.length}`)
   }
 
-  return commandPacket(PA_COMMAND.AUTH, (writer) => {
-    writer.addUInt32(protocolVersion)
-    writer.addArbitrary(authCookie)
-  })
+  return Result.succeed(
+    commandPacket(PA_COMMAND.AUTH, (writer) => {
+      writer.addUInt32(protocolVersion)
+      writer.addArbitrary(authCookie)
+    }),
+  )
 }
 
 export const parseAuthResponse = (payload: Uint8Array): number => {
@@ -109,13 +113,13 @@ export const buildGetServerInfoCommand = (): CommandPacket =>
 export const parseServerInfoResponse = (payload: Uint8Array): ServerInfo => {
   const reader = new TagStructReader(payload)
   return {
-    name: reader.getString() ?? "",
-    version: reader.getString() ?? "",
-    username: reader.getString() ?? "",
-    hostname: reader.getString() ?? "",
+    name: reader.getString(),
+    version: reader.getString(),
+    username: reader.getString(),
+    hostname: reader.getString(),
     sampleSpec: reader.getSampleSpec(),
-    defaultSink: reader.getString() ?? "",
-    defaultSource: reader.getString() ?? "",
+    defaultSink: reader.getString(),
+    defaultSource: reader.getString(),
     cookie: reader.getUInt32(),
     defaultChannelMap: reader.getChannelMap(),
   }
@@ -259,10 +263,14 @@ export const buildDeleteRecordStreamCommand = (streamIndex: number): CommandPack
     writer.addUInt32(streamIndex)
   })
 
-export const parseProtocolCompatibility = (serverProtocolVersion: number): void => {
+export const parseProtocolCompatibility = (
+  serverProtocolVersion: number,
+): Result.Result<void, string> => {
   if (serverProtocolVersion < CLIENT_PROTOCOL_VERSION) {
-    throw new Error(
+    return Result.fail(
       `PulseAudio server protocol ${serverProtocolVersion} is older than required ${CLIENT_PROTOCOL_VERSION}`,
     )
   }
+
+  return Result.void
 }

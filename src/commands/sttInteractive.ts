@@ -1,7 +1,7 @@
-import { Console, Effect, Fiber, Option, Ref, Stream } from "effect"
+import { Console, Effect, Option, Ref, Stream } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import { loadSttRuntimeConfig, type SttConfigError } from "../stt/config.js"
-import { OpenRouterSttError, transcribePcmWithOpenRouter } from "../stt/openrouter.js"
+import { transcribePcmWithOpenRouter, type OpenRouterSttError } from "../stt/openrouter.js"
 import { createRecordStream } from "../pulse/stream.js"
 import { makePcmRecordOptions } from "../pulse/defs.js"
 import { typeTextWithWtype, type WtypeError } from "../wayland/wtype.js"
@@ -71,14 +71,16 @@ export const sttInteractiveCommand = Command.make(
           sourceName: Option.getOrUndefined(config.source),
         })
 
-        const recordFiber = yield* createRecordStream(recordOptions).pipe(
-          Stream.runForEach((chunk) => Ref.update(chunksRef, (chunks) => [...chunks, chunk])),
-          Effect.forkDetach,
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* createRecordStream(recordOptions).pipe(
+              Stream.runForEach((chunk) => Ref.update(chunksRef, (chunks) => [...chunks, chunk])),
+              Effect.forkScoped,
+            )
+
+            yield* waitForEnter("[stt-interactive] Listening... Press Enter to stop")
+          }),
         )
-
-        yield* waitForEnter("[stt-interactive] Listening... Press Enter to stop")
-
-        yield* Fiber.interrupt(recordFiber)
 
         const chunks = yield* Ref.get(chunksRef)
         const pcmBytes = concatChunks(chunks)
@@ -107,13 +109,12 @@ export const sttInteractiveCommand = Command.make(
             : {
                 onDelta: (delta: string) =>
                   typeTextWithWtype(delta).pipe(
-                    Effect.mapError(
-                      (cause: WtypeError) =>
-                        new OpenRouterSttError({
-                          message: `Failed typing streamed delta with wtype: ${cause.message}`,
-                          cause,
-                        }),
+                    Effect.tapError((cause: WtypeError) =>
+                      Console.log(
+                        `[stt-interactive] wtype typing error for delta: ${cause.message}`,
+                      ),
                     ),
+                    Effect.ignore,
                   ),
               }),
         }).pipe(

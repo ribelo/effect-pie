@@ -11,11 +11,16 @@ const makeFakeSession = (
 ): OnnxSession => ({
   inputName: "input",
   inputDims,
+  runPromise: async (input) => ({
+    data: run(input.data, input.dims),
+    dims: [1],
+  }),
   run: (input) =>
     Effect.succeed({
       data: run(input.data, input.dims),
       dims: [1],
     }),
+  dispose: Effect.void,
 })
 
 const fakeModels: WakewordModelSessions = {
@@ -46,6 +51,12 @@ const fakeModels: WakewordModelSessions = {
     jarvis: {
       requiredFrames: 16,
       expectedFeatureSize: 8,
+      scorePromise: async (featureWindow) => {
+        const flattened = featureWindow.flatMap((frame) => Array.from(frame))
+        const mean =
+          flattened.reduce((acc, value) => acc + value, 0) / Math.max(1, flattened.length)
+        return Math.max(0, Math.min(1, mean / 5))
+      },
       score: (featureWindow) =>
         Effect.sync(() => {
           const flattened = featureWindow.flatMap((frame) => Array.from(frame))
@@ -55,6 +66,7 @@ const fakeModels: WakewordModelSessions = {
         }),
     },
   },
+  dispose: Effect.void,
 }
 
 const toPcmBytes = (samples: Int16Array): Uint8Array => {

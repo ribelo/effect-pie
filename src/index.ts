@@ -1,6 +1,8 @@
-import { NodeRuntime } from "@effect/platform-node"
+import { BunRuntime } from "@effect/platform-bun"
 import { Effect } from "effect"
+
+export { rootCommand } from "./cli.js"
 
 const main = Effect.log("pie")
 
-main.pipe(NodeRuntime.runMain)
+BunRuntime.runMain(main)

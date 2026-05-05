@@ -5,13 +5,14 @@ import * as path from "node:path"
 
 import { EFFECT_PI_OPENWAKEWORD_DATA_DIR } from "../paths.js"
 import { buildPcmWavHeader, isRecord } from "../utils/runtime.js"
+import { decodeS16leSamples } from "../audio/pcm.js"
 import {
   OPENWAKEWORD_MEL_BINS,
   OPENWAKEWORD_MEL_WINDOW_FRAMES,
   OPENWAKEWORD_SAMPLE_RATE,
 } from "./defs.js"
 import type { WakewordFeatureSessions, WakewordRuntimeError } from "./onnx.js"
-import { flattenMatrix, toFrameMatrix, transformMelspectrogram } from "./signal.js"
+import { flattenMatrix, sigmoid, toFrameMatrix, transformMelspectrogram } from "./signal.js"
 
 export class WakewordTrainingError extends Data.TaggedError("WakewordTrainingError")<{
   readonly message: string
@@ -65,8 +66,6 @@ const sanitizeModelName = (name: string): string =>
     .replace(/\.json$/i, "")
     .replace(/[^a-z0-9_-]+/g, "_")
     .replace(/^_+|_+$/g, "")
-
-const sigmoid = (x: number): number => 1 / (1 + Math.exp(-x))
 
 const averageVectors = (vectors: ReadonlyArray<Float32Array>): Float32Array => {
   if (vectors.length === 0) {
@@ -208,10 +207,10 @@ The positive prompts are speech-activated: recording waits until speech is detec
 - \`pie wakeword --models ${plan.outputModelFileName} --duration 20\`
 `
 
-export const initializeWakewordTrainingWorkspace = (
-  plan: WakewordTrainingPlan,
-): Effect.Effect<void, WakewordTrainingError> =>
-  Effect.tryPromise({
+export const initializeWakewordTrainingWorkspace = Effect.fn(
+  "pie/wakeword/training.initializeWakewordTrainingWorkspace",
+)(function* (plan: WakewordTrainingPlan): Effect.fn.Return<void, WakewordTrainingError> {
+  return yield* Effect.tryPromise({
     try: async () => {
       await fs.mkdir(plan.positiveDir, { recursive: true })
       await fs.mkdir(plan.negativeDir, { recursive: true })
@@ -247,6 +246,7 @@ export const initializeWakewordTrainingWorkspace = (
         cause,
       }),
   })
+})
 
 type WakewordManifest = {
   readonly schemaVersion: number
@@ -273,11 +273,13 @@ const isWakewordManifest = (value: unknown): value is WakewordManifest =>
   Array.isArray(value["models"]["wakewords"]) &&
   value["models"]["wakewords"].every((entry) => typeof entry === "string")
 
-export const registerWakewordModelInManifest = (
+export const registerWakewordModelInManifest = Effect.fn(
+  "pie/wakeword/training.registerWakewordModelInManifest",
+)(function* (
   manifestPath: string,
   modelFileName: string,
-): Effect.Effect<boolean, WakewordTrainingError> =>
-  Effect.tryPromise({
+): Effect.fn.Return<boolean, WakewordTrainingError> {
+  return yield* Effect.tryPromise({
     try: async () => {
       const raw = await fs.readFile(manifestPath, "utf8")
       const manifest: unknown = JSON.parse(raw)
@@ -305,13 +307,14 @@ export const registerWakewordModelInManifest = (
         cause,
       }),
   })
+})
 
-export const writePcmWavFile = (
+export const writePcmWavFile = Effect.fn("pie/wakeword/training.writePcmWavFile")(function* (
   outputPath: string,
   pcmBytes: Uint8Array,
-  sampleRate = OPENWAKEWORD_SAMPLE_RATE,
-): Effect.Effect<void, WakewordTrainingError> =>
-  Effect.tryPromise({
+  sampleRate: number = OPENWAKEWORD_SAMPLE_RATE,
+): Effect.fn.Return<void, WakewordTrainingError> {
+  return yield* Effect.tryPromise({
     try: async () => {
       const header = buildPcmWavHeader(pcmBytes.length, sampleRate)
 
@@ -328,25 +331,14 @@ export const writePcmWavFile = (
         cause,
       }),
   })
-
-const toInt16Samples = (pcmBytes: Uint8Array): Int16Array => {
-  const sampleCount = Math.floor(pcmBytes.length / 2)
-  const view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, sampleCount * 2)
-  const samples = new Int16Array(sampleCount)
-
-  for (let index = 0; index < sampleCount; index += 1) {
-    samples[index] = view.getInt16(index * 2, true)
-  }
-
-  return samples
-}
+})
 
 const clipEmbeddingFromPcm = (
   sessions: WakewordFeatureSessions,
   pcmBytes: Uint8Array,
 ): Effect.Effect<Float32Array, WakewordTrainingError> =>
   Effect.gen(function* () {
-    const samples = toInt16Samples(pcmBytes)
+    const samples = decodeS16leSamples(pcmBytes)
     const melInput = Float32Array.from(samples)
 
     const mel = yield* sessions.melspectrogram
@@ -397,46 +389,23 @@ const clipEmbeddingFromPcm = (
     }
 
     if (embeddings.length === 0) {
-      const padded = [
-        ...Array.from(
-          { length: Math.max(0, OPENWAKEWORD_MEL_WINDOW_FRAMES - melFrames.length) },
-          () => Float32Array.from({ length: OPENWAKEWORD_MEL_BINS }, () => 1),
-        ),
-        ...melFrames,
-      ].slice(-OPENWAKEWORD_MEL_WINDOW_FRAMES)
-
-      const input = flattenMatrix(padded)
-      const embedding = yield* sessions.embedding
-        .run({
-          data: input,
-          dims: [1, OPENWAKEWORD_MEL_WINDOW_FRAMES, OPENWAKEWORD_MEL_BINS, 1],
-        })
-        .pipe(
-          Effect.map((output) => output.data),
-          Effect.mapError(
-            (cause: WakewordRuntimeError) =>
-              new WakewordTrainingError({
-                message: "Failed to run embedding model during training",
-                cause,
-              }),
-          ),
-        )
-
-      embeddings.push(embedding)
+      return yield* new WakewordTrainingError({
+        message: `Training clip is too short: produced ${melFrames.length} melspectrogram frames, need at least ${OPENWAKEWORD_MEL_WINDOW_FRAMES}`,
+      })
     }
 
     return averageVectors(embeddings)
   })
 
-export const trainLinearWakewordModel = (
-  sessions: WakewordFeatureSessions,
-  options: {
-    readonly positiveClips: ReadonlyArray<Uint8Array>
-    readonly negativeClips: ReadonlyArray<Uint8Array>
-    readonly frameCount?: number
-  },
-): Effect.Effect<TrainedLinearWakewordModel, WakewordTrainingError> =>
-  Effect.gen(function* () {
+export const trainLinearWakewordModel = Effect.fn("pie/wakeword/training.trainLinearWakewordModel")(
+  function* (
+    sessions: WakewordFeatureSessions,
+    options: {
+      readonly positiveClips: ReadonlyArray<Uint8Array>
+      readonly negativeClips: ReadonlyArray<Uint8Array>
+      readonly frameCount?: number
+    },
+  ): Effect.fn.Return<TrainedLinearWakewordModel, WakewordTrainingError> {
     if (options.positiveClips.length < 3) {
       return yield* new WakewordTrainingError({
         message: "Need at least 3 positive clips to train wakeword model",
@@ -499,21 +468,41 @@ export const trainLinearWakewordModel = (
         negativeStdDev: stdDev(negativeScores),
       },
     }
-  })
+  },
+)
 
-export const sortedWavPaths = async (dir: string): Promise<ReadonlyArray<string>> => {
-  const entries = await fs.readdir(dir)
-  return entries
-    .filter((entry) => entry.toLowerCase().endsWith(".wav"))
-    .sort((left, right) => left.localeCompare(right))
-    .map((entry) => path.join(dir, entry))
-}
+const isEnoent = (error: unknown): boolean =>
+  typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
 
-export const nextWavPath = (
+export const sortedWavPaths = Effect.fn("pie/wakeword/training.sortedWavPaths")(function* (
+  dir: string,
+): Effect.fn.Return<ReadonlyArray<string>, WakewordTrainingError> {
+  return yield* Effect.tryPromise({
+    try: async () => {
+      const entries = await fs.readdir(dir)
+      return entries
+        .filter((entry) => entry.toLowerCase().endsWith(".wav"))
+        .sort((left, right) => left.localeCompare(right))
+        .map((entry) => path.join(dir, entry))
+    },
+    catch: (cause) =>
+      isEnoent(cause)
+        ? new WakewordTrainingError({
+            message: `Directory not found: ${dir}`,
+            cause,
+          })
+        : new WakewordTrainingError({
+            message: `Failed to list WAV files in ${dir}`,
+            cause,
+          }),
+  }).pipe(Effect.catchTag("WakewordTrainingError", () => Effect.succeed([])))
+})
+
+export const nextWavPath = Effect.fn("pie/wakeword/training.nextWavPath")(function* (
   dir: string,
   label: string,
-): Effect.Effect<string, WakewordTrainingError> =>
-  Effect.tryPromise({
+): Effect.fn.Return<string, WakewordTrainingError> {
+  return yield* Effect.tryPromise({
     try: async () => {
       const entries = await fs.readdir(dir)
       const pattern = new RegExp(`^${label}-(\\d{3})\\.wav$`, "i")
@@ -537,11 +526,12 @@ export const nextWavPath = (
         cause,
       }),
   })
+})
 
-export const decodePcmWavFile = (
+export const decodePcmWavFile = Effect.fn("pie/wakeword/training.decodePcmWavFile")(function* (
   wavPath: string,
-): Effect.Effect<Uint8Array, WakewordTrainingError> =>
-  Effect.tryPromise({
+): Effect.fn.Return<Uint8Array, WakewordTrainingError> {
+  return yield* Effect.tryPromise({
     try: async () => {
       const data = await fs.readFile(wavPath)
       if (data.length < 44) {
@@ -611,29 +601,37 @@ export const decodePcmWavFile = (
         })
       }
 
-      const dataMagic = String.fromCharCode(
-        data[36] ?? 0,
-        data[37] ?? 0,
-        data[38] ?? 0,
-        data[39] ?? 0,
-      )
-      if (dataMagic !== "data") {
-        throw new WakewordTrainingError({
-          message: `Missing data chunk: ${wavPath}`,
-        })
+      const fmtSize = view.getUint32(16, true)
+      let offset = 20 + fmtSize
+
+      while (offset + 8 <= data.length) {
+        const chunkId = String.fromCharCode(
+          data[offset] ?? 0,
+          data[offset + 1] ?? 0,
+          data[offset + 2] ?? 0,
+          data[offset + 3] ?? 0,
+        )
+        const chunkSize = view.getUint32(offset + 4, true)
+
+        if (chunkId === "data") {
+          const pcmOffset = offset + 8
+          const expectedLength = pcmOffset + chunkSize
+
+          if (data.length < expectedLength) {
+            throw new WakewordTrainingError({
+              message: `Truncated WAV data: expected ${expectedLength} bytes, got ${data.length}: ${wavPath}`,
+            })
+          }
+
+          return new Uint8Array(data.buffer, data.byteOffset + pcmOffset, chunkSize)
+        }
+
+        offset += 8 + chunkSize + (chunkSize % 2)
       }
 
-      const dataSize = view.getUint32(40, true)
-      const pcmOffset = 44
-      const expectedLength = pcmOffset + dataSize
-
-      if (data.length < expectedLength) {
-        throw new WakewordTrainingError({
-          message: `Truncated WAV data: expected ${expectedLength} bytes, got ${data.length}: ${wavPath}`,
-        })
-      }
-
-      return new Uint8Array(data.buffer, data.byteOffset + pcmOffset, dataSize)
+      throw new WakewordTrainingError({
+        message: `Missing data chunk: ${wavPath}`,
+      })
     },
     catch: (cause) => {
       if (cause instanceof WakewordTrainingError) {
@@ -645,63 +643,53 @@ export const decodePcmWavFile = (
       })
     },
   })
+})
 
-export const loadSavedWavClips = (
+export const loadSavedWavClips = Effect.fn("pie/wakeword/training.loadSavedWavClips")(function* (
   dir: string,
-): Effect.Effect<ReadonlyArray<Uint8Array>, WakewordTrainingError> =>
-  Effect.gen(function* () {
-    const wavPaths = yield* Effect.tryPromise({
-      try: () => sortedWavPaths(dir),
-      catch: (cause) =>
-        new WakewordTrainingError({
-          message: `Failed to list WAV files in ${dir}`,
-          cause,
-        }),
-    })
+): Effect.fn.Return<ReadonlyArray<Uint8Array>, WakewordTrainingError> {
+  const wavPaths = yield* sortedWavPaths(dir)
 
-    const clips: Array<Uint8Array> = []
-    for (const wavPath of wavPaths) {
-      const pcm = yield* decodePcmWavFile(wavPath)
-      clips.push(pcm)
-    }
+  const clips: Array<Uint8Array> = []
+  for (const wavPath of wavPaths) {
+    const pcm = yield* decodePcmWavFile(wavPath)
+    clips.push(pcm)
+  }
 
-    return clips
-  })
+  return clips
+})
 
-export const validateMinimumClips = (config: {
-  readonly dir: string
-  readonly label: string
-  readonly minimum: number
-}): Effect.Effect<void, WakewordTrainingError> =>
-  Effect.gen(function* () {
-    const wavPaths = yield* Effect.tryPromise({
-      try: () => sortedWavPaths(config.dir),
-      catch: (cause) =>
-        new WakewordTrainingError({
-          message: `Failed to list WAV files in ${config.dir}`,
-          cause,
-        }),
-    })
+export const validateMinimumClips = Effect.fn("pie/wakeword/training.validateMinimumClips")(
+  function* (config: {
+    readonly dir: string
+    readonly label: string
+    readonly minimum: number
+  }): Effect.fn.Return<void, WakewordTrainingError> {
+    const wavPaths = yield* sortedWavPaths(config.dir)
 
     if (wavPaths.length < config.minimum) {
       return yield* new WakewordTrainingError({
         message: `${config.label} dataset needs at least ${config.minimum} clips, found ${wavPaths.length} in ${config.dir}`,
       })
     }
-  })
+  },
+)
 
-export const saveTrainedWakewordModel = (
-  outputPath: string,
-  model: TrainedLinearWakewordModel,
-): Effect.Effect<void, WakewordTrainingError> =>
-  Effect.tryPromise({
-    try: async () => {
-      await fs.mkdir(path.dirname(outputPath), { recursive: true })
-      await fs.writeFile(outputPath, `${JSON.stringify(model, null, 2)}\n`, "utf8")
-    },
-    catch: (cause) =>
-      new WakewordTrainingError({
-        message: `Failed to save trained wakeword model to ${outputPath}`,
-        cause,
-      }),
-  })
+export const saveTrainedWakewordModel = Effect.fn("pie/wakeword/training.saveTrainedWakewordModel")(
+  function* (
+    outputPath: string,
+    model: TrainedLinearWakewordModel,
+  ): Effect.fn.Return<void, WakewordTrainingError> {
+    return yield* Effect.tryPromise({
+      try: async () => {
+        await fs.mkdir(path.dirname(outputPath), { recursive: true })
+        await fs.writeFile(outputPath, `${JSON.stringify(model, null, 2)}\n`, "utf8")
+      },
+      catch: (cause) =>
+        new WakewordTrainingError({
+          message: `Failed to save trained wakeword model to ${outputPath}`,
+          cause,
+        }),
+    })
+  },
+)

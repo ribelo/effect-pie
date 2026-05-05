@@ -1,10 +1,9 @@
 import * as Data from "effect/Data"
 import * as Effect from "effect/Effect"
-import * as Fiber from "effect/Fiber"
 import * as Queue from "effect/Queue"
 import * as Stream from "effect/Stream"
 
-import { PulseAudioClient } from "../pulse/client.js"
+import type { PulseAudioClient } from "../pulse/client.js"
 import { PA_SAMPLE_FORMAT, type RecordStreamOptions } from "../pulse/defs.js"
 import { createRecordStream } from "../pulse/stream.js"
 import {
@@ -52,17 +51,6 @@ export const createWakewordTelemetryStream = (
   Stream.unwrap(
     Effect.gen(function* () {
       const queue = yield* Queue.unbounded<WakewordTelemetryEvent>()
-      const client = yield* Effect.service(PulseAudioClient)
-
-      yield* client.connect().pipe(
-        Effect.mapError(
-          (cause) =>
-            new WakewordLiveError({
-              message: "Failed to connect to PulseAudio for wakeword telemetry",
-              cause,
-            }),
-        ),
-      )
 
       const processingEffect = createRecordStream({
         ...defaultRecordStream,
@@ -86,7 +74,7 @@ export const createWakewordTelemetryStream = (
                 frame,
               })
 
-              const triggerEvents = yield* config.trigger.processFrame(frame)
+              const triggerEvents = config.trigger.processFrame(frame)
               for (const event of triggerEvents) {
                 yield* Queue.offer(queue, {
                   type: "trigger",
@@ -98,7 +86,7 @@ export const createWakewordTelemetryStream = (
         ),
       )
 
-      const fiber = yield* Effect.matchEffect(processingEffect, {
+      yield* Effect.matchEffect(processingEffect, {
         onFailure: (cause) =>
           Queue.shutdown(queue).pipe(
             Effect.andThen(
@@ -111,12 +99,15 @@ export const createWakewordTelemetryStream = (
             ),
           ),
         onSuccess: () => Queue.shutdown(queue),
-      }).pipe(Effect.forkDetach)
+      }).pipe(Effect.forkScoped)
 
       yield* Effect.addFinalizer(() =>
-        Fiber.interrupt(fiber).pipe(
-          Effect.andThen(client.disconnect),
-          Effect.andThen(Queue.shutdown(queue)),
+        Queue.shutdown(queue).pipe(
+          Effect.tapError((cause) =>
+            Effect.logWarning("Wakeword live stream finalizer failed").pipe(
+              Effect.annotateLogs({ cause }),
+            ),
+          ),
           Effect.orElseSucceed(() => undefined),
         ),
       )

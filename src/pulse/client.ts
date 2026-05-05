@@ -7,6 +7,7 @@ import * as Layer from "effect/Layer"
 import * as Queue from "effect/Queue"
 import * as Ref from "effect/Ref"
 import * as Scope from "effect/Scope"
+import * as Semaphore from "effect/Semaphore"
 import * as Context from "effect/Context"
 import type * as Socket from "effect/unstable/socket/Socket"
 import { promises as fs } from "node:fs"
@@ -40,7 +41,7 @@ import {
   type ServerInfo,
   type SourceInfo,
 } from "./defs.js"
-import { decodePacketHeader } from "./protocol.js"
+import { concatBytes, decodePacketHeader } from "./protocol.js"
 
 export class PulseAudioClientError extends Data.TaggedError("PulseAudioClientError")<{
   readonly message: string
@@ -75,14 +76,14 @@ export type OpenRecordStream = {
 type Pending = Deferred.Deferred<Uint8Array, PulseAudioClientError>
 
 type Connection = {
-  readonly scope: Scope.Closeable
-  readonly writer: (
+  scope: Scope.Closeable
+  writer: (
     chunk: Uint8Array | string | Socket.CloseEvent,
   ) => Effect.Effect<void, Socket.SocketError>
-  readonly pending: Map<number, Pending>
-  readonly recordQueues: Map<number, Queue.Queue<Uint8Array>>
-  readonly socketPath: string
-  readonly requestTimeoutMs: number
+  pending: Map<number, Pending>
+  recordQueues: Map<number, Queue.Queue<Uint8Array>>
+  socketPath: string
+  requestTimeoutMs: number
   protocolVersion: number
   remainder: Uint8Array
 }
@@ -108,16 +109,6 @@ const loadCookie = Effect.tryPromise({
         }),
 })
 
-const appendChunk = (left: Uint8Array, right: Uint8Array): Uint8Array => {
-  if (left.length === 0) {
-    return right
-  }
-  const out = new Uint8Array(left.length + right.length)
-  out.set(left, 0)
-  out.set(right, left.length)
-  return out
-}
-
 const failPendingUnsafe = (connection: Connection, error: PulseAudioClientError): void => {
   for (const pending of connection.pending.values()) {
     Deferred.doneUnsafe(pending, Effect.fail(error))
@@ -134,39 +125,49 @@ const processCommandPacket = (connection: Connection, payload: Uint8Array): void
 
   connection.pending.delete(envelope.tag)
 
-  if (envelope.type === PA_COMMAND.REPLY) {
-    Deferred.doneUnsafe(pending, Effect.succeed(envelope.body))
-    return
+  switch (envelope.type) {
+    case PA_COMMAND.REPLY: {
+      Deferred.doneUnsafe(pending, Effect.succeed(envelope.body))
+      return
+    }
+    case PA_COMMAND.ERROR: {
+      const code = parseErrorCode(envelope.body)
+      const error =
+        code === null
+          ? new PulseAudioClientError({ message: "PulseAudio command failed" })
+          : new PulseAudioClientError({ message: "PulseAudio command failed", code })
+
+      Deferred.doneUnsafe(pending, Effect.fail(error))
+      return
+    }
+    default: {
+      Deferred.doneUnsafe(
+        pending,
+        Effect.fail(
+          new PulseAudioClientError({
+            message: `unsupported PulseAudio response type: ${envelope.type}`,
+          }),
+        ),
+      )
+    }
   }
-
-  if (envelope.type === PA_COMMAND.ERROR) {
-    const code = parseErrorCode(envelope.body)
-    const error =
-      code === null
-        ? new PulseAudioClientError({ message: "PulseAudio command failed" })
-        : new PulseAudioClientError({ message: "PulseAudio command failed", code })
-
-    Deferred.doneUnsafe(pending, Effect.fail(error))
-    return
-  }
-
-  Deferred.doneUnsafe(
-    pending,
-    Effect.fail(
-      new PulseAudioClientError({
-        message: `unsupported PulseAudio response type: ${envelope.type}`,
-      }),
-    ),
-  )
 }
 
-const processIncomingChunk = (connection: Connection, chunk: Uint8Array): void => {
-  let buffer = appendChunk(connection.remainder, chunk)
+export const processIncomingChunk = (connection: Connection, chunk: Uint8Array): void => {
+  let buffer = concatBytes([connection.remainder, chunk])
   let offset = 0
 
   while (buffer.length - offset >= PA_STREAM_DESCRIPTOR_SIZE) {
     const headerBytes = buffer.subarray(offset, offset + PA_STREAM_DESCRIPTOR_SIZE)
     const header = decodePacketHeader(headerBytes)
+
+    const MAX_PACKET_LENGTH = 256 * 1024
+    if (header.length > MAX_PACKET_LENGTH) {
+      throw new PulseAudioClientError({
+        message: `packet length ${header.length} exceeds max`,
+      })
+    }
+
     const packetLength = PA_STREAM_DESCRIPTOR_SIZE + header.length
 
     if (buffer.length - offset < packetLength) {
@@ -205,8 +206,6 @@ const shutdownRecordQueues = (connection: Connection): Effect.Effect<void> =>
 export class PulseAudioClient extends Context.Service<
   PulseAudioClient,
   {
-    readonly connect: (options?: ConnectOptions) => Effect.Effect<void, PulseAudioClientError>
-    readonly disconnect: Effect.Effect<void>
     readonly getServerInfo: Effect.Effect<ServerInfo, PulseAudioClientError>
     readonly listSources: Effect.Effect<ReadonlyArray<SourceInfo>, PulseAudioClientError>
     readonly openRecordStream: (
@@ -214,7 +213,10 @@ export class PulseAudioClient extends Context.Service<
     ) => Effect.Effect<OpenRecordStream, PulseAudioClientError>
     readonly closeRecordStream: (streamIndex: number) => Effect.Effect<void, PulseAudioClientError>
   }
->()("pie/pulse/PulseAudioClient") {}
+>()("pie/pulse/PulseAudioClient") {
+  static readonly layer = (config: PulseAudioClientConfig = {}): Layer.Layer<PulseAudioClient> =>
+    Layer.effect(PulseAudioClient)(make(config))
+}
 
 const makeConnection = (
   stateRef: Ref.Ref<Connection | null>,
@@ -226,49 +228,89 @@ const makeConnection = (
     const socketPath = options?.socketPath ?? defaults.socketPath ?? PA_DEFAULT_SOCKET_PATH
     const requestTimeoutMs = defaults.requestTimeoutMs ?? defaultRequestTimeoutMs
 
-    const socket = yield* NodeSocket.makeNet({ path: socketPath }).pipe(
-      Scope.provide(scope),
-      Effect.mapError(
-        (cause) =>
-          new PulseAudioClientError({
-            message: `failed to connect to PulseAudio socket at ${socketPath}`,
-            cause,
-          }),
-      ),
-    )
-
-    const writer = yield* socket.writer.pipe(Scope.provide(scope))
-
-    const connection: Connection = {
-      scope,
-      writer,
-      pending: new Map(),
-      recordQueues: new Map(),
-      socketPath,
-      requestTimeoutMs,
-      protocolVersion: 0,
-      remainder: new Uint8Array(),
-    }
-
-    yield* socket
-      .run((chunk) => Effect.sync(() => processIncomingChunk(connection, chunk)))
-      .pipe(
+    const connection = yield* Effect.gen(function* () {
+      const socket = yield* NodeSocket.makeNet({ path: socketPath }).pipe(
         Scope.provide(scope),
-        Effect.ensuring(
-          Effect.gen(function* () {
-            const disconnected = new PulseAudioClientError({
-              message: "PulseAudio connection closed",
-            })
-            failPendingUnsafe(connection, disconnected)
-            yield* shutdownRecordQueues(connection)
-            yield* Ref.update(stateRef, (current) => (current === connection ? null : current))
-          }),
+        Effect.mapError(
+          (cause) =>
+            new PulseAudioClientError({
+              message: `failed to connect to PulseAudio socket at ${socketPath}`,
+              cause,
+            }),
         ),
-        Effect.forkDetach,
       )
+
+      const writer = yield* socket.writer.pipe(Scope.provide(scope))
+
+      const connection: Connection = {
+        scope,
+        writer,
+        pending: new Map(),
+        recordQueues: new Map(),
+        socketPath,
+        requestTimeoutMs,
+        protocolVersion: 0,
+        remainder: new Uint8Array(),
+      }
+
+      yield* socket
+        .run((chunk) => Effect.sync(() => processIncomingChunk(connection, chunk)))
+        .pipe(
+          Scope.provide(scope),
+          Effect.ensuring(
+            Effect.gen(function* () {
+              const disconnected = new PulseAudioClientError({
+                message: "PulseAudio connection closed",
+              })
+              failPendingUnsafe(connection, disconnected)
+              yield* shutdownRecordQueues(connection)
+              yield* Ref.update(stateRef, (current) => (current === connection ? null : current))
+            }),
+          ),
+          Effect.forkIn(scope),
+        )
+
+      return connection
+    }).pipe(
+      Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
+    )
 
     return connection
   })
+
+export const awaitReply = Effect.fn("pie/pulse/PulseAudioClient.awaitReply")(function* (
+  connection: Connection,
+  packet: CommandPacket,
+): Effect.fn.Return<Uint8Array, PulseAudioClientError> {
+  const pending = yield* Deferred.make<Uint8Array, PulseAudioClientError>()
+  connection.pending.set(packet.tag, pending)
+
+  const writeResult = yield* connection.writer(packet.bytes).pipe(Effect.exit)
+  if (Exit.isFailure(writeResult)) {
+    connection.pending.delete(packet.tag)
+    return yield* new PulseAudioClientError({
+      message: "failed to send command to PulseAudio",
+      cause: writeResult.cause,
+    })
+  }
+
+  return yield* Deferred.await(pending).pipe(
+    Effect.timeoutOrElse({
+      duration: `${connection.requestTimeoutMs} millis`,
+      orElse: () =>
+        Effect.fail(
+          new PulseAudioClientError({
+            message: `timed out waiting for PulseAudio response to tag ${packet.tag}`,
+          }),
+        ),
+    }),
+    Effect.onExit(() =>
+      Effect.sync(() => {
+        connection.pending.delete(packet.tag)
+      }),
+    ),
+  )
+})
 
 const make = (defaults: PulseAudioClientConfig) =>
   Effect.gen(function* () {
@@ -280,13 +322,13 @@ const make = (defaults: PulseAudioClientConfig) =>
         return
       }
 
-      yield* Ref.set(stateRef, null)
       failPendingUnsafe(
         current,
         new PulseAudioClientError({ message: "PulseAudio connection closed by client" }),
       )
       yield* shutdownRecordQueues(current)
       yield* Scope.close(current.scope, Exit.void)
+      yield* Ref.set(stateRef, null)
     })
 
     const getConnection = Effect.flatMap(Ref.get(stateRef), (current) =>
@@ -294,41 +336,6 @@ const make = (defaults: PulseAudioClientConfig) =>
         ? Effect.fail(new PulseAudioClientError({ message: "PulseAudio client is not connected" }))
         : Effect.succeed(current),
     )
-
-    const awaitReply = (
-      connection: Connection,
-      packet: CommandPacket,
-    ): Effect.Effect<Uint8Array, PulseAudioClientError> =>
-      Effect.gen(function* () {
-        const pending = yield* Deferred.make<Uint8Array, PulseAudioClientError>()
-        connection.pending.set(packet.tag, pending)
-
-        const writeResult = yield* connection.writer(packet.bytes).pipe(Effect.exit)
-        if (Exit.isFailure(writeResult)) {
-          connection.pending.delete(packet.tag)
-          return yield* new PulseAudioClientError({
-            message: "failed to send command to PulseAudio",
-            cause: writeResult.cause,
-          })
-        }
-
-        return yield* Deferred.await(pending).pipe(
-          Effect.timeoutOrElse({
-            duration: `${connection.requestTimeoutMs} millis`,
-            orElse: () =>
-              Effect.fail(
-                new PulseAudioClientError({
-                  message: `timed out waiting for PulseAudio response to tag ${packet.tag}`,
-                }),
-              ),
-          }),
-          Effect.onExit(() =>
-            Effect.sync(() => {
-              connection.pending.delete(packet.tag)
-            }),
-          ),
-        )
-      })
 
     const invoke = <A>(
       packet: CommandPacket,
@@ -350,92 +357,112 @@ const make = (defaults: PulseAudioClientConfig) =>
         return parsed
       })
 
+    const connectSemaphore = yield* Semaphore.make(1)
+
     const connect = (options?: ConnectOptions): Effect.Effect<void, PulseAudioClientError> =>
-      Effect.gen(function* () {
-        const existing = yield* Ref.get(stateRef)
-        if (existing !== null) {
-          return
-        }
+      connectSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const existing = yield* Ref.get(stateRef)
+          if (existing !== null) {
+            return
+          }
 
-        const connection = yield* makeConnection(stateRef, defaults, options)
-        yield* Ref.set(stateRef, connection)
+          lastConnectOptions = options
+          const connection = yield* makeConnection(stateRef, defaults, options)
+          yield* Ref.set(stateRef, connection)
 
-        const protocolVersion =
-          options?.protocolVersion ?? defaults.protocolVersion ?? PA_NATIVE_PROTOCOL_VERSION
+          const protocolVersion =
+            options?.protocolVersion ?? defaults.protocolVersion ?? PA_NATIVE_PROTOCOL_VERSION
 
-        const cookie =
-          options?.cookie ??
-          (yield* loadCookie.pipe(
+          const cookie =
+            options?.cookie ??
+            (yield* loadCookie.pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PulseAudioClientError({
+                    message: cause.message,
+                    cause,
+                  }),
+              ),
+            ))
+
+          const authPacket = yield* buildAuthCommand(cookie, protocolVersion).pipe(
+            Effect.fromResult,
             Effect.mapError(
-              (cause) =>
+              (message) =>
                 new PulseAudioClientError({
-                  message: cause.message,
-                  cause,
+                  message: `failed to build auth command: ${message}`,
                 }),
             ),
-          ))
+          )
 
-        const authVersion = yield* awaitReply(
-          connection,
-          buildAuthCommand(cookie, protocolVersion),
-        ).pipe(
-          Effect.flatMap((payload) =>
-            Effect.try({
-              try: () => parseAuthResponse(payload),
-              catch: (cause) =>
+          const authVersion = yield* awaitReply(connection, authPacket).pipe(
+            Effect.flatMap((payload) =>
+              Effect.try({
+                try: () => parseAuthResponse(payload),
+                catch: (cause) =>
+                  new PulseAudioClientError({
+                    message: "failed to parse auth response",
+                    cause,
+                  }),
+              }),
+            ),
+          )
+
+          yield* parseProtocolCompatibility(authVersion).pipe(
+            Effect.fromResult,
+            Effect.mapError(
+              (message) =>
                 new PulseAudioClientError({
-                  message: "failed to parse auth response",
-                  cause,
+                  message: `incompatible PulseAudio protocol: ${message}`,
                 }),
-            }),
+            ),
+          )
+
+          connection.protocolVersion = authVersion
+
+          const clientName = options?.clientName ?? defaults.clientName ?? "pie"
+          yield* awaitReply(connection, buildSetClientNameCommand(clientName)).pipe(
+            Effect.flatMap((payload) =>
+              Effect.try({
+                try: () => parseSetClientNameResponse(payload),
+                catch: (cause) =>
+                  new PulseAudioClientError({
+                    message: "failed to parse set-client-name response",
+                    cause,
+                  }),
+              }),
+            ),
+            Effect.asVoid,
+          )
+        }).pipe(
+          Effect.catchIf(
+            (error): error is PulseAudioClientError => error instanceof PulseAudioClientError,
+            (error) => disconnectCurrent.pipe(Effect.andThen(Effect.fail(error))),
           ),
-        )
-
-        yield* Effect.try({
-          try: () => parseProtocolCompatibility(authVersion),
-          catch: (cause) =>
-            cause instanceof PulseAudioClientError
-              ? cause
-              : new PulseAudioClientError({
-                  message: "incompatible PulseAudio protocol",
-                  cause,
-                }),
-        })
-
-        connection.protocolVersion = authVersion
-
-        const clientName = options?.clientName ?? defaults.clientName ?? "pie"
-        yield* awaitReply(connection, buildSetClientNameCommand(clientName)).pipe(
-          Effect.flatMap((payload) =>
-            Effect.try({
-              try: () => parseSetClientNameResponse(payload),
-              catch: (cause) =>
-                new PulseAudioClientError({
-                  message: "failed to parse set-client-name response",
-                  cause,
-                }),
-            }),
-          ),
-          Effect.asVoid,
-        )
-      }).pipe(
-        Effect.catchIf(
-          (error): error is PulseAudioClientError => error instanceof PulseAudioClientError,
-          (error) => disconnectCurrent.pipe(Effect.andThen(Effect.fail(error))),
         ),
       )
 
-    const ensureConnection = Effect.flatMap(Ref.get(stateRef), (current) =>
-      current === null ? connect().pipe(Effect.andThen(getConnection)) : Effect.succeed(current),
-    )
+    let lastConnectOptions: ConnectOptions | undefined
 
-    const getServerInfo = ensureConnection.pipe(
-      Effect.flatMap(() => invoke(buildGetServerInfoCommand(), parseServerInfoResponse)),
-    )
+    const ensureConnection = Effect.gen(function* () {
+      const current = yield* Ref.get(stateRef)
+      if (current === null) {
+        yield* connect(lastConnectOptions)
+        return yield* getConnection
+      }
+      return current
+    })
 
-    const listSources = ensureConnection.pipe(
-      Effect.flatMap(() => invoke(buildGetSourceListCommand(), parseSourceListResponse)),
-    )
+    const getServerInfo = Effect.gen(function* () {
+      yield* ensureConnection
+      return yield* invoke(buildGetServerInfoCommand(), parseServerInfoResponse)
+    })
+
+    const listSources = Effect.gen(function* () {
+      yield* ensureConnection
+      return yield* invoke(buildGetSourceListCommand(), parseSourceListResponse)
+    })
 
     const openRecordStream = (
       options?: Partial<RecordStreamOptions>,
@@ -462,7 +489,10 @@ const make = (defaults: PulseAudioClientConfig) =>
         ).pipe(
           Effect.catchIf(
             (error) => error.code === 1,
-            () => Effect.void,
+            () =>
+              Effect.logWarning("Record stream already closed (PA_ERR_NOENTITY)").pipe(
+                Effect.asVoid,
+              ),
           ),
           Effect.asVoid,
         )
@@ -484,17 +514,10 @@ const make = (defaults: PulseAudioClientConfig) =>
 
     yield* Effect.addFinalizer(() => disconnectCurrent)
 
-    return {
-      connect,
-      disconnect: disconnectCurrent,
+    return PulseAudioClient.of({
       getServerInfo,
       listSources,
       openRecordStream,
       closeRecordStream,
-    }
+    })
   })
-
-export const layer = (config: PulseAudioClientConfig = {}): Layer.Layer<PulseAudioClient> =>
-  Layer.effect(PulseAudioClient)(make(config))
-
-export const PulseAudioClientLive = layer()

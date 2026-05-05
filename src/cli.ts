@@ -1,8 +1,8 @@
-import { NodeRuntime, NodeServices } from "@effect/platform-node"
+import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Effect, Layer } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 
-import { layer as pulseLayer } from "./pulse/client.js"
+import { PulseAudioClient } from "./pulse/client.js"
 import { layer as keyboardLayer } from "./keyboard/monitor.js"
 
 import { sourcesCommand } from "./commands/sources.js"
@@ -21,7 +21,7 @@ import { wakewordTuneCommand } from "./commands/wakewordTune.js"
 import { wakewordTrainCommand } from "./commands/wakewordTrain.js"
 import { runAssistantDefaultCommand } from "./commands/assistant.js"
 
-const rootCommand = Command.make(
+export const rootCommand = Command.make(
   "pie",
   {
     "ptt-transcribe-keysym": Flag.integer("ptt-transcribe-keysym").pipe(
@@ -35,7 +35,9 @@ const rootCommand = Command.make(
   },
   (config) => runAssistantDefaultCommand(config),
 ).pipe(
-  Command.withDescription("pie command line (no args runs combined wakeword + PTT assistant mode)"),
+  Command.withDescription(
+    "pie voice assistant (run without subcommands for combined wakeword + PTT mode)",
+  ),
   Command.withSubcommands([
     recordCommand,
     sourcesCommand,
@@ -52,8 +54,8 @@ const rootCommand = Command.make(
   ]),
 )
 
-const runtimeLayer = Layer.merge(NodeServices.layer, Layer.merge(pulseLayer(), keyboardLayer))
+const runtimeLayer = Layer.mergeAll(BunServices.layer, PulseAudioClient.layer(), keyboardLayer)
 
 const main = Command.run(rootCommand, { version: "0.1.0" }).pipe(Effect.provide(runtimeLayer))
 
-NodeRuntime.runMain(main)
+BunRuntime.runMain(main)

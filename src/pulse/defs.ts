@@ -123,13 +123,13 @@ export type SourceInfo = {
 }
 
 export type ServerInfo = {
-  readonly name: string
-  readonly version: string
-  readonly username: string
-  readonly hostname: string
+  readonly name: string | null
+  readonly version: string | null
+  readonly username: string | null
+  readonly hostname: string | null
   readonly sampleSpec: SampleSpec
-  readonly defaultSink: string
-  readonly defaultSource: string
+  readonly defaultSink: string | null
+  readonly defaultSource: string | null
   readonly cookie: number
   readonly defaultChannelMap: ChannelMap
 }

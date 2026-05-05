@@ -16,32 +16,6 @@ const resolveTranscriptionPromptPath = (configPath: string): string =>
 const resolveTranslationPromptPath = (configPath: string): string =>
   path.join(resolvePromptsDir(configPath), "translation.md")
 
-const DEFAULT_TRANSCRIPTION_PROMPT = `Transcribe the spoken audio in {{language}}.
-
-Rules:
-- Preserve the speaker's wording, intent, tone, and style, even when blunt, harsh, or informal.
-- Preserve mixed Polish/English speech instead of normalizing it to one language.
-- Keep commands, CLI flags, identifiers, API names, package names, filenames, paths, product names, and code tokens unchanged.
-- Do not translate the audio.
-- Use best effort to recover the intended wording when technical speech is unclear, but do not invent meaning that is not supported by the audio.
-- Return only the transcription.
-`
-
-const DEFAULT_TRANSLATION_PROMPT = `Translate the spoken audio from {{source_language}} to {{target_language}}.
-
-Rules:
-- Preserve the speaker's intent, tone, and style, even when blunt, harsh, or informal.
-- Handle mixed Polish/English technical speech naturally.
-- Keep commands, CLI flags, identifiers, API names, package names, filenames, paths, product names, and code tokens unchanged.
-- Keep English technical terms in English when translating them would sound unnatural or reduce clarity.
-- If the audio contains a span that starts with \`dodatkowe instrukcje\` and ends with \`koniec instrukcji\`, treat that span as extra translation instructions for the rest of the utterance.
-- Do not include the \`dodatkowe instrukcje ... koniec instrukcji\` span in the translated output.
-- If those markers are unbalanced or ambiguous, ignore the control-span rule and translate the audio literally instead.
-- Translate surrounding prose clearly and faithfully.
-- Use best effort to resolve mixed-language phrasing from context, but do not invent meaning that is not supported by the audio.
-- Return only the translation.
-`
-
 export type SttRuntimeConfig = {
   readonly schemaVersion: 1
   readonly openrouter: {
@@ -59,126 +33,42 @@ export type SttRuntimeConfig = {
   readonly translationPrompt: string
 }
 
-export const defaultSttRuntimeConfig: SttRuntimeConfig = {
-  schemaVersion: 1,
-  openrouter: {
-    transcriptionModel: "mistralai/voxtral-small-24b-2507",
-    translationModel: "google/gemini-3-flash-preview",
-    transcriptionLanguage: "English",
-    translationSourceLanguage: "English",
-    translationTargetLanguage: "English",
-    wakewordEnabled: true,
-    wakewordDictationSilenceSeconds: 3,
-    wakewordDictationMaxSeconds: 120,
-    wakewordDictationSpeechRmsThreshold: 0.01,
-  },
-  transcriptionPrompt: DEFAULT_TRANSCRIPTION_PROMPT,
-  translationPrompt: DEFAULT_TRANSLATION_PROMPT,
-}
-
 export class SttConfigError extends Data.TaggedError("SttConfigError")<{
   readonly message: string
   readonly cause?: unknown
 }> {}
 
-const hasNonEmptyString = (value: unknown): value is string =>
-  typeof value === "string" && value.trim().length > 0
-
-const hasPositiveFiniteNumber = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value) && value > 0
-
-const hasBoolean = (value: unknown): value is boolean => typeof value === "boolean"
-
 const isErrnoException = (cause: unknown): cause is NodeJS.ErrnoException =>
   isRecord(cause) && typeof cause["code"] === "string"
 
-const isSttRuntimeConfig = (value: unknown): value is SttRuntimeConfig => {
-  if (!isRecord(value)) {
-    return false
-  }
-
-  const config = value
-  const openrouter = config["openrouter"]
-
-  if (config["schemaVersion"] !== 1 || !isRecord(openrouter)) {
-    return false
-  }
-
-  const section = openrouter
-  return (
-    hasNonEmptyString(section["transcriptionModel"]) &&
-    hasNonEmptyString(section["translationModel"]) &&
-    hasNonEmptyString(section["transcriptionLanguage"]) &&
-    hasNonEmptyString(section["translationSourceLanguage"]) &&
-    hasNonEmptyString(section["translationTargetLanguage"]) &&
-    hasBoolean(section["wakewordEnabled"]) &&
-    hasPositiveFiniteNumber(section["wakewordDictationSilenceSeconds"]) &&
-    hasPositiveFiniteNumber(section["wakewordDictationMaxSeconds"]) &&
-    hasPositiveFiniteNumber(section["wakewordDictationSpeechRmsThreshold"])
-  )
-}
-
-const normalizeSttRuntimeConfig = (config: SttRuntimeConfig): SttRuntimeConfig => ({
-  schemaVersion: 1,
-  openrouter: {
-    transcriptionModel: config.openrouter.transcriptionModel.trim(),
-    translationModel: config.openrouter.translationModel.trim(),
-    transcriptionLanguage: config.openrouter.transcriptionLanguage.trim(),
-    translationSourceLanguage: config.openrouter.translationSourceLanguage.trim(),
-    translationTargetLanguage: config.openrouter.translationTargetLanguage.trim(),
-    wakewordEnabled: config.openrouter.wakewordEnabled,
-    wakewordDictationSilenceSeconds: config.openrouter.wakewordDictationSilenceSeconds,
-    wakewordDictationMaxSeconds: config.openrouter.wakewordDictationMaxSeconds,
-    wakewordDictationSpeechRmsThreshold: config.openrouter.wakewordDictationSpeechRmsThreshold,
-  },
-  transcriptionPrompt: config.transcriptionPrompt?.trim() ?? DEFAULT_TRANSCRIPTION_PROMPT,
-  translationPrompt: config.translationPrompt?.trim() ?? DEFAULT_TRANSLATION_PROMPT,
+const SttRuntimeConfigSchema = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  openrouter: Schema.Struct({
+    transcriptionModel: Schema.NonEmptyString,
+    translationModel: Schema.NonEmptyString,
+    transcriptionLanguage: Schema.NonEmptyString,
+    translationSourceLanguage: Schema.NonEmptyString,
+    translationTargetLanguage: Schema.NonEmptyString,
+    wakewordEnabled: Schema.Boolean,
+    wakewordDictationSilenceSeconds: Schema.Number.check(Schema.isGreaterThan(0)),
+    wakewordDictationMaxSeconds: Schema.Number.check(Schema.isGreaterThan(0)),
+    wakewordDictationSpeechRmsThreshold: Schema.Number.check(Schema.isGreaterThan(0)),
+  }),
+  transcriptionPrompt: Schema.optional(Schema.String),
+  translationPrompt: Schema.optional(Schema.String),
 })
 
-const parseSttRuntimeConfig = (value: unknown): SttRuntimeConfig | undefined => {
-  if (isSttRuntimeConfig(value)) {
-    return normalizeSttRuntimeConfig(value)
-  }
-
-  return undefined
-}
-
-const writeConfigFile = (
-  configPath: string,
-  config: SttRuntimeConfig,
-): Effect.Effect<void, SttConfigError> =>
-  Effect.tryPromise({
-    try: async () => {
-      await fs.mkdir(path.dirname(configPath), { recursive: true })
-      await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8")
-    },
-    catch: (cause) =>
-      new SttConfigError({
-        message: `Failed to write STT config at ${configPath}`,
-        cause,
-      }),
-  })
-
-const ensurePromptFile = (
-  promptPath: string,
-  defaultContent: string,
-): Effect.Effect<void, SttConfigError> =>
-  Effect.tryPromise({
-    try: async () => {
-      try {
-        await fs.access(promptPath)
-        return
-      } catch {
-        await fs.mkdir(path.dirname(promptPath), { recursive: true })
-        await fs.writeFile(promptPath, defaultContent, "utf8")
-      }
-    },
-    catch: (cause) =>
-      new SttConfigError({
-        message: `Failed to bootstrap prompt file at ${promptPath}`,
-        cause,
-      }),
-  })
+const normalizeSttRuntimeConfig = (config: {
+  readonly schemaVersion: 1
+  readonly openrouter: SttRuntimeConfig["openrouter"]
+  readonly transcriptionPrompt?: string | undefined
+  readonly translationPrompt?: string | undefined
+}): SttRuntimeConfig => ({
+  schemaVersion: 1,
+  openrouter: config.openrouter,
+  transcriptionPrompt: config.transcriptionPrompt?.trim() ?? "",
+  translationPrompt: config.translationPrompt?.trim() ?? "",
+})
 
 const readPromptFile = (promptPath: string): Effect.Effect<string, SttConfigError> =>
   Effect.tryPromise({
@@ -218,81 +108,79 @@ const validateTranslationPrompt = (content: string): string | undefined => {
   return undefined
 }
 
-export const loadSttRuntimeConfig = (
-  configPath = STT_CONFIG_PATH,
-): Effect.Effect<SttRuntimeConfig, SttConfigError> =>
-  Effect.gen(function* () {
-    const transcriptionPromptPath = resolveTranscriptionPromptPath(configPath)
-    const translationPromptPath = resolveTranslationPromptPath(configPath)
+export const loadSttRuntimeConfig = Effect.fn("pie/stt/config.loadSttRuntimeConfig")(function* (
+  configPath: string = STT_CONFIG_PATH,
+): Effect.fn.Return<SttRuntimeConfig, SttConfigError> {
+  const transcriptionPromptPath = resolveTranscriptionPromptPath(configPath)
+  const translationPromptPath = resolveTranslationPromptPath(configPath)
 
-    const raw = yield* Effect.tryPromise({
-      try: async (): Promise<string | undefined> => {
-        try {
-          return await fs.readFile(configPath, "utf8")
-        } catch (cause) {
-          if (isErrnoException(cause) && cause.code === "ENOENT") {
-            return undefined
-          }
-
-          throw cause
+  const raw = yield* Effect.tryPromise({
+    try: async (): Promise<string | undefined> => {
+      try {
+        return await fs.readFile(configPath, "utf8")
+      } catch (cause) {
+        if (isErrnoException(cause) && cause.code === "ENOENT") {
+          return undefined
         }
-      },
-      catch: (cause) =>
+
+        throw cause
+      }
+    },
+    catch: (cause) =>
+      new SttConfigError({
+        message: `Failed to load STT config from ${configPath}`,
+        cause,
+      }),
+  })
+
+  if (raw === undefined) {
+    return yield* new SttConfigError({
+      message: `STT config file not found at ${configPath}. Create it with explicit configuration.`,
+    })
+  }
+
+  const parsedJson = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(raw).pipe(
+    Effect.mapError(
+      (cause) =>
         new SttConfigError({
-          message: `Failed to load STT config from ${configPath}`,
+          message: `Failed to parse STT config JSON from ${configPath}`,
           cause,
         }),
+    ),
+  )
+
+  const parsed = yield* Schema.decodeUnknownEffect(SttRuntimeConfigSchema)(parsedJson).pipe(
+    Effect.mapError(
+      (cause) =>
+        new SttConfigError({
+          message: `Unrecognized STT config at ${configPath}.`,
+          cause,
+        }),
+    ),
+  )
+
+  const config = normalizeSttRuntimeConfig(parsed)
+
+  const transcriptionPrompt = yield* readPromptFile(transcriptionPromptPath)
+  const translationPrompt = yield* readPromptFile(translationPromptPath)
+
+  const transcriptionError = validateTranscriptionPrompt(transcriptionPrompt)
+  if (transcriptionError !== undefined) {
+    return yield* new SttConfigError({
+      message: `Invalid transcription prompt at ${transcriptionPromptPath}: ${transcriptionError}`,
     })
+  }
 
-    let config: SttRuntimeConfig
+  const translationError = validateTranslationPrompt(translationPrompt)
+  if (translationError !== undefined) {
+    return yield* new SttConfigError({
+      message: `Invalid translation prompt at ${translationPromptPath}: ${translationError}`,
+    })
+  }
 
-    if (raw !== undefined) {
-      const parsedJson = yield* Schema.decodeUnknownEffect(Schema.UnknownFromJsonString)(raw).pipe(
-        Effect.mapError(
-          (cause) =>
-            new SttConfigError({
-              message: `Failed to parse STT config JSON from ${configPath}`,
-              cause,
-            }),
-        ),
-      )
-
-      const parsed = parseSttRuntimeConfig(parsedJson)
-      if (parsed !== undefined) {
-        config = parsed
-      } else {
-        return yield* new SttConfigError({
-          message: `Unrecognized STT config at ${configPath}. Delete ${configPath} and let the runtime recreate it from defaults.`,
-        })
-      }
-    } else {
-      config = normalizeSttRuntimeConfig(defaultSttRuntimeConfig)
-      yield* writeConfigFile(configPath, config)
-    }
-
-    yield* ensurePromptFile(transcriptionPromptPath, DEFAULT_TRANSCRIPTION_PROMPT)
-    yield* ensurePromptFile(translationPromptPath, DEFAULT_TRANSLATION_PROMPT)
-
-    const transcriptionPrompt = yield* readPromptFile(transcriptionPromptPath)
-    const translationPrompt = yield* readPromptFile(translationPromptPath)
-
-    const transcriptionError = validateTranscriptionPrompt(transcriptionPrompt)
-    if (transcriptionError !== undefined) {
-      return yield* new SttConfigError({
-        message: `Invalid transcription prompt at ${transcriptionPromptPath}: ${transcriptionError}`,
-      })
-    }
-
-    const translationError = validateTranslationPrompt(translationPrompt)
-    if (translationError !== undefined) {
-      return yield* new SttConfigError({
-        message: `Invalid translation prompt at ${translationPromptPath}: ${translationError}`,
-      })
-    }
-
-    return {
-      ...config,
-      transcriptionPrompt,
-      translationPrompt,
-    }
-  })
+  return {
+    ...config,
+    transcriptionPrompt,
+    translationPrompt,
+  }
+})

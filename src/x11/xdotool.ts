@@ -1,15 +1,11 @@
-import { Effect } from "effect"
+import { Data, Effect } from "effect"
 import { readStreamText } from "../utils/subprocess.js"
 
-export class XdotoolError extends Error {
-  readonly stderr: string | undefined
-
-  constructor(message: string, options?: { readonly cause?: unknown; readonly stderr?: string }) {
-    super(message, options?.cause === undefined ? undefined : { cause: options.cause })
-    this.name = "XdotoolError"
-    this.stderr = options?.stderr
-  }
-}
+export class XdotoolError extends Data.TaggedError("XdotoolError")<{
+  readonly message: string
+  readonly cause?: unknown
+  readonly stderr?: string
+}> {}
 export const buildXdotoolCommandArgs = (xdotoolExecutable: string, text: string): Array<string> => [
   xdotoolExecutable,
   "type",
@@ -18,54 +14,76 @@ export const buildXdotoolCommandArgs = (xdotoolExecutable: string, text: string)
   text,
 ]
 
-const findXdotoolExecutable = Effect.try({
-  try: () => {
-    const executable = Bun.which("xdotool")
-    if (executable === null) {
-      throw new XdotoolError("xdotool is required for X11 text injection but was not found in PATH")
-    }
+const findXdotoolExecutable = Effect.sync(() => Bun.which("xdotool")).pipe(
+  Effect.flatMap((executable) =>
+    executable === null
+      ? Effect.fail(
+          new XdotoolError({
+            message: "xdotool is required for X11 text injection but was not found in PATH",
+          }),
+        )
+      : Effect.succeed(executable),
+  ),
+)
 
-    return executable
-  },
-  catch: (cause) =>
-    cause instanceof XdotoolError
-      ? cause
-      : new XdotoolError("Failed to resolve xdotool", { cause }),
-})
+export const typeTextWithXdotool = Effect.fn("pie/x11/xdotool.typeTextWithXdotool")(function* (
+  text: string,
+): Effect.fn.Return<void, XdotoolError> {
+  const xdotoolExecutable = yield* findXdotoolExecutable
 
-export const typeTextWithXdotool = (text: string): Effect.Effect<void, XdotoolError> =>
-  Effect.gen(function* () {
-    const xdotoolExecutable = yield* findXdotoolExecutable
+  const commandArgs = buildXdotoolCommandArgs(xdotoolExecutable, text)
 
-    const commandArgs = buildXdotoolCommandArgs(xdotoolExecutable, text)
+  yield* Effect.tryPromise({
+    try: async () => {
+      const process = Bun.spawn(commandArgs, {
+        stdout: "pipe",
+        stderr: "pipe",
+      })
 
-    yield* Effect.tryPromise({
-      try: async () => {
-        const process = Bun.spawn(commandArgs, {
-          stdout: "pipe",
-          stderr: "pipe",
-        })
+      let timeout: ReturnType<typeof setTimeout> | undefined
 
-        const [exitCode, stderr] = await Promise.all([
-          process.exited,
-          readStreamText(process.stderr),
+      try {
+        const [exitCode, _stdout, stderr] = await Promise.race([
+          Promise.all([
+            process.exited,
+            readStreamText(process.stdout),
+            readStreamText(process.stderr),
+          ]),
+          new Promise<never>((_resolve, reject) => {
+            timeout = setTimeout(() => {
+              try {
+                process.kill()
+              } catch {
+                // ignore
+              }
+              reject(
+                new XdotoolError({
+                  message: "xdotool timed out after 30000ms",
+                }),
+              )
+            }, 30_000)
+          }),
         ])
 
         if (exitCode !== 0) {
           const details = stderr.trim()
-          throw new XdotoolError(
-            details.length > 0
-              ? `xdotool failed with exit code ${exitCode}: ${details}`
-              : `xdotool failed with exit code ${exitCode}`,
-            {
-              stderr,
-            },
-          )
+          throw new XdotoolError({
+            message:
+              details.length > 0
+                ? `xdotool failed with exit code ${exitCode}: ${details}`
+                : `xdotool failed with exit code ${exitCode}`,
+            stderr,
+          })
         }
-      },
-      catch: (cause) =>
-        cause instanceof XdotoolError
-          ? cause
-          : new XdotoolError("Failed to execute xdotool", { cause }),
-    })
+      } finally {
+        if (timeout !== undefined) {
+          clearTimeout(timeout)
+        }
+      }
+    },
+    catch: (cause) =>
+      cause instanceof XdotoolError
+        ? cause
+        : new XdotoolError({ message: "Failed to execute xdotool", cause }),
   })
+})

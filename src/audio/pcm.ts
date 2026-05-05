@@ -1,3 +1,15 @@
+export const decodeS16leSamples = (pcmBytes: Uint8Array): Int16Array => {
+  const sampleCount = Math.floor(pcmBytes.length / 2)
+  const view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, sampleCount * 2)
+  const samples = new Int16Array(sampleCount)
+
+  for (let index = 0; index < sampleCount; index += 1) {
+    samples[index] = view.getInt16(index * 2, true)
+  }
+
+  return samples
+}
+
 export const DEFAULT_AUTO_GAIN_TARGET_RMS = 0.12
 export const DEFAULT_AUTO_GAIN_MAX = 40.0
 export const DEFAULT_AUTO_GAIN_PEAK_LIMIT = 0.95
@@ -6,41 +18,39 @@ export const MIN_GAIN_TO_APPLY = 1.05
 export const PTT_MIN_CAPTURE_RMS_FOR_STT = 0.003
 export const PTT_MIN_CAPTURE_PEAK_FOR_STT = 0.02
 
-export const pcmRms = (chunk: Uint8Array): number => {
+const withS16leView = <A>(
+  chunk: Uint8Array,
+  f: (view: DataView, sampleCount: number) => A,
+): A | undefined => {
   const sampleCount = Math.floor(chunk.length / 2)
   if (sampleCount <= 0) {
-    return 0
+    return undefined
   }
-
   const view = new DataView(chunk.buffer, chunk.byteOffset, sampleCount * 2)
-  let sumSquares = 0
-
-  for (let index = 0; index < sampleCount; index += 1) {
-    const sample = view.getInt16(index * 2, true) / 32768
-    sumSquares += sample * sample
-  }
-
-  return Math.sqrt(sumSquares / sampleCount)
+  return f(view, sampleCount)
 }
 
-export const pcmPeak = (chunk: Uint8Array): number => {
-  const sampleCount = Math.floor(chunk.length / 2)
-  if (sampleCount <= 0) {
-    return 0
-  }
-
-  const view = new DataView(chunk.buffer, chunk.byteOffset, sampleCount * 2)
-  let peak = 0
-
-  for (let index = 0; index < sampleCount; index += 1) {
-    const normalized = Math.abs(view.getInt16(index * 2, true) / 32768)
-    if (normalized > peak) {
-      peak = normalized
+export const pcmRms = (chunk: Uint8Array): number =>
+  withS16leView(chunk, (view, sampleCount) => {
+    let sumSquares = 0
+    for (let index = 0; index < sampleCount; index += 1) {
+      const sample = view.getInt16(index * 2, true) / 32768
+      sumSquares += sample * sample
     }
-  }
+    return Math.sqrt(sumSquares / sampleCount)
+  }) ?? 0
 
-  return peak
-}
+export const pcmPeak = (chunk: Uint8Array): number =>
+  withS16leView(chunk, (view, sampleCount) => {
+    let peak = 0
+    for (let index = 0; index < sampleCount; index += 1) {
+      const normalized = Math.abs(view.getInt16(index * 2, true) / 32768)
+      if (normalized > peak) {
+        peak = normalized
+      }
+    }
+    return peak
+  }) ?? 0
 
 export const computeNormalizationGain = (config: {
   readonly pcmBytes: Uint8Array

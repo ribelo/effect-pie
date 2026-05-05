@@ -3,9 +3,10 @@ import * as assert from "node:assert/strict"
 import { Effect, Exit } from "effect"
 
 import {
-  decodeStructuredTransciption,
+  decodeStructuredTranscription,
   decodeStructuredTranslation,
   encodePcm16MonoWav,
+  patchServiceTier,
   patchSystemFingerprint,
   renderTemplate,
   TRANSCRIPTION_JSON_SCHEMA,
@@ -22,18 +23,22 @@ test("encodePcm16MonoWav writes a RIFF/WAVE payload", () => {
   assert.strictEqual(String.fromCharCode(...wav.slice(36, 40)), "data")
 })
 
-test("decodeStructuredTransciption reads the transcription field", async () => {
-  const decoded = await Effect.runPromise(decodeStructuredTransciption('{"transcription":"hello"}'))
+test("decodeStructuredTranscription reads the transcription field", async () => {
+  const decoded = await Effect.runPromise(
+    decodeStructuredTranscription('{"transcription":"hello"}'),
+  )
   assert.strictEqual(decoded, "hello")
 })
 
-test("decodeStructuredTransciption rejects legacy transciption alias", async () => {
-  const exit = await Effect.runPromiseExit(decodeStructuredTransciption('{"transciption":"hello"}'))
+test("decodeStructuredTranscription rejects legacy transciption alias", async () => {
+  const exit = await Effect.runPromiseExit(
+    decodeStructuredTranscription('{"transciption":"hello"}'),
+  )
   assert.strictEqual(Exit.isFailure(exit), true)
 })
 
-test("decodeStructuredTransciption fails when transcription field is missing", async () => {
-  const exit = await Effect.runPromiseExit(decodeStructuredTransciption('{"text":"hello"}'))
+test("decodeStructuredTranscription fails when transcription field is missing", async () => {
+  const exit = await Effect.runPromiseExit(decodeStructuredTranscription('{"text":"hello"}'))
 
   assert.strictEqual(Exit.isFailure(exit), true)
 })
@@ -82,8 +87,8 @@ test("TRANSLATION_JSON_SCHEMA requires translation string field", () => {
   assert.strictEqual(TRANSLATION_JSON_SCHEMA.properties.translation.type, "string")
 })
 
-test("decodeStructuredTransciption fails without raw fallback for malformed JSON", async () => {
-  const exit = await Effect.runPromiseExit(decodeStructuredTransciption("not valid json"))
+test("decodeStructuredTranscription fails without raw fallback for malformed JSON", async () => {
+  const exit = await Effect.runPromiseExit(decodeStructuredTranscription("not valid json"))
   assert.strictEqual(Exit.isFailure(exit), true)
 })
 
@@ -111,4 +116,20 @@ test("patchSystemFingerprint leaves non-record untouched", () => {
   assert.strictEqual(patchSystemFingerprint("raw text"), "raw text")
   assert.strictEqual(patchSystemFingerprint(42), 42)
   assert.deepStrictEqual(patchSystemFingerprint(null), null)
+})
+
+test("patchServiceTier strips service_tier field", () => {
+  const patched = patchServiceTier({ service_tier: "standard", choices: [] })
+  assert.deepStrictEqual(patched, { choices: [] })
+})
+
+test("patchServiceTier leaves record without service_tier untouched", () => {
+  const patched = patchServiceTier({ choices: [] })
+  assert.deepStrictEqual(patched, { choices: [] })
+})
+
+test("patchServiceTier leaves non-record untouched", () => {
+  assert.strictEqual(patchServiceTier("raw text"), "raw text")
+  assert.strictEqual(patchServiceTier(42), 42)
+  assert.deepStrictEqual(patchServiceTier(null), null)
 })

@@ -1,6 +1,7 @@
 import * as Data from "effect/Data"
 import * as Effect from "effect/Effect"
 
+import { decodeS16leSamples } from "../audio/pcm.js"
 import {
   OPENWAKEWORD_FEATURE_HISTORY_FRAMES,
   OPENWAKEWORD_LOOKBACK_SAMPLES,
@@ -12,7 +13,7 @@ import {
   OPENWAKEWORD_SAMPLE_RATE,
   type WakewordScoreFrame,
 } from "./defs.js"
-import type { OnnxSession, WakewordModelSessions, WakewordRuntimeError } from "./onnx.js"
+import type { OnnxSession, WakewordModelSessions } from "./onnx.js"
 import { flattenMatrix, toFrameMatrix, transformMelspectrogram } from "./signal.js"
 
 export class WakewordPipelineError extends Data.TaggedError("WakewordPipelineError")<{
@@ -83,21 +84,7 @@ const trimArrayInPlace = (target: Array<unknown>, maxLength: number): void => {
   target.splice(0, target.length - maxLength)
 }
 
-const toPcmSamples = (bytes: Uint8Array): Int16Array => {
-  const sampleCount = Math.floor(bytes.length / OPENWAKEWORD_PCM_BYTES_PER_SAMPLE)
-  const view = new DataView(
-    bytes.buffer,
-    bytes.byteOffset,
-    sampleCount * OPENWAKEWORD_PCM_BYTES_PER_SAMPLE,
-  )
-
-  const samples = new Int16Array(sampleCount)
-  for (let index = 0; index < sampleCount; index += 1) {
-    samples[index] = view.getInt16(index * OPENWAKEWORD_PCM_BYTES_PER_SAMPLE, true)
-  }
-
-  return samples
-}
+const toPcmSamples = (bytes: Uint8Array): Int16Array => decodeS16leSamples(bytes)
 
 const concatInt16 = (left: Int16Array, right: Int16Array): Int16Array => {
   if (left.length === 0) {
@@ -113,67 +100,46 @@ const concatInt16 = (left: Int16Array, right: Int16Array): Int16Array => {
   return out
 }
 
-const runSession = (
+const runSessionHot = async (
   session: OnnxSession,
   inputData: Float32Array,
   inputDims: ReadonlyArray<number>,
-): Effect.Effect<Float32Array, WakewordPipelineError> =>
-  session
-    .run({
+  errorMessage: string,
+): Promise<Float32Array> => {
+  try {
+    const output = await session.runPromise({
       data: inputData,
       dims: inputDims,
     })
-    .pipe(
-      Effect.map((output) => output.data),
-      Effect.mapError(
-        (cause: WakewordRuntimeError) =>
-          new WakewordPipelineError({
-            message: "Wakeword ONNX inference failed",
-            cause,
-          }),
-      ),
-    )
+    return output.data
+  } catch (cause) {
+    throw new WakewordPipelineError({
+      message: errorMessage,
+      cause,
+    })
+  }
+}
 
-export const makeWakewordPipeline = (
-  models: WakewordModelSessions,
-  config: WakewordPipelineConfig = {},
-): Effect.Effect<WakewordPipeline> =>
-  Effect.sync(() => {
-    const resolved = resolveConfig(config)
+export const makeWakewordPipeline = Effect.fn("pie/wakeword/pipeline.makeWakewordPipeline")(
+  function* (
+    models: WakewordModelSessions,
+    config: WakewordPipelineConfig = {},
+  ): Effect.fn.Return<WakewordPipeline> {
+    return yield* Effect.sync(() => {
+      const resolved = resolveConfig(config)
 
-    const state: PipelineState = {
-      byteRemainder: new Uint8Array(),
-      sampleRemainder: new Int16Array(),
-      rawSampleBuffer: [],
-      melBuffer: makeInitialMelBuffer(resolved.melWindowFrames, resolved.melBins),
-      featureBuffer: [],
-      totalProcessedSamples: 0,
-    }
+      const state: PipelineState = {
+        byteRemainder: new Uint8Array(),
+        sampleRemainder: new Int16Array(),
+        rawSampleBuffer: [],
+        melBuffer: makeInitialMelBuffer(resolved.melWindowFrames, resolved.melBins),
+        featureBuffer: [],
+        totalProcessedSamples: 0,
+      }
 
-    const feedPcmChunk = (
-      chunk: Uint8Array,
-    ): Effect.Effect<ReadonlyArray<WakewordScoreFrame>, WakewordPipelineError> =>
-      Effect.gen(function* () {
-        const merged =
-          state.byteRemainder.length === 0
-            ? chunk
-            : Uint8Array.from([...state.byteRemainder, ...chunk])
-
-        const alignedLength = merged.length - (merged.length % OPENWAKEWORD_PCM_BYTES_PER_SAMPLE)
-        const aligned = merged.slice(0, alignedLength)
-        state.byteRemainder = merged.slice(alignedLength)
-
-        if (aligned.length === 0) {
-          return []
-        }
-
-        return yield* feedPcmSamples(toPcmSamples(aligned))
-      })
-
-    const feedPcmSamples = (
-      incoming: Int16Array,
-    ): Effect.Effect<ReadonlyArray<WakewordScoreFrame>, WakewordPipelineError> =>
-      Effect.gen(function* () {
+      const feedPcmSamplesPromise = async (
+        incoming: Int16Array,
+      ): Promise<ReadonlyArray<WakewordScoreFrame>> => {
         const mergedSamples = concatInt16(state.sampleRemainder, incoming)
         const processableSamples =
           mergedSamples.length - (mergedSamples.length % resolved.frameSamples)
@@ -207,7 +173,12 @@ export const makeWakewordPipeline = (
           )
 
           const melInput = Float32Array.from(bufferedInput)
-          const melOutput = yield* runSession(models.melspectrogram, melInput, [1, melInput.length])
+          const melOutput = await runSessionHot(
+            models.melspectrogram,
+            melInput,
+            [1, melInput.length],
+            "Wakeword melspectrogram inference failed",
+          )
           const transformed = transformMelspectrogram(melOutput)
           const melFrames = toFrameMatrix(transformed, resolved.melBins)
 
@@ -220,12 +191,12 @@ export const makeWakewordPipeline = (
           }
 
           const embeddingInput = flattenMatrix(melWindow)
-          const embeddingOutput = yield* runSession(models.embedding, embeddingInput, [
-            1,
-            resolved.melWindowFrames,
-            resolved.melBins,
-            1,
-          ])
+          const embeddingOutput = await runSessionHot(
+            models.embedding,
+            embeddingInput,
+            [1, resolved.melWindowFrames, resolved.melBins, 1],
+            "Wakeword embedding inference failed",
+          )
 
           const embeddingVector =
             embeddingOutput.length === 0 ? new Float32Array() : embeddingOutput
@@ -253,20 +224,19 @@ export const makeWakewordPipeline = (
               model.expectedFeatureSize !== undefined &&
               model.expectedFeatureSize !== actualFeatureSize
             ) {
-              continue
+              throw new WakewordPipelineError({
+                message: `Wakeword model '${name}' feature size mismatch: expected ${model.expectedFeatureSize}, got ${actualFeatureSize}`,
+              })
             }
 
-            const score = yield* model.score(featureWindow).pipe(
-              Effect.mapError(
-                (cause: WakewordRuntimeError) =>
-                  new WakewordPipelineError({
-                    message: "Wakeword scoring model inference failed",
-                    cause,
-                  }),
-              ),
-            )
-
-            scores[name] = score
+            try {
+              scores[name] = await model.scorePromise(featureWindow)
+            } catch (cause) {
+              throw new WakewordPipelineError({
+                message: `Wakeword scoring model '${name}' inference failed`,
+                cause,
+              })
+            }
           }
 
           scoreFrames.push({
@@ -277,19 +247,70 @@ export const makeWakewordPipeline = (
         }
 
         return scoreFrames
-      })
+      }
 
-    return {
-      feedPcmChunk,
-      feedPcmSamples,
-      getFeatureFrameCount: Effect.sync(() => state.featureBuffer.length),
-      reset: Effect.sync(() => {
-        state.byteRemainder = new Uint8Array()
-        state.sampleRemainder = new Int16Array()
-        state.rawSampleBuffer = []
-        state.melBuffer = makeInitialMelBuffer(resolved.melWindowFrames, resolved.melBins)
-        state.featureBuffer = []
-        state.totalProcessedSamples = 0
-      }),
-    }
-  })
+      const feedPcmSamples = (
+        incoming: Int16Array,
+      ): Effect.Effect<ReadonlyArray<WakewordScoreFrame>, WakewordPipelineError> =>
+        Effect.tryPromise({
+          try: () => feedPcmSamplesPromise(incoming),
+          catch: (cause) =>
+            cause instanceof WakewordPipelineError
+              ? cause
+              : new WakewordPipelineError({
+                  message: "Wakeword pipeline processing failed",
+                  cause,
+                }),
+        })
+
+      const feedPcmChunk = (
+        chunk: Uint8Array,
+      ): Effect.Effect<ReadonlyArray<WakewordScoreFrame>, WakewordPipelineError> =>
+        Effect.tryPromise({
+          try: async () => {
+            const merged =
+              state.byteRemainder.length === 0
+                ? chunk
+                : (() => {
+                    const out = new Uint8Array(state.byteRemainder.length + chunk.length)
+                    out.set(state.byteRemainder, 0)
+                    out.set(chunk, state.byteRemainder.length)
+                    return out
+                  })()
+
+            const alignedLength =
+              merged.length - (merged.length % OPENWAKEWORD_PCM_BYTES_PER_SAMPLE)
+            const aligned = merged.slice(0, alignedLength)
+            state.byteRemainder = merged.slice(alignedLength)
+
+            if (aligned.length === 0) {
+              return []
+            }
+
+            return await feedPcmSamplesPromise(toPcmSamples(aligned))
+          },
+          catch: (cause) =>
+            cause instanceof WakewordPipelineError
+              ? cause
+              : new WakewordPipelineError({
+                  message: "Wakeword pipeline processing failed",
+                  cause,
+                }),
+        })
+
+      return {
+        feedPcmChunk,
+        feedPcmSamples,
+        getFeatureFrameCount: Effect.sync(() => state.featureBuffer.length),
+        reset: Effect.sync(() => {
+          state.byteRemainder = new Uint8Array()
+          state.sampleRemainder = new Int16Array()
+          state.rawSampleBuffer = []
+          state.melBuffer = makeInitialMelBuffer(resolved.melWindowFrames, resolved.melBins)
+          state.featureBuffer = []
+          state.totalProcessedSamples = 0
+        }),
+      }
+    })
+  },
+)

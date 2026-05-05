@@ -1,4 +1,5 @@
 import { Console, Effect } from "effect"
+import * as Data from "effect/Data"
 import * as path from "node:path"
 import { mkdir as mkdirNode, readFile, writeFile as writeNodeFile } from "node:fs/promises"
 import { EFFECT_PI_WAKEWORD_CONFIG_DIR } from "../paths.js"
@@ -23,6 +24,9 @@ import {
   isMonitorSource,
   sourceProbeScore,
 } from "./audioCapture.js"
+
+export const DEFAULT_CALIBRATION_PRE_ROLL_MS = 300
+export const DEFAULT_CALIBRATION_MAX_WAIT_SECONDS = 12
 
 export type WakewordCalibrationSnapshot = {
   readonly schemaVersion: 1
@@ -69,24 +73,46 @@ export const isWakewordCalibrationSnapshot = (
   )
 }
 
+export class WakewordSnapshotError extends Data.TaggedError("WakewordSnapshotError")<{
+  readonly message: string
+  readonly cause?: unknown
+}> {}
+
+const isEnoent = (error: unknown): boolean =>
+  typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
+
 export const readCalibrationSnapshot = (
   calibrationPath: string,
 ): Effect.Effect<WakewordCalibrationSnapshot | undefined> =>
-  Effect.promise(async () => {
-    try {
+  Effect.tryPromise({
+    try: async () => {
       const contents = await readFile(calibrationPath, "utf8")
       const parsed: unknown = JSON.parse(contents)
       return isWakewordCalibrationSnapshot(parsed) ? parsed : undefined
-    } catch {
-      return undefined
-    }
-  })
+    },
+    catch: (cause) =>
+      new WakewordSnapshotError({
+        message: `Failed to read calibration snapshot at ${calibrationPath}`,
+        cause,
+      }),
+  }).pipe(
+    Effect.catchIf(isEnoent, () => Effect.succeed(undefined)),
+    Effect.tapError((error) =>
+      Effect.logWarning(error.message).pipe(Effect.annotateLogs({ cause: error.cause })),
+    ),
+    Effect.matchEffect({
+      onFailure: () => Effect.succeed(undefined),
+      onSuccess: (value) => Effect.succeed(value),
+    }),
+  )
 
-export const writeCalibrationSnapshot = (
+export const writeCalibrationSnapshot = Effect.fn(
+  "pie/commands/wakewordHelpers.writeCalibrationSnapshot",
+)(function* (
   calibrationPath: string,
   snapshot: WakewordCalibrationSnapshot,
-): Effect.Effect<void, WakewordTrainingError> =>
-  Effect.tryPromise({
+): Effect.fn.Return<void, WakewordTrainingError> {
+  return yield* Effect.tryPromise({
     try: async () => {
       await mkdirNode(path.dirname(calibrationPath), { recursive: true })
       await writeNodeFile(calibrationPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8")
@@ -97,6 +123,7 @@ export const writeCalibrationSnapshot = (
         cause,
       }),
   })
+})
 
 export type WakewordDetectionTuningSnapshot = {
   readonly schemaVersion: 1
@@ -186,22 +213,39 @@ export const isWakewordDetectionTuningSnapshot = (
 
 export const readDetectionTuningSnapshot = (
   tuningPath: string,
-): Effect.Effect<WakewordDetectionTuningSnapshot | undefined> =>
-  Effect.promise(async () => {
-    try {
+): Effect.Effect<WakewordDetectionTuningSnapshot, WakewordSnapshotError> =>
+  Effect.tryPromise({
+    try: async () => {
       const contents = await readFile(tuningPath, "utf8")
       const parsed: unknown = JSON.parse(contents)
-      return isWakewordDetectionTuningSnapshot(parsed) ? parsed : undefined
-    } catch {
-      return undefined
-    }
+      if (!isWakewordDetectionTuningSnapshot(parsed)) {
+        throw new WakewordSnapshotError({
+          message: `Invalid detection tuning snapshot format at ${tuningPath}`,
+        })
+      }
+      return parsed
+    },
+    catch: (cause) =>
+      cause instanceof WakewordSnapshotError
+        ? cause
+        : isEnoent(cause)
+          ? new WakewordSnapshotError({
+              message: `Tuning snapshot not found at ${tuningPath}. Run 'pie wakeword-tune --name <model>' first.`,
+              cause,
+            })
+          : new WakewordSnapshotError({
+              message: `Failed to read detection tuning snapshot at ${tuningPath}`,
+              cause,
+            }),
   })
 
-export const writeDetectionTuningSnapshot = (
+export const writeDetectionTuningSnapshot = Effect.fn(
+  "pie/commands/wakewordHelpers.writeDetectionTuningSnapshot",
+)(function* (
   tuningPath: string,
   snapshot: WakewordDetectionTuningSnapshot,
-): Effect.Effect<void, WakewordTrainingError> =>
-  Effect.tryPromise({
+): Effect.fn.Return<void, WakewordTrainingError> {
+  return yield* Effect.tryPromise({
     try: async () => {
       await mkdirNode(path.dirname(tuningPath), { recursive: true })
       await writeNodeFile(tuningPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8")
@@ -212,6 +256,7 @@ export const writeDetectionTuningSnapshot = (
         cause,
       }),
   })
+})
 
 export const detectionTuningPathFor = (modelName: string): string =>
   path.join(EFFECT_PI_WAKEWORD_CONFIG_DIR, modelName, "detection-tuning.json")
@@ -240,19 +285,17 @@ export const countTriggersForFrames = (
   modelName: string,
   config: TriggerTuningConfig,
 ): number => {
-  const machine = Effect.runSync(createWakewordTriggerMachine(config))
+  const machine = createWakewordTriggerMachine(config)
   let triggerCount = 0
 
   for (const frame of frames) {
-    const events = Effect.runSync(
-      machine.processFrame({
-        timestampMs: frame.timestampMs,
-        sampleIndex: Math.round((frame.timestampMs / 1000) * 16_000),
-        scores: {
-          [modelName]: frame.score,
-        },
-      }),
-    )
+    const events = machine.processFrame({
+      timestampMs: frame.timestampMs,
+      sampleIndex: Math.round((frame.timestampMs / 1000) * 16_000),
+      scores: {
+        [modelName]: frame.score,
+      },
+    })
 
     for (const event of events) {
       if (event.model === modelName) {
@@ -336,12 +379,12 @@ export const candidateThresholds = (
   return [...values].sort((left, right) => left - right)
 }
 
-export const scorePcmClips = (config: {
-  readonly clips: ReadonlyArray<Uint8Array>
-  readonly pipeline: WakewordPipeline
-  readonly modelName: string
-}): Effect.Effect<ReadonlyArray<CapturedScoreFrame>, WakewordPipelineError> =>
-  Effect.gen(function* () {
+export const scorePcmClips = Effect.fn("pie/commands/wakewordHelpers.scorePcmClips")(
+  function* (config: {
+    readonly clips: ReadonlyArray<Uint8Array>
+    readonly pipeline: WakewordPipeline
+    readonly modelName: string
+  }): Effect.fn.Return<ReadonlyArray<CapturedScoreFrame>, WakewordPipelineError> {
     const frames: Array<CapturedScoreFrame> = []
 
     for (const clip of config.clips) {
@@ -358,15 +401,18 @@ export const scorePcmClips = (config: {
     }
 
     return frames
-  })
+  },
+)
 
-export const evaluateTriggerTuning = (config: {
+export const evaluateTriggerTuning = Effect.fn(
+  "pie/commands/wakewordHelpers.evaluateTriggerTuning",
+)(function* (config: {
   readonly modelName: string
   readonly silenceFrames: ReadonlyArray<CapturedScoreFrame>
   readonly negativeFrames: ReadonlyArray<CapturedScoreFrame>
   readonly positiveFrames: ReadonlyArray<CapturedScoreFrame>
   readonly targetPositiveTriggers: number
-}): TriggerTuningEvaluation => {
+}): Effect.fn.Return<TriggerTuningEvaluation, WakewordTrainingError> {
   const silenceScores = config.silenceFrames.map((frame) => frame.score)
   const negativeScores = config.negativeFrames.map((frame) => frame.score)
   const positiveScores = config.positiveFrames.map((frame) => frame.score)
@@ -440,24 +486,19 @@ export const evaluateTriggerTuning = (config: {
     }
   }
 
-  return (
-    best ?? {
-      config: {
-        threshold: 0.5,
-        smoothingWindow: 2,
-        consecutiveFrames: 2,
-        cooldownMs: 1500,
-      },
-      silenceTriggers: 0,
-      negativeTriggers: 0,
-      positiveTriggers: 0,
-      targetPositiveTriggers: Math.max(1, config.targetPositiveTriggers),
-      objective: Number.NEGATIVE_INFINITY,
-    }
-  )
-}
+  if (best === undefined) {
+    return yield* new WakewordTrainingError({
+      message:
+        "No viable tuning configuration found. All evaluated configurations produced zero triggers.",
+    })
+  }
 
-export const runPostTrainValidationAndTuning = (config: {
+  return best
+})
+
+export const runPostTrainValidationAndTuning = Effect.fn(
+  "pie/commands/wakewordHelpers.runPostTrainValidationAndTuning",
+)(function* (config: {
   readonly featureSessions: WakewordFeatureSessions
   readonly plan: {
     readonly modelName: string
@@ -468,123 +509,118 @@ export const runPostTrainValidationAndTuning = (config: {
   }
   readonly noTuning: boolean
   readonly sourceName: string
-}): Effect.Effect<void, WakewordTrainingError | WakewordPipelineError | WakewordRuntimeError> =>
-  Effect.gen(function* () {
-    yield* Console.log(`Validating trained model: ${config.plan.outputModelPath}`)
+}): Effect.fn.Return<void, WakewordTrainingError | WakewordPipelineError | WakewordRuntimeError> {
+  yield* Console.log(`Validating trained model: ${config.plan.outputModelPath}`)
 
-    const trainedModel = yield* loadLinearWakewordModel(config.plan.outputModelPath)
-    const modelSessions = {
-      ...config.featureSessions,
-      wakewords: {
-        [config.plan.modelName]: trainedModel,
-      },
-    }
+  const trainedModel = yield* loadLinearWakewordModel(config.plan.outputModelPath)
+  const modelSessions = {
+    ...config.featureSessions,
+    wakewords: {
+      [config.plan.modelName]: trainedModel,
+    },
+  }
 
-    const pipeline = yield* makeWakewordPipeline(modelSessions)
+  const pipeline = yield* makeWakewordPipeline(modelSessions)
 
-    const positiveClips = yield* loadSavedWavClips(config.plan.positiveDir)
-    if (positiveClips.length === 0) {
-      return yield* new WakewordTrainingError({
-        message: "No positive clips found for validation",
-      })
-    }
-
-    const positiveFrames = yield* scorePcmClips({
-      clips: [positiveClips[0] ?? new Uint8Array()],
-      pipeline,
-      modelName: config.plan.modelName,
+  const positiveClips = yield* loadSavedWavClips(config.plan.positiveDir)
+  if (positiveClips.length === 0) {
+    return yield* new WakewordTrainingError({
+      message: "No positive clips found for validation",
     })
+  }
 
-    if (positiveFrames.length === 0) {
-      return yield* new WakewordTrainingError({
-        message: `Trained model '${config.plan.modelName}' produced no score frames from a positive clip. The model may be invalid.`,
-      })
-    }
-
-    const maxPositiveScore = positiveFrames.reduce(
-      (max, frame) => (frame.score > max ? frame.score : max),
-      0,
-    )
-    yield* Console.log(
-      `Validation: ${positiveFrames.length} score frames from positive clip, max_score=${maxPositiveScore.toFixed(4)}`,
-    )
-
-    if (config.noTuning) {
-      yield* Console.log("Tuning persistence skipped (--no-tuning)")
-      return
-    }
-
-    const silenceClips = yield* loadSavedWavClips(config.plan.silenceDir).pipe(
-      Effect.orElseSucceed(() => []),
-    )
-    const negativeClips = yield* loadSavedWavClips(config.plan.negativeDir)
-
-    const silenceFrames = yield* scorePcmClips({
-      clips: silenceClips,
-      pipeline,
-      modelName: config.plan.modelName,
-    })
-    const negativeFrames = yield* scorePcmClips({
-      clips: negativeClips,
-      pipeline,
-      modelName: config.plan.modelName,
-    })
-    const allPositiveFrames = yield* scorePcmClips({
-      clips: positiveClips,
-      pipeline,
-      modelName: config.plan.modelName,
-    })
-
-    const evaluation = evaluateTriggerTuning({
-      modelName: config.plan.modelName,
-      silenceFrames,
-      negativeFrames,
-      positiveFrames: allPositiveFrames,
-      targetPositiveTriggers: estimateWakePhraseCount(allPositiveFrames),
-    })
-
-    yield* writeDetectionTuningSnapshot(detectionTuningPathFor(config.plan.modelName), {
-      schemaVersion: 1,
-      createdAt: new Date().toISOString(),
-      sourceName: config.sourceName,
-      modelName: config.plan.modelName,
-      modelFile: `${config.plan.modelName}.json`,
-      trigger: {
-        threshold: evaluation.config.threshold,
-        smoothingWindow: evaluation.config.smoothingWindow,
-        consecutiveFrames: evaluation.config.consecutiveFrames,
-        cooldownMs: evaluation.config.cooldownMs,
-      },
-      metrics: {
-        silenceP99: percentile(
-          silenceFrames.map((f) => f.score),
-          0.99,
-        ),
-        negativeP99: percentile(
-          negativeFrames.map((f) => f.score),
-          0.99,
-        ),
-        positiveP90: percentile(
-          allPositiveFrames.map((f) => f.score),
-          0.9,
-        ),
-        positiveEstimatedPhrases: estimateWakePhraseCount(allPositiveFrames),
-        positiveTriggers: evaluation.positiveTriggers,
-        negativeTriggers: evaluation.negativeTriggers,
-        silenceTriggers: evaluation.silenceTriggers,
-      },
-    })
-
-    yield* Console.log(
-      `Tuning: threshold=${evaluation.config.threshold.toFixed(3)} smoothing=${evaluation.config.smoothingWindow} consecutive=${evaluation.config.consecutiveFrames} cooldown=${evaluation.config.cooldownMs}ms`,
-    )
-    yield* Console.log(
-      `Tuning quality: objective=${evaluation.objective.toFixed(2)} positive=${evaluation.positiveTriggers}/${evaluation.targetPositiveTriggers} background=${evaluation.silenceTriggers + evaluation.negativeTriggers}`,
-    )
-    yield* Console.log(
-      `Tuning snapshot written to: ${detectionTuningPathFor(config.plan.modelName)}`,
-    )
+  const positiveFrames = yield* scorePcmClips({
+    clips: [positiveClips[0]!],
+    pipeline,
+    modelName: config.plan.modelName,
   })
+
+  if (positiveFrames.length === 0) {
+    return yield* new WakewordTrainingError({
+      message: `Trained model '${config.plan.modelName}' produced no score frames from a positive clip. The model may be invalid.`,
+    })
+  }
+
+  const maxPositiveScore = positiveFrames.reduce(
+    (max, frame) => (frame.score > max ? frame.score : max),
+    0,
+  )
+  yield* Console.log(
+    `Validation: ${positiveFrames.length} score frames from positive clip, max_score=${maxPositiveScore.toFixed(4)}`,
+  )
+
+  if (config.noTuning) {
+    yield* Console.log("Tuning persistence skipped (--no-tuning)")
+    return
+  }
+
+  const silenceClips = yield* loadSavedWavClips(config.plan.silenceDir)
+  const negativeClips = yield* loadSavedWavClips(config.plan.negativeDir)
+
+  const silenceFrames = yield* scorePcmClips({
+    clips: silenceClips,
+    pipeline,
+    modelName: config.plan.modelName,
+  })
+  const negativeFrames = yield* scorePcmClips({
+    clips: negativeClips,
+    pipeline,
+    modelName: config.plan.modelName,
+  })
+  const allPositiveFrames = yield* scorePcmClips({
+    clips: positiveClips,
+    pipeline,
+    modelName: config.plan.modelName,
+  })
+
+  const evaluation = yield* evaluateTriggerTuning({
+    modelName: config.plan.modelName,
+    silenceFrames,
+    negativeFrames,
+    positiveFrames: allPositiveFrames,
+    targetPositiveTriggers: estimateWakePhraseCount(allPositiveFrames),
+  })
+
+  yield* writeDetectionTuningSnapshot(detectionTuningPathFor(config.plan.modelName), {
+    schemaVersion: 1,
+    createdAt: new Date().toISOString(),
+    sourceName: config.sourceName,
+    modelName: config.plan.modelName,
+    modelFile: `${config.plan.modelName}.json`,
+    trigger: {
+      threshold: evaluation.config.threshold,
+      smoothingWindow: evaluation.config.smoothingWindow,
+      consecutiveFrames: evaluation.config.consecutiveFrames,
+      cooldownMs: evaluation.config.cooldownMs,
+    },
+    metrics: {
+      silenceP99: percentile(
+        silenceFrames.map((f) => f.score),
+        0.99,
+      ),
+      negativeP99: percentile(
+        negativeFrames.map((f) => f.score),
+        0.99,
+      ),
+      positiveP90: percentile(
+        allPositiveFrames.map((f) => f.score),
+        0.9,
+      ),
+      positiveEstimatedPhrases: estimateWakePhraseCount(allPositiveFrames),
+      positiveTriggers: evaluation.positiveTriggers,
+      negativeTriggers: evaluation.negativeTriggers,
+      silenceTriggers: evaluation.silenceTriggers,
+    },
+  })
+
+  yield* Console.log(
+    `Tuning: threshold=${evaluation.config.threshold.toFixed(3)} smoothing=${evaluation.config.smoothingWindow} consecutive=${evaluation.config.consecutiveFrames} cooldown=${evaluation.config.cooldownMs}ms`,
+  )
+  yield* Console.log(
+    `Tuning quality: objective=${evaluation.objective.toFixed(2)} positive=${evaluation.positiveTriggers}/${evaluation.targetPositiveTriggers} background=${evaluation.silenceTriggers + evaluation.negativeTriggers}`,
+  )
+  yield* Console.log(`Tuning snapshot written to: ${detectionTuningPathFor(config.plan.modelName)}`)
+})
 
 export type AutoCalibrationResult = {
   readonly sourceName: string
@@ -597,135 +633,136 @@ export type AutoCalibrationResult = {
   readonly resolvedMaxWaitSeconds: number
 }
 
-export const resolveTrainingSource = (config: {
+export const resolveTrainingSource = Effect.fn(
+  "pie/commands/wakewordHelpers.resolveTrainingSource",
+)(function* (config: {
   readonly requestedSourceName: string | undefined
-  readonly defaultSourceName: string
+  readonly defaultSourceName: string | null
   readonly availableSources: ReadonlyArray<SourceInfo>
   readonly fragmentSize: number
   readonly autoCalibrate: boolean
-}): Effect.Effect<string, WakewordTrainingError | CliError | Error, PulseAudioClient> =>
-  Effect.gen(function* () {
-    if (config.requestedSourceName !== undefined) {
-      const exists = config.availableSources.some(
-        (source) => source.name === config.requestedSourceName,
-      )
-
-      if (!exists) {
-        return yield* new WakewordTrainingError({
-          message: `Configured source '${config.requestedSourceName}' not found. Run 'pie sources' and select one of the listed source names.`,
-        })
-      }
-
-      return config.requestedSourceName
-    }
-
-    const defaultSource =
-      config.availableSources.find((source) => source.name === config.defaultSourceName) ??
-      config.availableSources[0]
-
-    if (defaultSource === undefined || defaultSource.name === null) {
-      return yield* new WakewordTrainingError({
-        message: "No capture source is available in PulseAudio",
-      })
-    }
-
-    if (!config.autoCalibrate) {
-      return defaultSource.name
-    }
-
-    const defaultLooksLikeMonitor = isMonitorSource(defaultSource)
-
-    if (!defaultLooksLikeMonitor) {
-      const defaultProbe = yield* collectAudioMetricsInteractive({
-        fragmentSize: config.fragmentSize,
-        sampleRate: 16_000,
-        channels: 1,
-        sourceName: defaultSource.name,
-        startPrompt: [
-          `Auto source check on '${defaultSource.name}'`,
-          "Press Enter to start capture, then say the wake phrase once.",
-        ].join("\n"),
-        stopPrompt: "Press Enter to stop source check and continue.",
-      })
-
-      if (defaultProbe.maxRms >= 0.004) {
-        yield* Console.log(
-          `Auto source selected default '${defaultSource.name}' (max RMS ${defaultProbe.maxRms.toFixed(4)})`,
-        )
-        return defaultSource.name
-      }
-
-      yield* Console.log(
-        `Default source '${defaultSource.name}' looks weak (max RMS ${defaultProbe.maxRms.toFixed(4)}). Probing alternatives...`,
-      )
-    } else {
-      yield* Console.log(
-        `Default source '${defaultSource.name}' is a monitor source. Probing microphone sources...`,
-      )
-    }
-
-    const candidates = config.availableSources.filter(
-      (source) => source.name !== null && !isMonitorSource(source),
+}): Effect.fn.Return<string, WakewordTrainingError | CliError | Error, PulseAudioClient> {
+  if (config.requestedSourceName !== undefined) {
+    const exists = config.availableSources.some(
+      (source) => source.name === config.requestedSourceName,
     )
 
-    if (candidates.length === 0) {
+    if (!exists) {
+      return yield* new WakewordTrainingError({
+        message: `Configured source '${config.requestedSourceName}' not found. Run 'pie sources' and select one of the listed source names.`,
+      })
+    }
+
+    return config.requestedSourceName
+  }
+
+  const defaultSource =
+    config.availableSources.find((source) => source.name === config.defaultSourceName) ??
+    config.availableSources[0]
+
+  if (defaultSource === undefined || defaultSource.name === null) {
+    return yield* new WakewordTrainingError({
+      message: "No capture source is available in PulseAudio",
+    })
+  }
+
+  if (!config.autoCalibrate) {
+    return defaultSource.name
+  }
+
+  const defaultLooksLikeMonitor = isMonitorSource(defaultSource)
+
+  if (!defaultLooksLikeMonitor) {
+    const defaultProbe = yield* collectAudioMetricsInteractive({
+      fragmentSize: config.fragmentSize,
+      sampleRate: 16_000,
+      channels: 1,
+      sourceName: defaultSource.name,
+      startPrompt: [
+        `Auto source check on '${defaultSource.name}'`,
+        "Press Enter to start capture, then say the wake phrase once.",
+      ].join("\n"),
+      stopPrompt: "Press Enter to stop source check and continue.",
+    })
+
+    if (defaultProbe.maxRms >= 0.004) {
       yield* Console.log(
-        "No non-monitor capture sources found; falling back to default source from PulseAudio",
+        `Auto source selected default '${defaultSource.name}' (max RMS ${defaultProbe.maxRms.toFixed(4)})`,
       )
       return defaultSource.name
     }
 
-    yield* Console.log("Sequential source probe: each source waits for start/stop confirmation")
+    yield* Console.log(
+      `Default source '${defaultSource.name}' looks weak (max RMS ${defaultProbe.maxRms.toFixed(4)}). Probing alternatives...`,
+    )
+  } else {
+    yield* Console.log(
+      `Default source '${defaultSource.name}' is a monitor source. Probing microphone sources...`,
+    )
+  }
 
-    let bestSource = defaultSource.name
-    let bestScore = Number.NEGATIVE_INFINITY
+  const candidates = config.availableSources.filter(
+    (source) => source.name !== null && !isMonitorSource(source),
+  )
 
-    for (let index = 0; index < candidates.length; index += 1) {
-      const candidate = candidates[index]
+  if (candidates.length === 0) {
+    yield* Console.log(
+      "No non-monitor capture sources found; falling back to default source from PulseAudio",
+    )
+    return defaultSource.name
+  }
 
-      if (candidate === undefined) {
-        continue
-      }
+  yield* Console.log("Sequential source probe: each source waits for start/stop confirmation")
 
-      const candidateName = candidate.name
+  let bestSource = defaultSource.name
+  let bestScore = Number.NEGATIVE_INFINITY
 
-      if (candidateName === null) {
-        continue
-      }
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index]
 
-      const metrics = yield* collectAudioMetricsInteractive({
-        fragmentSize: config.fragmentSize,
-        sampleRate: 16_000,
-        channels: 1,
-        sourceName: candidateName,
-        startPrompt: [
-          `[source probe ${index + 1}/${candidates.length}] ${candidateName}`,
-          "Press Enter to start probe, then say wake phrase once.",
-        ].join("\n"),
-        stopPrompt: "Press Enter to stop this probe and continue.",
-      })
-
-      const score = sourceProbeScore(metrics)
-      yield* Console.log(
-        `[source probe ${index + 1}/${candidates.length}] max_rms=${metrics.maxRms.toFixed(4)} p95=${metrics.rmsP95.toFixed(4)} score=${score.toFixed(4)}`,
-      )
-
-      if (score > bestScore) {
-        bestScore = score
-        bestSource = candidateName
-      }
+    if (candidate === undefined) {
+      continue
     }
 
-    yield* Console.log(`Auto source selected: ${bestSource}`)
-    return bestSource
-  })
+    const candidateName = candidate.name
 
-export const runAutoCalibration = (config: {
-  readonly sourceName: string
-  readonly fragmentSize: number
-  readonly wakePhrase: string
-}): Effect.Effect<AutoCalibrationResult, Error | WakewordTrainingError, PulseAudioClient> =>
-  Effect.gen(function* () {
+    if (candidateName === null) {
+      continue
+    }
+
+    const metrics = yield* collectAudioMetricsInteractive({
+      fragmentSize: config.fragmentSize,
+      sampleRate: 16_000,
+      channels: 1,
+      sourceName: candidateName,
+      startPrompt: [
+        `[source probe ${index + 1}/${candidates.length}] ${candidateName}`,
+        "Press Enter to start probe, then say wake phrase once.",
+      ].join("\n"),
+      stopPrompt: "Press Enter to stop this probe and continue.",
+    })
+
+    const score = sourceProbeScore(metrics)
+    yield* Console.log(
+      `[source probe ${index + 1}/${candidates.length}] max_rms=${metrics.maxRms.toFixed(4)} p95=${metrics.rmsP95.toFixed(4)} score=${score.toFixed(4)}`,
+    )
+
+    if (score > bestScore) {
+      bestScore = score
+      bestSource = candidateName
+    }
+  }
+
+  yield* Console.log(`Auto source selected: ${bestSource}`)
+  return bestSource
+})
+
+export const runAutoCalibration = Effect.fn("pie/commands/wakewordHelpers.runAutoCalibration")(
+  function* (config: {
+    readonly sourceName: string
+    readonly fragmentSize: number
+    readonly wakePhrase: string
+  }): Effect.fn.Return<AutoCalibrationResult, Error | WakewordTrainingError, PulseAudioClient> {
     const noise = yield* collectAudioMetricsInteractive({
       fragmentSize: config.fragmentSize,
       sampleRate: 16_000,
@@ -775,7 +812,8 @@ export const runAutoCalibration = (config: {
       speechRmsP80,
       resolvedSpeechRms,
       resolvedSpeechChunks,
-      resolvedPreRollMs: 300,
-      resolvedMaxWaitSeconds: 12,
+      resolvedPreRollMs: DEFAULT_CALIBRATION_PRE_ROLL_MS,
+      resolvedMaxWaitSeconds: DEFAULT_CALIBRATION_MAX_WAIT_SECONDS,
     }
-  })
+  },
+)

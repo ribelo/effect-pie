@@ -4,7 +4,7 @@ import { promises as fs } from "node:fs"
 
 import type { ResolvedWakewordAssets } from "./defs.js"
 import { isRecord } from "../utils/runtime.js"
-import { flattenMatrix } from "./signal.js"
+import { flattenMatrix, sigmoid } from "./signal.js"
 
 export class WakewordRuntimeError extends Data.TaggedError("WakewordRuntimeError")<{
   readonly message: string
@@ -19,12 +19,15 @@ export type OnnxTensorData = {
 export type OnnxSession = {
   readonly inputName: string
   readonly inputDims: ReadonlyArray<number | string | null | undefined>
+  readonly runPromise: (input: OnnxTensorData) => Promise<OnnxTensorData>
   readonly run: (input: OnnxTensorData) => Effect.Effect<OnnxTensorData, WakewordRuntimeError>
+  readonly dispose: Effect.Effect<void>
 }
 
 export type WakewordScoringModel = {
   readonly requiredFrames: number
   readonly expectedFeatureSize?: number
+  readonly scorePromise: (featureWindow: ReadonlyArray<Float32Array>) => Promise<number>
   readonly score: (
     featureWindow: ReadonlyArray<Float32Array>,
   ) => Effect.Effect<number, WakewordRuntimeError>
@@ -33,6 +36,7 @@ export type WakewordScoringModel = {
 export type WakewordFeatureSessions = {
   readonly melspectrogram: OnnxSession
   readonly embedding: OnnxSession
+  readonly dispose: Effect.Effect<void>
 }
 
 export type WakewordModelSessions = WakewordFeatureSessions & {
@@ -51,6 +55,7 @@ type OrtSession = {
   readonly outputNames?: ReadonlyArray<string>
   readonly inputMetadata?: Record<string, { readonly dimensions?: ReadonlyArray<number | string> }>
   readonly run: (feeds: Record<string, unknown>) => Promise<Record<string, unknown>>
+  readonly release: () => Promise<void>
 }
 
 type OrtTensor = {
@@ -107,8 +112,6 @@ const isLinearWakewordModelFile = (value: unknown): value is LinearWakewordModel
   )
 }
 
-const sigmoid = (x: number): number => 1 / (1 + Math.exp(-x))
-
 const toFloat32Array = (value: Float32Array | ReadonlyArray<number>): Float32Array =>
   value instanceof Float32Array ? value : Float32Array.from(value)
 
@@ -140,11 +143,11 @@ const loadOrtModule = (runtimePackage: string): Effect.Effect<OrtModule, Wakewor
       }),
   })
 
-const makeSession = (
+export const makeSession = Effect.fn("pie/wakeword/onnx.makeSession")(function* (
   ort: OrtModule,
   modelPath: string,
-): Effect.Effect<OnnxSession, WakewordRuntimeError> =>
-  Effect.tryPromise({
+): Effect.fn.Return<OnnxSession, WakewordRuntimeError> {
+  return yield* Effect.tryPromise({
     try: async () => {
       const session = await ort.InferenceSession.create(modelPath, {
         executionProviders: ["wasm"],
@@ -172,35 +175,41 @@ const makeSession = (
 
       const inputDims = session.inputMetadata?.[inputName]?.dimensions ?? []
 
+      const runPromise = async (input: OnnxTensorData): Promise<OnnxTensorData> => {
+        const tensor = new ort.Tensor("float32", input.data, input.dims)
+        const outputs = await session.run({ [inputName]: tensor })
+        const output = readOutputTensor(outputs, outputName)
+        const outputData = output.data
+        if (!outputData) {
+          throw new WakewordRuntimeError({
+            message: `Model output '${outputName}' is missing tensor data`,
+          })
+        }
+
+        const data = toFloat32Array(outputData)
+
+        return {
+          data,
+          dims: output.dims ?? [data.length],
+        }
+      }
+
       return {
         inputName,
         inputDims,
+        runPromise,
         run: (input) =>
           Effect.tryPromise({
-            try: async () => {
-              const tensor = new ort.Tensor("float32", input.data, input.dims)
-              const outputs = await session.run({ [inputName]: tensor })
-              const output = readOutputTensor(outputs, outputName)
-              const outputData = output.data
-              if (!outputData) {
-                throw new WakewordRuntimeError({
-                  message: `Model output '${outputName}' is missing tensor data`,
-                })
-              }
-
-              const data = toFloat32Array(outputData)
-
-              return {
-                data,
-                dims: output.dims ?? [data.length],
-              }
-            },
+            try: () => runPromise(input),
             catch: (cause) =>
-              new WakewordRuntimeError({
-                message: `ONNX inference failed for model ${modelPath}`,
-                cause,
-              }),
+              cause instanceof WakewordRuntimeError
+                ? cause
+                : new WakewordRuntimeError({
+                    message: `ONNX inference failed for model ${modelPath}`,
+                    cause,
+                  }),
           }),
+        dispose: Effect.promise(() => session.release().catch(() => {})),
       } satisfies OnnxSession
     },
     catch: (cause) =>
@@ -209,6 +218,7 @@ const makeSession = (
         cause,
       }),
   })
+})
 
 const makeFeatureSessionsWithOrt = (
   ort: OrtModule,
@@ -238,6 +248,7 @@ const makeFeatureSessionsWithOrt = (
     return {
       melspectrogram,
       embedding,
+      dispose: Effect.all([melspectrogram.dispose, embedding.dispose], { discard: true }),
     }
   })
 
@@ -245,38 +256,54 @@ const toOnnxScoringModel = (session: OnnxSession): WakewordScoringModel => {
   const requiredFrames =
     typeof session.inputDims[1] === "number" && Number.isFinite(session.inputDims[1])
       ? session.inputDims[1]
-      : 16
+      : undefined
+
+  if (requiredFrames === undefined) {
+    throw new WakewordRuntimeError({
+      message: `ONNX model inputDims[1] is missing or invalid. Got ${String(session.inputDims[1])}.`,
+    })
+  }
 
   const expectedFeatureSize =
     typeof session.inputDims[2] === "number" && Number.isFinite(session.inputDims[2])
       ? session.inputDims[2]
       : undefined
 
+  const scorePromise = async (featureWindow: ReadonlyArray<Float32Array>): Promise<number> => {
+    if (featureWindow.length === 0) {
+      return 0
+    }
+
+    const actualFeatureSize = featureWindow[0]?.length ?? 0
+    const input = flattenMatrix(featureWindow)
+    const output = await session.runPromise({
+      data: input,
+      dims: [1, featureWindow.length, actualFeatureSize],
+    })
+
+    return output.data[output.data.length - 1] ?? 0
+  }
+
   return {
     requiredFrames,
     ...(expectedFeatureSize !== undefined ? { expectedFeatureSize } : {}),
+    scorePromise,
     score: (featureWindow) =>
-      Effect.gen(function* () {
-        if (featureWindow.length === 0) {
-          return 0
-        }
-
-        const actualFeatureSize = featureWindow[0]?.length ?? 0
-        const input = flattenMatrix(featureWindow)
-        const output = yield* session.run({
-          data: input,
-          dims: [1, featureWindow.length, actualFeatureSize],
-        })
-
-        return output.data[output.data.length - 1] ?? 0
+      Effect.tryPromise({
+        try: () => scorePromise(featureWindow),
+        catch: (cause) =>
+          cause instanceof WakewordRuntimeError
+            ? cause
+            : new WakewordRuntimeError({
+                message: "Wakeword scoring failed",
+                cause,
+              }),
       }),
   }
 }
 
-export const loadLinearWakewordModel = (
-  modelPath: string,
-): Effect.Effect<WakewordScoringModel, WakewordRuntimeError> =>
-  Effect.gen(function* () {
+export const loadLinearWakewordModel = Effect.fn("pie/wakeword/onnx.loadLinearWakewordModel")(
+  function* (modelPath: string): Effect.fn.Return<WakewordScoringModel, WakewordRuntimeError> {
     const raw = yield* Effect.promise(() => fs.readFile(modelPath, "utf8")).pipe(
       Effect.mapError(
         (cause) =>
@@ -299,60 +326,74 @@ export const loadLinearWakewordModel = (
     const inferredLogitScale = Math.max(1, Math.abs(parsed.bias) / 8)
     const logitScale = parsed.logitScale ?? inferredLogitScale
 
+    const scorePromise = async (featureWindow: ReadonlyArray<Float32Array>): Promise<number> => {
+      const featureCount = featureWindow[0]?.length ?? 0
+      if (featureCount !== parsed.featureSize) {
+        throw new WakewordRuntimeError({
+          message: `Linear wakeword model feature mismatch: expected ${parsed.featureSize}, got ${featureCount}`,
+        })
+      }
+
+      const mean = new Float32Array(parsed.featureSize)
+      for (const frame of featureWindow) {
+        for (let index = 0; index < mean.length; index += 1) {
+          mean[index] = (mean[index] ?? 0) + (frame[index] ?? 0)
+        }
+      }
+
+      for (let index = 0; index < mean.length; index += 1) {
+        mean[index] = (mean[index] ?? 0) / Math.max(1, featureWindow.length)
+      }
+
+      let rawScore = parsed.bias
+      for (let index = 0; index < mean.length; index += 1) {
+        rawScore += (weights[index] ?? 0) * (mean[index] ?? 0)
+      }
+
+      return sigmoid(rawScore / logitScale)
+    }
+
     return {
       requiredFrames: parsed.frameCount,
       expectedFeatureSize: parsed.featureSize,
+      scorePromise,
       score: (featureWindow) =>
-        Effect.sync(() => {
-          const featureCount = featureWindow[0]?.length ?? 0
-          if (featureCount !== parsed.featureSize) {
-            throw new WakewordRuntimeError({
-              message: `Linear wakeword model feature mismatch: expected ${parsed.featureSize}, got ${featureCount}`,
-            })
-          }
-
-          const mean = new Float32Array(parsed.featureSize)
-          for (const frame of featureWindow) {
-            for (let index = 0; index < mean.length; index += 1) {
-              mean[index] = (mean[index] ?? 0) + (frame[index] ?? 0)
-            }
-          }
-
-          for (let index = 0; index < mean.length; index += 1) {
-            mean[index] = (mean[index] ?? 0) / Math.max(1, featureWindow.length)
-          }
-
-          let rawScore = parsed.bias
-          for (let index = 0; index < mean.length; index += 1) {
-            rawScore += (weights[index] ?? 0) * (mean[index] ?? 0)
-          }
-
-          return sigmoid(rawScore / logitScale)
+        Effect.tryPromise({
+          try: () => scorePromise(featureWindow),
+          catch: (cause) =>
+            cause instanceof WakewordRuntimeError
+              ? cause
+              : new WakewordRuntimeError({
+                  message: "Linear wakeword scoring failed",
+                  cause,
+                }),
         }),
     } satisfies WakewordScoringModel
-  })
+  },
+)
 
-export const loadWakewordFeatureSessions = (
+export const loadWakewordFeatureSessions = Effect.fn(
+  "pie/wakeword/onnx.loadWakewordFeatureSessions",
+)(function* (
   assets: ResolvedWakewordAssets,
-): Effect.Effect<WakewordFeatureSessions, WakewordRuntimeError> =>
-  Effect.gen(function* () {
-    const ort = yield* loadOrtModule(assets.runtimePackage).pipe(
-      Effect.mapError(
-        (cause) =>
-          new WakewordRuntimeError({
-            message: `Wakeword feature models require runtime '${assets.runtimePackage}@${assets.runtimeVersion}'. Install it before training or detection.`,
-            cause,
-          }),
-      ),
-    )
+): Effect.fn.Return<WakewordFeatureSessions, WakewordRuntimeError> {
+  const ort = yield* loadOrtModule(assets.runtimePackage).pipe(
+    Effect.mapError(
+      (cause) =>
+        new WakewordRuntimeError({
+          message: `Wakeword feature models require runtime '${assets.runtimePackage}@${assets.runtimeVersion}'. Install it before training or detection.`,
+          cause,
+        }),
+    ),
+  )
 
-    return yield* makeFeatureSessionsWithOrt(ort, assets)
-  })
+  return yield* makeFeatureSessionsWithOrt(ort, assets)
+})
 
-export const loadWakewordModelSessions = (
-  assets: ResolvedWakewordAssets,
-): Effect.Effect<WakewordModelSessions, WakewordRuntimeError> =>
-  Effect.gen(function* () {
+export const loadWakewordModelSessions = Effect.fn("pie/wakeword/onnx.loadWakewordModelSessions")(
+  function* (
+    assets: ResolvedWakewordAssets,
+  ): Effect.fn.Return<WakewordModelSessions, WakewordRuntimeError> {
     const ort = yield* loadOrtModule(assets.runtimePackage).pipe(
       Effect.mapError(
         (cause) =>
@@ -366,11 +407,13 @@ export const loadWakewordModelSessions = (
     const features = yield* makeFeatureSessionsWithOrt(ort, assets)
 
     const wakewordEntries: Array<[string, WakewordScoringModel]> = []
+    const wakewordDisposes: Array<Effect.Effect<void>> = []
 
     for (const [name, modelPath] of Object.entries(assets.wakewordModelPaths)) {
       if (modelPath.endsWith(".onnx")) {
         const session = yield* makeSession(ort, modelPath)
         wakewordEntries.push([name, toOnnxScoringModel(session)])
+        wakewordDisposes.push(session.dispose)
         continue
       }
 
@@ -388,5 +431,7 @@ export const loadWakewordModelSessions = (
     return {
       ...features,
       wakewords: Object.fromEntries(wakewordEntries),
+      dispose: Effect.all([features.dispose, ...wakewordDisposes], { discard: true }),
     }
-  })
+  },
+)

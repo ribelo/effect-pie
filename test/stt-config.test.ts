@@ -1,34 +1,54 @@
 import { test } from "node:test"
 import * as assert from "node:assert/strict"
 import { Effect, Exit } from "effect"
-import { mkdtemp, readFile, writeFile, mkdir } from "node:fs/promises"
+import { mkdtemp, writeFile, mkdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import * as path from "node:path"
 
 import { loadSttRuntimeConfig } from "../src/stt/config.js"
 
-test("loadSttRuntimeConfig creates defaults when file is missing", async () => {
+const writeValidConfig = async (configPath: string): Promise<void> => {
+  await writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        openrouter: {
+          transcriptionModel: "mistralai/voxtral-small-24b-2507",
+          translationModel: "google/gemini-3-flash-preview",
+          transcriptionLanguage: "English",
+          translationSourceLanguage: "English",
+          translationTargetLanguage: "English",
+          wakewordEnabled: true,
+          wakewordDictationSilenceSeconds: 3,
+          wakewordDictationMaxSeconds: 120,
+          wakewordDictationSpeechRmsThreshold: 0.01,
+        },
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  )
+}
+
+const writeValidPrompts = async (configPath: string): Promise<void> => {
+  const promptsDir = path.join(path.dirname(configPath), "prompts")
+  await mkdir(promptsDir, { recursive: true })
+  await writeFile(path.join(promptsDir, "transcription.md"), "Transcribe in {{language}}", "utf8")
+  await writeFile(
+    path.join(promptsDir, "translation.md"),
+    "Translate {{source_language}} to {{target_language}}",
+    "utf8",
+  )
+}
+
+test("loadSttRuntimeConfig fails when config file is missing", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "pie-stt-"))
   const configPath = path.join(tempDir, "stt.json")
 
-  const config = await Effect.runPromise(loadSttRuntimeConfig(configPath))
-
-  assert.strictEqual(config.openrouter.transcriptionModel, "mistralai/voxtral-small-24b-2507")
-  assert.strictEqual(config.openrouter.translationModel, "google/gemini-3-flash-preview")
-  assert.strictEqual(config.openrouter.transcriptionLanguage, "English")
-  assert.strictEqual(config.openrouter.translationSourceLanguage, "English")
-  assert.strictEqual(config.openrouter.translationTargetLanguage, "English")
-  assert.strictEqual(config.openrouter.wakewordEnabled, true)
-  assert.strictEqual(config.openrouter.wakewordDictationSilenceSeconds, 3)
-  assert.strictEqual(config.openrouter.wakewordDictationMaxSeconds, 120)
-  assert.strictEqual(config.openrouter.wakewordDictationSpeechRmsThreshold, 0.01)
-  assert.ok(config.transcriptionPrompt.includes("{{language}}"))
-  assert.ok(config.translationPrompt.includes("{{source_language}}"))
-  assert.ok(config.translationPrompt.includes("{{target_language}}"))
-
-  const raw = await readFile(configPath, "utf8")
-  assert.ok(raw.includes("mistralai/voxtral-small-24b-2507"))
-  assert.ok(raw.includes("google/gemini-3-flash-preview"))
+  const exit = await Effect.runPromiseExit(loadSttRuntimeConfig(configPath))
+  assert.strictEqual(Exit.isFailure(exit), true)
 })
 
 test("loadSttRuntimeConfig loads custom model and language configuration", async () => {
@@ -57,6 +77,7 @@ test("loadSttRuntimeConfig loads custom model and language configuration", async
     )}\n`,
     "utf8",
   )
+  await writeValidPrompts(configPath)
 
   const config = await Effect.runPromise(loadSttRuntimeConfig(configPath))
 
@@ -93,6 +114,7 @@ test("loadSttRuntimeConfig rejects language-only config without wakeword fields"
     )}\n`,
     "utf8",
   )
+  await writeValidPrompts(configPath)
 
   const exit = await Effect.runPromiseExit(loadSttRuntimeConfig(configPath))
   assert.strictEqual(Exit.isFailure(exit), true)
@@ -118,6 +140,7 @@ test("loadSttRuntimeConfig rejects legacy defaultTargetLanguage config", async (
     )}\n`,
     "utf8",
   )
+  await writeValidPrompts(configPath)
 
   const exit = await Effect.runPromiseExit(loadSttRuntimeConfig(configPath))
   assert.strictEqual(Exit.isFailure(exit), true)
@@ -149,6 +172,7 @@ test("loadSttRuntimeConfig preserves wakewordEnabled false", async () => {
     )}\n`,
     "utf8",
   )
+  await writeValidPrompts(configPath)
 
   const config = await Effect.runPromise(loadSttRuntimeConfig(configPath))
   assert.strictEqual(config.openrouter.wakewordEnabled, false)
@@ -180,28 +204,20 @@ test("loadSttRuntimeConfig rejects invalid wakewordEnabled", async () => {
     )}\n`,
     "utf8",
   )
+  await writeValidPrompts(configPath)
 
   const exit = await Effect.runPromiseExit(loadSttRuntimeConfig(configPath))
   assert.strictEqual(Exit.isFailure(exit), true)
 })
 
-test("loadSttRuntimeConfig bootstraps missing prompt files", async () => {
+test("loadSttRuntimeConfig fails when prompt files are missing", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "pie-stt-"))
   const configPath = path.join(tempDir, "stt.json")
 
-  const config = await Effect.runPromise(loadSttRuntimeConfig(configPath))
+  await writeValidConfig(configPath)
 
-  const transcriptionPromptPath = path.join(tempDir, "prompts", "transcription.md")
-  const translationPromptPath = path.join(tempDir, "prompts", "translation.md")
-
-  const transcriptionRaw = await readFile(transcriptionPromptPath, "utf8")
-  const translationRaw = await readFile(translationPromptPath, "utf8")
-
-  assert.ok(transcriptionRaw.includes("{{language}}"))
-  assert.ok(translationRaw.includes("{{source_language}}"))
-  assert.ok(translationRaw.includes("{{target_language}}"))
-  assert.strictEqual(config.transcriptionPrompt, transcriptionRaw)
-  assert.strictEqual(config.translationPrompt, translationRaw)
+  const exit = await Effect.runPromiseExit(loadSttRuntimeConfig(configPath))
+  assert.strictEqual(Exit.isFailure(exit), true)
 })
 
 test("loadSttRuntimeConfig preserves edited prompt files", async () => {
@@ -209,6 +225,8 @@ test("loadSttRuntimeConfig preserves edited prompt files", async () => {
   const configPath = path.join(tempDir, "stt.json")
   const promptsDir = path.join(tempDir, "prompts")
   await mkdir(promptsDir, { recursive: true })
+
+  await writeValidConfig(configPath)
 
   await writeFile(
     path.join(promptsDir, "transcription.md"),
@@ -236,6 +254,8 @@ test("loadSttRuntimeConfig rejects empty transcription prompt", async () => {
   const promptsDir = path.join(tempDir, "prompts")
   await mkdir(promptsDir, { recursive: true })
 
+  await writeValidConfig(configPath)
+
   await writeFile(path.join(promptsDir, "transcription.md"), "   ", "utf8")
   await writeFile(
     path.join(promptsDir, "translation.md"),
@@ -254,6 +274,8 @@ test("loadSttRuntimeConfig rejects empty translation prompt", async () => {
   const promptsDir = path.join(tempDir, "prompts")
   await mkdir(promptsDir, { recursive: true })
 
+  await writeValidConfig(configPath)
+
   await writeFile(path.join(promptsDir, "transcription.md"), "Valid {{language}}", "utf8")
   await writeFile(path.join(promptsDir, "translation.md"), "", "utf8")
 
@@ -267,6 +289,8 @@ test("loadSttRuntimeConfig rejects transcription prompt missing placeholder", as
   const configPath = path.join(tempDir, "stt.json")
   const promptsDir = path.join(tempDir, "prompts")
   await mkdir(promptsDir, { recursive: true })
+
+  await writeValidConfig(configPath)
 
   await writeFile(path.join(promptsDir, "transcription.md"), "No placeholder here", "utf8")
   await writeFile(
@@ -285,6 +309,8 @@ test("loadSttRuntimeConfig rejects translation prompt missing source_language pl
   const configPath = path.join(tempDir, "stt.json")
   const promptsDir = path.join(tempDir, "prompts")
   await mkdir(promptsDir, { recursive: true })
+
+  await writeValidConfig(configPath)
 
   await writeFile(path.join(promptsDir, "transcription.md"), "Valid {{language}}", "utf8")
   await writeFile(

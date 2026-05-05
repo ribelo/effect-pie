@@ -1,4 +1,4 @@
-import { Console, Duration, Effect, Fiber, Option, Queue, Ref, Stream } from "effect"
+import { Console, Duration, Effect, Option, Queue, Ref, Stream } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import * as path from "node:path"
 import { KeyboardMonitorService, PttKeyboardError } from "../keyboard/monitor.js"
@@ -34,7 +34,13 @@ import {
 } from "../wayland/globalShortcuts.js"
 import { writePcmWavFile, type WakewordTrainingError } from "../wakeword/training.js"
 import { EFFECT_PI_DATA_DIR } from "../paths.js"
-import { concatChunks, makePttClipPath, optionalSourceFlag, positiveIntegerFlag } from "./shared.js"
+import {
+  concatChunks,
+  makePttClipPath,
+  optionalPositiveIntegerFlag,
+  optionalSourceFlag,
+  positiveIntegerFlag,
+} from "./shared.js"
 
 type PttTriggerBinding = {
   readonly keycode: number
@@ -58,22 +64,14 @@ type KeyboardMonitorPttConfig = {
   readonly onClip: (clip: PttCapturedClip) => Effect.Effect<void, PttKeyboardError>
 }
 
-const pttKeycodeFlag = Flag.integer("keycode").pipe(
-  Flag.optional,
-  Flag.withDescription("Hardware keycode to use as push-to-talk trigger (learned if omitted)"),
-  Flag.filter(
-    (value) => Option.isNone(value) || value.value > 0,
-    () => "--keycode must be greater than 0",
-  ),
+const pttKeycodeFlag = optionalPositiveIntegerFlag(
+  "keycode",
+  "Hardware keycode to use as push-to-talk trigger (learned if omitted)",
 )
 
-const pttKeysymFlag = Flag.integer("keysym").pipe(
-  Flag.optional,
-  Flag.withDescription("XKB keysym to use as trigger (alternative to --keycode)"),
-  Flag.filter(
-    (value) => Option.isNone(value) || value.value > 0,
-    () => "--keysym must be greater than 0",
-  ),
+const pttKeysymFlag = optionalPositiveIntegerFlag(
+  "keysym",
+  "XKB keysym to use as trigger (alternative to --keycode)",
 )
 
 export const toPttKeyboardError = (message: string, cause: unknown): PttKeyboardError =>
@@ -82,10 +80,10 @@ export const toPttKeyboardError = (message: string, cause: unknown): PttKeyboard
     cause,
   })
 
-export const runKeyboardMonitorPtt = (
+export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMonitorPtt")(function* (
   config: KeyboardMonitorPttConfig,
-): Effect.Effect<never, PttKeyboardError, PulseAudioClient | KeyboardMonitorService> =>
-  Effect.scoped(
+): Effect.fn.Return<never, PttKeyboardError, PulseAudioClient | KeyboardMonitorService> {
+  return yield* Effect.scoped(
     Effect.gen(function* () {
       const keyboard = yield* KeyboardMonitorService
       const eventQueue = yield* keyboard.subscribe
@@ -146,7 +144,7 @@ export const runKeyboardMonitorPtt = (
 
       const deadInputDetectorRef = yield* Ref.make(pttDeadInputDetectorInitial())
 
-      const recordFiber = yield* createRecordStream(recordOptions).pipe(
+      yield* createRecordStream(recordOptions).pipe(
         Stream.runForEach((chunk) =>
           Effect.gen(function* () {
             const state = yield* Ref.get(captureStateRef)
@@ -183,10 +181,8 @@ export const runKeyboardMonitorPtt = (
             }
           }),
         ),
-        Effect.forkDetach,
+        Effect.forkScoped,
       )
-
-      yield* Effect.addFinalizer(() => Fiber.interrupt(recordFiber).pipe(Effect.ignore))
 
       yield* Console.log(config.armedMessage(trigger))
 
@@ -301,6 +297,7 @@ export const runKeyboardMonitorPtt = (
       }
     }),
   )
+})
 
 export const pttPortalCommand = Command.make(
   "ptt-portal",
@@ -478,12 +475,7 @@ export const pttTranscribeCommand = Command.make(
 
             const result = yield* typeTextInFocusedApp(text).pipe(
               Effect.mapError((cause) =>
-                toPttKeyboardError(
-                  cause instanceof Error
-                    ? `Failed to inject transcript text: ${cause.message}`
-                    : "Failed to inject transcript text",
-                  cause,
-                ),
+                toPttKeyboardError(`Failed to inject transcript text: ${cause.message}`, cause),
               ),
             )
 
@@ -581,12 +573,7 @@ export const pttTranslateCommand = Command.make(
 
             const result = yield* typeTextInFocusedApp(text).pipe(
               Effect.mapError((cause) =>
-                toPttKeyboardError(
-                  cause instanceof Error
-                    ? `Failed to inject translated text: ${cause.message}`
-                    : "Failed to inject translated text",
-                  cause,
-                ),
+                toPttKeyboardError(`Failed to inject translated text: ${cause.message}`, cause),
               ),
             )
 

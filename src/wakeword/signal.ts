@@ -1,3 +1,5 @@
+export const sigmoid = (x: number): number => 1 / (1 + Math.exp(-x))
+
 export const flattenMatrix = (rows: ReadonlyArray<Float32Array>): Float32Array => {
   if (rows.length === 0) {
     return new Float32Array()

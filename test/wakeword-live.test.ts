@@ -6,7 +6,7 @@ import * as Data from "effect/Data"
 import { promises as fs } from "node:fs"
 
 import { PA_DEFAULT_SOCKET_PATH } from "../src/pulse/defs.ts"
-import { layer } from "../src/pulse/client.ts"
+import { PulseAudioClient } from "../src/pulse/client.ts"
 import { createWakewordTelemetryStream } from "../src/wakeword/live.ts"
 import { createWakewordTriggerMachine } from "../src/wakeword/trigger.ts"
 
@@ -49,14 +49,12 @@ test(
       reset: Effect.void,
     }
 
-    const trigger = Effect.runSync(
-      createWakewordTriggerMachine({
-        threshold: 0.5,
-        smoothingWindow: 1,
-        consecutiveFrames: 1,
-        cooldownMs: 200,
-      }),
-    )
+    const trigger = createWakewordTriggerMachine({
+      threshold: 0.5,
+      smoothingWindow: 1,
+      consecutiveFrames: 1,
+      cooldownMs: 200,
+    })
 
     const program = createWakewordTelemetryStream({
       pipeline,
@@ -81,7 +79,7 @@ test(
             new WakewordLiveTestTimeoutError({ message: "wakeword live stream timed out" }),
           ),
       }),
-      Effect.provide(layer()),
+      Effect.provide(PulseAudioClient.layer()),
     )
 
     const events = await Effect.runPromise(program)

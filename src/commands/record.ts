@@ -1,4 +1,4 @@
-import { Console, Effect, Fiber, Option, Ref, Stream } from "effect"
+import { Console, Effect, Option, Ref, Stream } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import { mkdir as mkdirNode, writeFile as writeNodeFile } from "node:fs/promises"
 import * as path from "node:path"
@@ -28,14 +28,13 @@ export const recordCommand = Command.make(
   (config) =>
     Effect.gen(function* () {
       const client = yield* PulseAudioClient
-      yield* client.connect()
 
       const program = Effect.gen(function* () {
         const serverInfo = yield* client.getServerInfo
         const sources = yield* client.listSources
 
         const requestedSource = Option.getOrUndefined(config.source)
-        const sourceName = requestedSource ?? serverInfo.defaultSource
+        const sourceName = requestedSource ?? serverInfo.defaultSource ?? undefined
 
         if (
           requestedSource !== undefined &&
@@ -52,25 +51,28 @@ export const recordCommand = Command.make(
         const byteCountRef = yield* Ref.make(0)
         const chunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([])
 
-        const recordFiber = yield* createRecordStream(
-          makePcmRecordOptions({
-            channels: config.channels,
-            rate: config.sampleRate,
-            fragmentSize: config.fragmentSize,
-            sourceName,
-          }),
-        ).pipe(
-          Stream.runForEach((chunk) =>
-            Effect.gen(function* () {
-              yield* Ref.update(byteCountRef, (count) => count + chunk.length)
-              yield* Ref.update(chunksRef, (chunks) => [...chunks, chunk])
-            }),
-          ),
-          Effect.forkDetach,
-        )
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* createRecordStream(
+              makePcmRecordOptions({
+                channels: config.channels,
+                rate: config.sampleRate,
+                fragmentSize: config.fragmentSize,
+                sourceName,
+              }),
+            ).pipe(
+              Stream.runForEach((chunk) =>
+                Effect.gen(function* () {
+                  yield* Ref.update(byteCountRef, (count) => count + chunk.length)
+                  yield* Ref.update(chunksRef, (chunks) => [...chunks, chunk])
+                }),
+              ),
+              Effect.forkScoped,
+            )
 
-        yield* Effect.sleep(`${config.duration} seconds`)
-        yield* Fiber.interrupt(recordFiber)
+            yield* Effect.sleep(`${config.duration} seconds`)
+          }),
+        )
 
         const byteCount = yield* Ref.get(byteCountRef)
         if (byteCount <= 0) {
@@ -85,13 +87,10 @@ export const recordCommand = Command.make(
         const rawPeak = pcmPeak(rawData)
 
         const bytesPerSecond = config.sampleRate * config.channels * 2
-        const expectedBytes = bytesPerSecond * config.duration
-        const trimmedRawData =
-          rawData.length > expectedBytes ? rawData.slice(0, expectedBytes) : rawData
 
         const { normalizedBytes: outputData, gain } = config.raw
-          ? { normalizedBytes: trimmedRawData, gain: 1.0 }
-          : normalizePcmForStt(trimmedRawData)
+          ? { normalizedBytes: rawData, gain: 1.0 }
+          : normalizePcmForStt(rawData)
 
         if (Option.isSome(config.output)) {
           const outputPath = config.output.value
@@ -118,6 +117,6 @@ export const recordCommand = Command.make(
         )
       })
 
-      yield* program.pipe(Effect.ensuring(client.disconnect))
+      yield* program
     }),
 ).pipe(Command.withDescription("Record PCM audio from PulseAudio"))

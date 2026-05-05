@@ -1,18 +1,14 @@
-import { Effect } from "effect"
+import { Data, Effect } from "effect"
 import { readStreamText } from "../utils/subprocess.js"
 
-export class WtypeError extends Error {
-  readonly stderr: string | undefined
-
-  constructor(message: string, options?: { readonly cause?: unknown; readonly stderr?: string }) {
-    super(message, options?.cause === undefined ? undefined : { cause: options.cause })
-    this.name = "WtypeError"
-    this.stderr = options?.stderr
-  }
-}
+export class WtypeError extends Data.TaggedError("WtypeError")<{
+  readonly message: string
+  readonly cause?: unknown
+  readonly stderr?: string
+}> {}
 const DEFAULT_DIRECT_COMMAND_TIMEOUT_MS = 30_000
 const DEFAULT_CLIPBOARD_COMMAND_TIMEOUT_MS = 2_000
-const MAX_COMMAND_TIMEOUT_MS = 2_147_483_647
+const MAX_COMMAND_TIMEOUT_MS = 300_000
 
 const runCommand = (
   commandArgs: Array<string>,
@@ -39,23 +35,25 @@ const runCommand = (
             timeout = setTimeout(() => {
               try {
                 process.kill()
-              } finally {
-                reject(new WtypeError(`${executableName} timed out after ${timeoutMs}ms`))
+              } catch {
+                // ignore
               }
+              reject(
+                new WtypeError({ message: `${executableName} timed out after ${timeoutMs}ms` }),
+              )
             }, timeoutMs)
           }),
         ])
 
         if (exitCode !== 0) {
           const details = stderr.trim()
-          throw new WtypeError(
-            details.length > 0
-              ? `${executableName} failed with exit code ${exitCode}: ${details}`
-              : `${executableName} failed with exit code ${exitCode}`,
-            {
-              stderr,
-            },
-          )
+          throw new WtypeError({
+            message:
+              details.length > 0
+                ? `${executableName} failed with exit code ${exitCode}: ${details}`
+                : `${executableName} failed with exit code ${exitCode}`,
+            stderr,
+          })
         }
 
         return {
@@ -71,7 +69,7 @@ const runCommand = (
     catch: (cause) =>
       cause instanceof WtypeError
         ? cause
-        : new WtypeError(`Failed to execute ${executableName}`, { cause }),
+        : new WtypeError({ message: `Failed to execute ${executableName}`, cause }),
   })
 
 export const buildWtypeCommandArgs = (
@@ -140,22 +138,17 @@ const shouldAttemptClipboardPaste = (mode: WtypeInjectionMode, text: string): bo
   return shouldUseWtypeClipboardPaste(text)
 }
 
-const findWtypeExecutable = Effect.try({
-  try: () => {
-    const executable = Bun.which("wtype")
-    if (executable === null) {
-      throw new WtypeError("wtype is required but was not found in PATH")
-    }
+const findWtypeExecutable = Effect.sync(() => Bun.which("wtype")).pipe(
+  Effect.flatMap((executable) =>
+    executable === null
+      ? Effect.fail(new WtypeError({ message: "wtype is required but was not found in PATH" }))
+      : Effect.succeed(executable),
+  ),
+)
 
-    return executable
-  },
-  catch: (cause) =>
-    cause instanceof WtypeError ? cause : new WtypeError("Failed to resolve wtype", { cause }),
-})
+const findOptionalWlCopyExecutable = Effect.sync(() => Bun.which("wl-copy") ?? undefined)
 
-const findOptionalWlCopyExecutable = (): string | undefined => Bun.which("wl-copy") ?? undefined
-
-const findOptionalWlPasteExecutable = (): string | undefined => Bun.which("wl-paste") ?? undefined
+const findOptionalWlPasteExecutable = Effect.sync(() => Bun.which("wl-paste") ?? undefined)
 
 const typeTextWithWtypeDirect = (
   wtypeExecutable: string,
@@ -223,50 +216,49 @@ const resolveCommandTimeoutMs = (
   return Number.isFinite(value) && value > 0 && value <= MAX_COMMAND_TIMEOUT_MS
     ? Effect.succeed(value)
     : Effect.fail(
-        new WtypeError(
-          `commandTimeoutMs must be a positive number up to ${MAX_COMMAND_TIMEOUT_MS}`,
-        ),
+        new WtypeError({
+          message: `commandTimeoutMs must be a positive number up to ${MAX_COMMAND_TIMEOUT_MS}`,
+        }),
       )
 }
 
-export const typeTextWithWtype = (
+export const typeTextWithWtype = Effect.fn("pie/wayland/wtype.typeTextWithWtype")(function* (
   text: string,
   options?: {
     readonly mode?: WtypeInjectionMode
     readonly commandTimeoutMs?: number
   },
-): Effect.Effect<void, WtypeError> =>
-  Effect.gen(function* () {
-    const wtypeExecutable = yield* findWtypeExecutable
-    const mode = options?.mode ?? resolveWtypeInjectionMode()
-    const directCommandTimeoutMs = yield* resolveCommandTimeoutMs(
-      options?.commandTimeoutMs,
-      DEFAULT_DIRECT_COMMAND_TIMEOUT_MS,
-    )
-    const clipboardCommandTimeoutMs = yield* resolveCommandTimeoutMs(
-      options?.commandTimeoutMs,
-      DEFAULT_CLIPBOARD_COMMAND_TIMEOUT_MS,
-    )
+): Effect.fn.Return<void, WtypeError> {
+  const wtypeExecutable = yield* findWtypeExecutable
+  const mode = options?.mode ?? resolveWtypeInjectionMode()
+  const directCommandTimeoutMs = yield* resolveCommandTimeoutMs(
+    options?.commandTimeoutMs,
+    DEFAULT_DIRECT_COMMAND_TIMEOUT_MS,
+  )
+  const clipboardCommandTimeoutMs = yield* resolveCommandTimeoutMs(
+    options?.commandTimeoutMs,
+    DEFAULT_CLIPBOARD_COMMAND_TIMEOUT_MS,
+  )
 
-    if (!shouldAttemptClipboardPaste(mode, text)) {
-      return yield* typeTextWithWtypeDirect(wtypeExecutable, text, directCommandTimeoutMs)
-    }
+  if (!shouldAttemptClipboardPaste(mode, text)) {
+    return yield* typeTextWithWtypeDirect(wtypeExecutable, text, directCommandTimeoutMs)
+  }
 
-    const wlCopyExecutable = findOptionalWlCopyExecutable()
-    if (wlCopyExecutable === undefined) {
-      return yield* typeTextWithWtypeDirect(wtypeExecutable, text, directCommandTimeoutMs)
-    }
+  const wlCopyExecutable = yield* findOptionalWlCopyExecutable
+  if (wlCopyExecutable === undefined) {
+    return yield* typeTextWithWtypeDirect(wtypeExecutable, text, directCommandTimeoutMs)
+  }
 
-    const wlPasteExecutable = findOptionalWlPasteExecutable()
-    const previousClipboard = yield* readClipboardText(wlPasteExecutable, clipboardCommandTimeoutMs)
+  const wlPasteExecutable = yield* findOptionalWlPasteExecutable
+  const previousClipboard = yield* readClipboardText(wlPasteExecutable, clipboardCommandTimeoutMs)
 
-    return yield* typeTextWithWtypeClipboardPaste({
-      wtypeExecutable,
-      wlCopyExecutable,
-      previousClipboard,
-      text,
-      commandTimeoutMs: clipboardCommandTimeoutMs,
-    }).pipe(
-      Effect.catch(() => typeTextWithWtypeDirect(wtypeExecutable, text, directCommandTimeoutMs)),
-    )
-  })
+  return yield* typeTextWithWtypeClipboardPaste({
+    wtypeExecutable,
+    wlCopyExecutable,
+    previousClipboard,
+    text,
+    commandTimeoutMs: clipboardCommandTimeoutMs,
+  }).pipe(
+    Effect.catch(() => typeTextWithWtypeDirect(wtypeExecutable, text, directCommandTimeoutMs)),
+  )
+})

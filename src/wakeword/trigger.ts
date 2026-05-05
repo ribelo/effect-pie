@@ -1,5 +1,3 @@
-import { Effect, Ref } from "effect"
-
 import type { WakewordScoreFrame, WakewordTriggerEvent } from "./defs.js"
 
 export type WakewordTriggerConfig = {
@@ -31,85 +29,78 @@ const average = (values: ReadonlyArray<number>): number => {
 }
 
 export type WakewordTriggerMachine = {
-  readonly processFrame: (
-    frame: WakewordScoreFrame,
-  ) => Effect.Effect<ReadonlyArray<WakewordTriggerEvent>>
-  readonly reset: Effect.Effect<void>
+  readonly processFrame: (frame: WakewordScoreFrame) => ReadonlyArray<WakewordTriggerEvent>
+  readonly reset: () => void
 }
 
 export const createWakewordTriggerMachine = (
   partialConfig: Partial<WakewordTriggerConfig> = {},
-): Effect.Effect<WakewordTriggerMachine> =>
-  Effect.gen(function* () {
-    const config: WakewordTriggerConfig = {
-      ...defaultConfig,
-      ...partialConfig,
+): WakewordTriggerMachine => {
+  const config: WakewordTriggerConfig = {
+    ...defaultConfig,
+    ...partialConfig,
+  }
+
+  const modelStates = new Map<string, TriggerModelState>()
+
+  const getOrCreateModelState = (model: string): TriggerModelState => {
+    const existing = modelStates.get(model)
+    if (existing !== undefined) {
+      return existing
     }
-
-    const modelStatesRef = yield* Ref.make<Map<string, TriggerModelState>>(new Map())
-
-    const getOrCreateModelState = (
-      map: Map<string, TriggerModelState>,
-      model: string,
-    ): TriggerModelState => {
-      const existing = map.get(model)
-      if (existing !== undefined) {
-        return existing
-      }
-      const created: TriggerModelState = {
-        recentScores: [],
-        consecutiveAboveThreshold: 0,
-        cooldownUntilMs: 0,
-      }
-      map.set(model, created)
-      return created
+    const created: TriggerModelState = {
+      recentScores: [],
+      consecutiveAboveThreshold: 0,
+      cooldownUntilMs: 0,
     }
+    modelStates.set(model, created)
+    return created
+  }
 
-    const processFrame = (
-      frame: WakewordScoreFrame,
-    ): Effect.Effect<ReadonlyArray<WakewordTriggerEvent>> =>
-      Ref.modify(modelStatesRef, (map) => {
-        const events: Array<WakewordTriggerEvent> = []
+  const processFrame = (frame: WakewordScoreFrame): ReadonlyArray<WakewordTriggerEvent> => {
+    const events: Array<WakewordTriggerEvent> = []
 
-        for (const [model, rawScore] of Object.entries(frame.scores)) {
-          const modelState = getOrCreateModelState(map, model)
-          modelState.recentScores.push(rawScore)
+    for (const [model, rawScore] of Object.entries(frame.scores)) {
+      const modelState = getOrCreateModelState(model)
+      modelState.recentScores.push(rawScore)
 
-          while (modelState.recentScores.length > config.smoothingWindow) {
-            modelState.recentScores.shift()
-          }
+      while (modelState.recentScores.length > config.smoothingWindow) {
+        modelState.recentScores.shift()
+      }
 
-          const smoothedScore = average(modelState.recentScores)
+      const smoothedScore = average(modelState.recentScores)
 
-          if (smoothedScore >= config.threshold) {
-            modelState.consecutiveAboveThreshold += 1
-          } else {
-            modelState.consecutiveAboveThreshold = 0
-          }
+      if (smoothedScore >= config.threshold) {
+        modelState.consecutiveAboveThreshold += 1
+      } else {
+        modelState.consecutiveAboveThreshold = 0
+      }
 
-          if (frame.timestampMs < modelState.cooldownUntilMs) {
-            continue
-          }
+      if (frame.timestampMs < modelState.cooldownUntilMs) {
+        continue
+      }
 
-          if (modelState.consecutiveAboveThreshold < config.consecutiveFrames) {
-            continue
-          }
+      if (modelState.consecutiveAboveThreshold < config.consecutiveFrames) {
+        continue
+      }
 
-          modelState.cooldownUntilMs = frame.timestampMs + config.cooldownMs
-          modelState.consecutiveAboveThreshold = 0
+      modelState.cooldownUntilMs = frame.timestampMs + config.cooldownMs
+      modelState.consecutiveAboveThreshold = 0
 
-          events.push({
-            timestampMs: frame.timestampMs,
-            model,
-            score: smoothedScore,
-            rawScore,
-          })
-        }
-
-        return [events, map] as const
+      events.push({
+        timestampMs: frame.timestampMs,
+        model,
+        score: smoothedScore,
+        rawScore,
       })
+    }
 
-    const reset = Ref.set(modelStatesRef, new Map())
+    return events
+  }
 
-    return { processFrame, reset }
-  })
+  const reset = (): void => {
+    modelStates.clear()
+  }
+
+  return { processFrame, reset }
+}

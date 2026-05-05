@@ -1,4 +1,4 @@
-import { Console, Duration, Effect, Fiber, Option, Queue, Ref, Stream } from "effect"
+import { Console, Duration, Effect, Option, Queue, Ref, Stream } from "effect"
 import * as path from "node:path"
 import { mkdir as mkdirNode, writeFile as writeNodeFile } from "node:fs/promises"
 import { loadSttRuntimeConfig, type SttConfigError, type SttRuntimeConfig } from "../stt/config.js"
@@ -42,6 +42,7 @@ import {
   detectionTuningPathFor,
   readCalibrationSnapshot,
   readDetectionTuningSnapshot,
+  type WakewordSnapshotError,
 } from "./wakewordHelpers.js"
 
 const DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE = "ok_pie.json"
@@ -99,7 +100,7 @@ const persistAssistantRecordingState = (
 const setAssistantRecordingMode = (config: {
   readonly ref: Ref.Ref<AssistantRecordingRuntimeState>
   readonly mode: AssistantRecordingMode | undefined
-}): Effect.Effect<void> =>
+}): Effect.Effect<void, CliError> =>
   Effect.gen(function* () {
     const nowMs = Date.now()
     const nowIso = new Date(nowMs).toISOString()
@@ -142,7 +143,7 @@ const setAssistantRecordingMode = (config: {
     })
 
     yield* persistAssistantRecordingState(state).pipe(
-      Effect.catch((cause: CliError) => Console.log(`[assistant] ${cause.message}`)),
+      Effect.tapError((cause: CliError) => Console.log(`[assistant] ${cause.message}`)),
     )
   })
 
@@ -153,16 +154,6 @@ const resolveDefaultSourceName = (): Effect.Effect<string, CliError, PulseAudioC
   Effect.gen(function* () {
     const client = yield* PulseAudioClient
 
-    yield* client.connect().pipe(
-      Effect.mapError(
-        (cause) =>
-          new CliError({
-            message: "Failed to connect to PulseAudio",
-            cause,
-          }),
-      ),
-    )
-
     const serverInfo = yield* client.getServerInfo.pipe(
       Effect.mapError(
         (cause) =>
@@ -171,10 +162,9 @@ const resolveDefaultSourceName = (): Effect.Effect<string, CliError, PulseAudioC
             cause,
           }),
       ),
-      Effect.ensuring(client.disconnect),
     )
 
-    if (serverInfo.defaultSource.length === 0) {
+    if (serverInfo.defaultSource === null || serverInfo.defaultSource.length === 0) {
       return yield* new CliError({
         message: "PulseAudio did not return a default capture source",
       })
@@ -187,226 +177,237 @@ const runAssistantWakewordTranscribeLoop = (config: {
   readonly sourceName: string
   readonly sttConfig: SttRuntimeConfig
   readonly pttActiveRef: Ref.Ref<boolean>
-  readonly setRecordingMode: (mode: AssistantRecordingMode | undefined) => Effect.Effect<void>
+  readonly setRecordingMode: (
+    mode: AssistantRecordingMode | undefined,
+  ) => Effect.Effect<void, CliError>
   readonly diagnostics?: AssistantDiagnostics | undefined
 }): Effect.Effect<void, CliError, PulseAudioClient> =>
-  Effect.gen(function* () {
-    const assets = yield* validateWakewordAssets({
-      wakewordModels: [DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE],
-    }).pipe(
-      Effect.mapError(
-        (cause: WakewordAssetError) =>
-          new CliError({
-            message: `Wakeword assets are invalid: ${cause.message}`,
-            cause,
-          }),
-      ),
-    )
+  Effect.scoped(
+    Effect.gen(function* () {
+      const outerScope = yield* Effect.scope
 
-    const sessions = yield* loadWakewordModelSessions(assets).pipe(
-      Effect.mapError(
-        (cause: WakewordRuntimeError) =>
-          new CliError({
-            message: `Failed to initialize wakeword model sessions: ${cause.message}`,
-            cause,
-          }),
-      ),
-    )
+      const assets = yield* validateWakewordAssets({
+        wakewordModels: [DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE],
+      }).pipe(
+        Effect.mapError(
+          (cause: WakewordAssetError) =>
+            new CliError({
+              message: `Wakeword assets are invalid: ${cause.message}`,
+              cause,
+            }),
+        ),
+      )
 
-    const pipeline = yield* makeWakewordPipeline(sessions).pipe(
-      Effect.mapError(
-        (cause: WakewordPipelineError) =>
-          new CliError({
-            message: `Failed to initialize wakeword inference pipeline: ${cause.message}`,
-            cause,
-          }),
-      ),
-    )
+      const sessions = yield* loadWakewordModelSessions(assets).pipe(
+        Effect.mapError(
+          (cause: WakewordRuntimeError) =>
+            new CliError({
+              message: `Failed to initialize wakeword model sessions: ${cause.message}`,
+              cause,
+            }),
+        ),
+      )
 
-    const modelNames = Object.keys(assets.wakewordModelPaths)
-    const selectedModelName =
-      modelNames.find((name) => normalizeWakewordModelName(name) === "ok_pie") ?? modelNames[0]
+      yield* Effect.addFinalizer(() => sessions.dispose)
 
-    if (selectedModelName === undefined) {
-      return yield* new CliError({
-        message: "No wakeword models are available",
+      const pipeline = yield* makeWakewordPipeline(sessions).pipe(
+        Effect.mapError(
+          (cause: WakewordPipelineError) =>
+            new CliError({
+              message: `Failed to initialize wakeword inference pipeline: ${cause.message}`,
+              cause,
+            }),
+        ),
+      )
+
+      const modelNames = Object.keys(assets.wakewordModelPaths)
+      const selectedModelName =
+        modelNames.find((name) => normalizeWakewordModelName(name) === "ok_pie") ?? modelNames[0]
+
+      if (selectedModelName === undefined) {
+        return yield* new CliError({
+          message: "No wakeword models are available",
+        })
+      }
+
+      const normalizedModelName = normalizeWakewordModelName(selectedModelName)
+      const tuningPath = detectionTuningPathFor(normalizedModelName)
+      const calibrationPath = calibrationPathFor(normalizedModelName)
+
+      const tuningSnapshot = yield* readDetectionTuningSnapshot(tuningPath).pipe(
+        Effect.mapError(
+          (cause: WakewordSnapshotError) =>
+            new CliError({
+              message: `Missing wakeword tuning for '${normalizedModelName}'. Run 'pie wakeword-tune --name ${normalizedModelName}' first.`,
+              cause,
+            }),
+        ),
+      )
+      const calibrationSnapshot = yield* readCalibrationSnapshot(calibrationPath)
+
+      const triggerMachine = createWakewordTriggerMachine({
+        threshold: tuningSnapshot.trigger.threshold,
+        smoothingWindow: tuningSnapshot.trigger.smoothingWindow,
+        consecutiveFrames: tuningSnapshot.trigger.consecutiveFrames,
+        cooldownMs: tuningSnapshot.trigger.cooldownMs,
       })
-    }
 
-    const normalizedModelName = normalizeWakewordModelName(selectedModelName)
-    const tuningPath = detectionTuningPathFor(normalizedModelName)
-    const calibrationPath = calibrationPathFor(normalizedModelName)
+      const isTranscribingRef = yield* Ref.make(false)
 
-    const tuningSnapshot = yield* readDetectionTuningSnapshot(tuningPath)
-    const calibrationSnapshot = yield* readCalibrationSnapshot(calibrationPath)
+      const wakewordRecordOptions = makePcmRecordOptions({
+        rate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+        fragmentSize: DEFAULT_ASSISTANT_WAKEWORD_FRAGMENT_SIZE,
+        sourceName: config.sourceName,
+      })
 
-    const triggerMachine = yield* createWakewordTriggerMachine({
-      threshold: tuningSnapshot?.trigger.threshold ?? 0.5,
-      smoothingWindow: tuningSnapshot?.trigger.smoothingWindow ?? 4,
-      consecutiveFrames: tuningSnapshot?.trigger.consecutiveFrames ?? 3,
-      cooldownMs: tuningSnapshot?.trigger.cooldownMs ?? 1500,
-    })
+      yield* Console.log(
+        `[assistant] Wakeword listener armed: model=${selectedModelName} source=${config.sourceName}`,
+      )
 
-    const isTranscribingRef = yield* Ref.make(false)
-
-    const wakewordRecordOptions = makePcmRecordOptions({
-      rate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-      fragmentSize: DEFAULT_ASSISTANT_WAKEWORD_FRAGMENT_SIZE,
-      sourceName: config.sourceName,
-    })
-
-    yield* Console.log(
-      `[assistant] Wakeword listener armed: model=${selectedModelName} source=${config.sourceName}`,
-    )
-
-    if (tuningSnapshot !== undefined) {
       yield* Console.log(`[assistant] Wakeword tuning loaded: ${tuningPath}`)
-    }
 
-    return yield* createWakewordTelemetryStream({
-      pipeline,
-      trigger: triggerMachine,
-      recordStream: wakewordRecordOptions,
-    }).pipe(
-      Stream.runForEach((event) =>
-        Effect.gen(function* () {
-          if (event.type !== "trigger" || event.event.model !== selectedModelName) {
-            return
-          }
-
-          const pttActive = yield* Ref.get(config.pttActiveRef)
-          if (pttActive) {
-            return
-          }
-
-          const alreadyTranscribing = yield* Ref.get(isTranscribingRef)
-          if (alreadyTranscribing) {
-            return
-          }
-
-          yield* Ref.set(isTranscribingRef, true)
-          config.diagnostics?.wakewordTrigger(selectedModelName)
-
-          const triggerEffect = Effect.gen(function* () {
-            config.diagnostics?.setState("wakeword-dictation")
-            const dictationSilenceSeconds =
-              config.sttConfig.openrouter.wakewordDictationSilenceSeconds
-            const dictationMaxSeconds = config.sttConfig.openrouter.wakewordDictationMaxSeconds
-            const dictationSpeechStartTimeoutSeconds = resolveWakewordSpeechStartTimeoutSeconds({
-              silenceSeconds: dictationSilenceSeconds,
-              maxSeconds: dictationMaxSeconds,
-            })
-            const dictationSpeechRmsThreshold =
-              calibrationSnapshot?.resolved.speechRms ??
-              config.sttConfig.openrouter.wakewordDictationSpeechRmsThreshold
-
-            yield* Console.log(
-              `[wakeword-transcribe] Trigger detected (${selectedModelName}). Dictation capture started (silence=${dictationSilenceSeconds}s, max=${dictationMaxSeconds}s, speech_start_timeout=${dictationSpeechStartTimeoutSeconds}s, speech_rms=${dictationSpeechRmsThreshold.toFixed(4)})...`,
-            )
-
-            yield* config.setRecordingMode("wakeword")
-
-            const rawPcmBytes = yield* recordPcmUntilTrailingSilence({
-              silenceSeconds: dictationSilenceSeconds,
-              maxSeconds: dictationMaxSeconds,
-              speechStartTimeoutSeconds: dictationSpeechStartTimeoutSeconds,
-              speechRmsThreshold: dictationSpeechRmsThreshold,
-              fragmentSize: DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
-              sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-              channels: 1,
-              sourceName: config.sourceName,
-            }).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new CliError({
-                    message: "Failed to capture wakeword dictation clip",
-                    cause,
-                  }),
-              ),
-              Effect.ensuring(config.setRecordingMode(undefined)),
-            )
-
-            const { normalizedBytes: pcmBytes, gain } = normalizePcmForStt(rawPcmBytes)
-            if (gain > MIN_GAIN_TO_APPLY) {
-              yield* Console.log(
-                `[wakeword-transcribe] Normalized dictation (rms=${pcmRms(rawPcmBytes).toFixed(4)} peak=${pcmPeak(rawPcmBytes).toFixed(4)} gain=${gain.toFixed(2)})`,
-              )
-            }
-
-            config.diagnostics?.setState("stt")
-            config.diagnostics?.sttStart(config.sttConfig.openrouter.transcriptionModel)
-            const transcript = yield* transcribePcmWithOpenRouter({
-              model: config.sttConfig.openrouter.transcriptionModel,
-              pcmBytes,
-              sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-              language: config.sttConfig.openrouter.transcriptionLanguage,
-              promptTemplate: config.sttConfig.transcriptionPrompt,
-            }).pipe(
-              Effect.mapError(
-                (cause: OpenRouterSttError) =>
-                  new CliError({
-                    message: `Wakeword transcription failed: ${cause.message}`,
-                    cause,
-                  }),
-              ),
-            )
-
-            config.diagnostics?.sttComplete(transcript.length)
-
-            const text = transcript.trim()
-            const injectableText = normalizeTextForInjection(text)
-
-            if (injectableText.length === 0) {
-              yield* Console.log("[wakeword-transcribe] Ignored empty transcript")
-              config.diagnostics?.setState("idle")
+      return yield* createWakewordTelemetryStream({
+        pipeline,
+        trigger: triggerMachine,
+        recordStream: wakewordRecordOptions,
+      }).pipe(
+        Stream.runForEach((event) =>
+          Effect.gen(function* () {
+            if (event.type !== "trigger" || event.event.model !== selectedModelName) {
               return
             }
 
-            yield* Console.log("[wakeword-transcribe] Will type (start)")
-            yield* Console.log(injectableText)
-            yield* Console.log("[wakeword-transcribe] Will type (end)")
+            const pttActive = yield* Ref.get(config.pttActiveRef)
+            if (pttActive) {
+              return
+            }
 
-            config.diagnostics?.setState("injection")
-            config.diagnostics?.injectionStart(injectableText.length)
-            const typed = yield* typeTextInFocusedApp(injectableText).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new CliError({
-                    message:
-                      cause instanceof Error
-                        ? `Failed to type wakeword transcript: ${cause.message}`
-                        : "Failed to type wakeword transcript",
-                    cause,
-                  }),
-              ),
+            const alreadyTranscribing = yield* Ref.get(isTranscribingRef)
+            if (alreadyTranscribing) {
+              return
+            }
+
+            yield* Ref.set(isTranscribingRef, true)
+            config.diagnostics?.wakewordTrigger(selectedModelName)
+
+            const triggerEffect = Effect.gen(function* () {
+              config.diagnostics?.setState("wakeword-dictation")
+              const dictationSilenceSeconds =
+                config.sttConfig.openrouter.wakewordDictationSilenceSeconds
+              const dictationMaxSeconds = config.sttConfig.openrouter.wakewordDictationMaxSeconds
+              const dictationSpeechStartTimeoutSeconds = resolveWakewordSpeechStartTimeoutSeconds({
+                silenceSeconds: dictationSilenceSeconds,
+                maxSeconds: dictationMaxSeconds,
+              })
+              const dictationSpeechRmsThreshold =
+                calibrationSnapshot?.resolved.speechRms ??
+                config.sttConfig.openrouter.wakewordDictationSpeechRmsThreshold
+
+              yield* Console.log(
+                `[wakeword-transcribe] Trigger detected (${selectedModelName}). Dictation capture started (silence=${dictationSilenceSeconds}s, max=${dictationMaxSeconds}s, speech_start_timeout=${dictationSpeechStartTimeoutSeconds}s, speech_rms=${dictationSpeechRmsThreshold.toFixed(4)})...`,
+              )
+
+              yield* config.setRecordingMode("wakeword")
+
+              const rawPcmBytes = yield* recordPcmUntilTrailingSilence({
+                silenceSeconds: dictationSilenceSeconds,
+                maxSeconds: dictationMaxSeconds,
+                speechStartTimeoutSeconds: dictationSpeechStartTimeoutSeconds,
+                speechRmsThreshold: dictationSpeechRmsThreshold,
+                fragmentSize: DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
+                sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+                channels: 1,
+                sourceName: config.sourceName,
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new CliError({
+                      message: "Failed to capture wakeword dictation clip",
+                      cause,
+                    }),
+                ),
+                Effect.onExit(() => config.setRecordingMode(undefined)),
+              )
+
+              const { normalizedBytes: pcmBytes, gain } = normalizePcmForStt(rawPcmBytes)
+              if (gain > MIN_GAIN_TO_APPLY) {
+                yield* Console.log(
+                  `[wakeword-transcribe] Normalized dictation (rms=${pcmRms(rawPcmBytes).toFixed(4)} peak=${pcmPeak(rawPcmBytes).toFixed(4)} gain=${gain.toFixed(2)})`,
+                )
+              }
+
+              config.diagnostics?.setState("stt")
+              config.diagnostics?.sttStart(config.sttConfig.openrouter.transcriptionModel)
+              const transcript = yield* transcribePcmWithOpenRouter({
+                model: config.sttConfig.openrouter.transcriptionModel,
+                pcmBytes,
+                sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+                language: config.sttConfig.openrouter.transcriptionLanguage,
+                promptTemplate: config.sttConfig.transcriptionPrompt,
+              }).pipe(
+                Effect.mapError(
+                  (cause: OpenRouterSttError) =>
+                    new CliError({
+                      message: `Wakeword transcription failed: ${cause.message}`,
+                      cause,
+                    }),
+                ),
+              )
+
+              config.diagnostics?.sttComplete(transcript.length)
+
+              const text = transcript.trim()
+              const injectableText = normalizeTextForInjection(text)
+
+              if (injectableText.length === 0) {
+                yield* Console.log("[wakeword-transcribe] Ignored empty transcript")
+                config.diagnostics?.setState("idle")
+                return
+              }
+
+              yield* Console.log("[wakeword-transcribe] Will type (start)")
+              yield* Console.log(injectableText)
+              yield* Console.log("[wakeword-transcribe] Will type (end)")
+
+              config.diagnostics?.setState("injection")
+              config.diagnostics?.injectionStart(injectableText.length)
+              const typed = yield* typeTextInFocusedApp(injectableText).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new CliError({
+                      message: `Failed to type wakeword transcript: ${cause.message}`,
+                      cause,
+                    }),
+                ),
+              )
+              config.diagnostics?.injectionComplete()
+              config.diagnostics?.setState("idle")
+
+              yield* Console.log(
+                `[wakeword-transcribe] Typed ${typed.text.length} chars with ${typed.backend} (${typed.sessionType})`,
+              )
+            }).pipe(
+              Effect.catch((cause: CliError) => {
+                config.diagnostics?.sttFailure(cause.message)
+                config.diagnostics?.injectionFailure(cause.message)
+                return Console.log(`[wakeword-transcribe] ${cause.message}`)
+              }),
+              Effect.ensuring(Ref.set(isTranscribingRef, false)),
             )
-            config.diagnostics?.injectionComplete()
-            config.diagnostics?.setState("idle")
 
-            yield* Console.log(
-              `[wakeword-transcribe] Typed ${typed.text.length} chars with ${typed.backend} (${typed.sessionType})`,
-            )
-          }).pipe(
-            Effect.catch((cause: CliError) => {
-              config.diagnostics?.sttFailure(cause.message)
-              config.diagnostics?.injectionFailure(cause.message)
-              return Console.log(`[wakeword-transcribe] ${cause.message}`)
-            }),
-            Effect.ensuring(Ref.set(isTranscribingRef, false)),
-          )
-
-          yield* Effect.forkDetach(triggerEffect)
-        }),
-      ),
-      Effect.mapError(
-        (cause) =>
-          new CliError({
-            message: "Wakeword listener failed",
-            cause,
+            yield* Effect.forkIn(triggerEffect, outerScope)
           }),
-      ),
-    )
-  })
+        ),
+        Effect.mapError(
+          (cause) =>
+            new CliError({
+              message: "Wakeword listener failed",
+              cause,
+            }),
+        ),
+      )
+    }),
+  )
 
 type AssistantPttMode = "transcribe" | "translate"
 
@@ -414,11 +415,13 @@ const runAssistantPttCombinedLoop = (config: {
   readonly sourceName: string
   readonly sttConfig: SttRuntimeConfig
   readonly pttActiveRef: Ref.Ref<boolean>
-  readonly setRecordingMode: (mode: AssistantRecordingMode | undefined) => Effect.Effect<void>
+  readonly setRecordingMode: (
+    mode: AssistantRecordingMode | undefined,
+  ) => Effect.Effect<void, CliError>
   readonly diagnostics?: AssistantDiagnostics | undefined
   readonly pttTranscribeKeysym: Option.Option<number>
   readonly pttTranslateKeysym: Option.Option<number>
-}): Effect.Effect<never, PttKeyboardError, PulseAudioClient | KeyboardMonitorService> =>
+}): Effect.Effect<never, CliError | PttKeyboardError, PulseAudioClient | KeyboardMonitorService> =>
   Effect.scoped(
     Effect.gen(function* () {
       const transcribeKeysym = Option.getOrElse(
@@ -453,14 +456,20 @@ const runAssistantPttCombinedLoop = (config: {
       const captureStartedAtRef = yield* Ref.make<number | undefined>(undefined)
 
       yield* Effect.addFinalizer(() =>
-        Effect.all([Ref.set(config.pttActiveRef, false), config.setRecordingMode(undefined)], {
-          discard: true,
-        }),
+        Effect.all(
+          [
+            Ref.set(config.pttActiveRef, false),
+            config.setRecordingMode(undefined).pipe(Effect.orDie),
+          ],
+          {
+            discard: true,
+          },
+        ),
       )
 
       const deadInputDetectorRef = yield* Ref.make(pttDeadInputDetectorInitial())
 
-      const recordFiber = yield* createRecordStream(
+      yield* createRecordStream(
         makePcmRecordOptions({
           rate: DEFAULT_ASSISTANT_SAMPLE_RATE,
           fragmentSize: DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
@@ -501,10 +510,8 @@ const runAssistantPttCombinedLoop = (config: {
             }
           }),
         ),
-        Effect.forkDetach,
+        Effect.forkScoped,
       )
-
-      yield* Effect.addFinalizer(() => Fiber.interrupt(recordFiber).pipe(Effect.ignore))
 
       mainLoop: while (true) {
         const event = yield* Queue.take(eventQueue)
@@ -565,17 +572,22 @@ const runAssistantPttCombinedLoop = (config: {
 
         postRollLoop: while (true) {
           const postRollState = yield* Ref.get(captureStateRef)
-          const remaining = pttCapturePostRollRemainingMs(postRollState, Date.now())
+          const now = Date.now()
+          const remaining = pttCapturePostRollRemainingMs(postRollState, now)
           if (remaining <= 0) {
             break postRollLoop
           }
 
-          const nextEvent = yield* Queue.take(eventQueue).pipe(
-            Effect.timeoutOrElse({
-              duration: Duration.millis(remaining),
-              orElse: () => Effect.succeed(undefined),
-            }),
-          )
+          const deadlineMs = now + remaining
+          const nextEvent = yield* Effect.sync(() => {
+            const timeoutMs = Math.max(0, deadlineMs - Date.now())
+            return Queue.take(eventQueue).pipe(
+              Effect.timeoutOrElse({
+                duration: Duration.millis(timeoutMs),
+                orElse: () => Effect.succeed(undefined),
+              }),
+            )
+          }).pipe(Effect.flatten)
 
           if (nextEvent === undefined) {
             break postRollLoop
@@ -750,105 +762,106 @@ const runAssistantPttCombinedLoop = (config: {
     }),
   )
 
-export const runAssistantDefaultCommand = (config: {
+export const runAssistantDefaultCommand = Effect.fn(
+  "pie/commands/assistant.runAssistantDefaultCommand",
+)(function* (config: {
   readonly "ptt-transcribe-keysym": Option.Option<number>
   readonly "ptt-translate-keysym": Option.Option<number>
-}): Effect.Effect<
+}): Effect.fn.Return<
   void,
   CliError | SttConfigError | PttKeyboardError | Error,
   PulseAudioClient | KeyboardMonitorService
-> =>
-  Effect.gen(function* () {
-    const sttConfig = yield* loadSttRuntimeConfig().pipe(
-      Effect.mapError(
-        (cause: SttConfigError) =>
-          new CliError({
-            message: `Failed to load STT config: ${cause.message}`,
-            cause,
-          }),
-      ),
-    )
+> {
+  const sttConfig = yield* loadSttRuntimeConfig().pipe(
+    Effect.mapError(
+      (cause: SttConfigError) =>
+        new CliError({
+          message: `Failed to load STT config: ${cause.message}`,
+          cause,
+        }),
+    ),
+  )
 
-    const sourceName = yield* resolveDefaultSourceName()
-    const wakewordSpeechStartTimeoutSeconds = resolveWakewordSpeechStartTimeoutSeconds({
-      silenceSeconds: sttConfig.openrouter.wakewordDictationSilenceSeconds,
-      maxSeconds: sttConfig.openrouter.wakewordDictationMaxSeconds,
-    })
-
-    yield* Console.log("[assistant] Running default assistant mode")
-    if (sttConfig.openrouter.wakewordEnabled) {
-      yield* Console.log(
-        `[assistant] Wakeword model=${DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE} -> transcription (${sttConfig.openrouter.transcriptionLanguage})`,
-      )
-    } else {
-      yield* Console.log("[assistant] Wakeword disabled (PTT-only mode)")
-    }
+  const sourceName = yield* resolveDefaultSourceName()
+  yield* Console.log("[assistant] Running default assistant mode")
+  if (sttConfig.openrouter.wakewordEnabled) {
     yield* Console.log(
-      `[assistant] PTT transcribe keysym=${Option.getOrElse(config["ptt-transcribe-keysym"], () => DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM)}, PTT translate keysym=${Option.getOrElse(config["ptt-translate-keysym"], () => DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM)}`,
+      `[assistant] Wakeword model=${DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE} -> transcription (${sttConfig.openrouter.transcriptionLanguage})`,
     )
-    if (sttConfig.openrouter.wakewordEnabled) {
-      yield* Console.log(
-        `[assistant] Wakeword dictation: silence=${sttConfig.openrouter.wakewordDictationSilenceSeconds}s max=${sttConfig.openrouter.wakewordDictationMaxSeconds}s speech_start_timeout=${wakewordSpeechStartTimeoutSeconds}s speech_rms=${sttConfig.openrouter.wakewordDictationSpeechRmsThreshold.toFixed(4)}`,
-      )
-    }
-    yield* Console.log("[assistant] Focus the target app (for example Slack) to receive typed text")
-    yield* Console.log("[assistant] Press Ctrl+C to stop all listeners")
-
-    const pttActiveRef = yield* Ref.make(false)
-    const recordingStateRef = yield* Ref.make<AssistantRecordingRuntimeState>({
-      mode: undefined,
-      startedAtMs: undefined,
-    })
-    const setRecordingMode = (mode: AssistantRecordingMode | undefined) =>
-      setAssistantRecordingMode({
-        ref: recordingStateRef,
-        mode,
-      })
-
-    yield* setRecordingMode(undefined)
-    yield* Console.log(`[assistant] Recording state file: ${ASSISTANT_RECORDING_STATE_PATH}`)
-
-    const diagnostics = isShellTraceEnabled(process.env["PIE_SHELL_TRACE"])
-      ? new AssistantDiagnostics()
-      : undefined
-
-    const effect = Effect.all(
-      [
-        runAssistantPttCombinedLoop({
-          sourceName,
-          sttConfig,
-          pttActiveRef,
-          setRecordingMode,
-          diagnostics,
-          pttTranscribeKeysym: config["ptt-transcribe-keysym"],
-          pttTranslateKeysym: config["ptt-translate-keysym"],
-        }),
-        ...(sttConfig.openrouter.wakewordEnabled
-          ? [
-              runAssistantWakewordTranscribeLoop({
-                sourceName,
-                sttConfig,
-                pttActiveRef,
-                setRecordingMode,
-                diagnostics,
-              }),
-            ]
-          : []),
-      ],
-      {
-        concurrency: "unbounded",
-        discard: true,
-      },
-    ).pipe(Effect.ensuring(setRecordingMode(undefined)))
-
-    return yield* effect.pipe(
-      Effect.tapError((cause) =>
-        Effect.gen(function* () {
-          if (diagnostics !== undefined) {
-            diagnostics.setState("idle")
-            yield* Console.error(diagnostics.renderSnapshot())
-          }
-        }),
-      ),
+  } else {
+    yield* Console.log("[assistant] Wakeword disabled (PTT-only mode)")
+  }
+  yield* Console.log(
+    `[assistant] PTT transcribe keysym=${Option.getOrElse(config["ptt-transcribe-keysym"], () => DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM)}, PTT translate keysym=${Option.getOrElse(config["ptt-translate-keysym"], () => DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM)}`,
+  )
+  if (sttConfig.openrouter.wakewordEnabled) {
+    yield* Console.log(
+      `[assistant] Wakeword dictation: silence=${sttConfig.openrouter.wakewordDictationSilenceSeconds}s max=${sttConfig.openrouter.wakewordDictationMaxSeconds}s speech_start_timeout=${resolveWakewordSpeechStartTimeoutSeconds(
+        {
+          silenceSeconds: sttConfig.openrouter.wakewordDictationSilenceSeconds,
+          maxSeconds: sttConfig.openrouter.wakewordDictationMaxSeconds,
+        },
+      )}s speech_rms=${sttConfig.openrouter.wakewordDictationSpeechRmsThreshold.toFixed(4)}`,
     )
+  }
+  yield* Console.log("[assistant] Focus the target app (for example Slack) to receive typed text")
+  yield* Console.log("[assistant] Press Ctrl+C to stop all listeners")
+
+  const pttActiveRef = yield* Ref.make(false)
+  const recordingStateRef = yield* Ref.make<AssistantRecordingRuntimeState>({
+    mode: undefined,
+    startedAtMs: undefined,
   })
+  const setRecordingMode = (mode: AssistantRecordingMode | undefined) =>
+    setAssistantRecordingMode({
+      ref: recordingStateRef,
+      mode,
+    })
+
+  yield* setRecordingMode(undefined)
+  yield* Console.log(`[assistant] Recording state file: ${ASSISTANT_RECORDING_STATE_PATH}`)
+
+  const diagnostics = isShellTraceEnabled(process.env["PIE_SHELL_TRACE"])
+    ? new AssistantDiagnostics()
+    : undefined
+
+  const effect = Effect.all(
+    [
+      runAssistantPttCombinedLoop({
+        sourceName,
+        sttConfig,
+        pttActiveRef,
+        setRecordingMode,
+        diagnostics,
+        pttTranscribeKeysym: config["ptt-transcribe-keysym"],
+        pttTranslateKeysym: config["ptt-translate-keysym"],
+      }),
+      ...(sttConfig.openrouter.wakewordEnabled
+        ? [
+            runAssistantWakewordTranscribeLoop({
+              sourceName,
+              sttConfig,
+              pttActiveRef,
+              setRecordingMode,
+              diagnostics,
+            }),
+          ]
+        : []),
+    ],
+    {
+      concurrency: "unbounded",
+      discard: true,
+    },
+  ).pipe(Effect.onExit(() => setRecordingMode(undefined)))
+
+  return yield* effect.pipe(
+    Effect.tapError((cause) =>
+      Effect.gen(function* () {
+        if (diagnostics !== undefined) {
+          diagnostics.setState("idle")
+          yield* Console.error(diagnostics.renderSnapshot())
+        }
+      }),
+    ),
+  )
+})

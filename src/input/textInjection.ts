@@ -19,16 +19,21 @@ export class TextInjectionError extends Data.TaggedError("TextInjectionError")<{
 
 export const chooseTextInjectionBackend = (
   sessionType: DesktopSessionType,
-): TextInjectionBackend | undefined => {
+): Effect.Effect<TextInjectionBackend, TextInjectionError> => {
   if (sessionType === "wayland") {
-    return "wtype"
+    return Effect.succeed("wtype")
   }
 
   if (sessionType === "x11") {
-    return "xdotool"
+    return Effect.succeed("xdotool")
   }
 
-  return undefined
+  return Effect.fail(
+    new TextInjectionError({
+      message:
+        "Could not detect graphical session. Set XDG_SESSION_TYPE or ensure WAYLAND_DISPLAY/DISPLAY is available.",
+    }),
+  )
 }
 
 export const normalizeTextForInjection = (text: string): string =>
@@ -44,10 +49,10 @@ const runTextInjectionBackend = (
 ): Effect.Effect<void, WtypeError | XdotoolError> =>
   backend === "wtype" ? typeTextWithWtype(text) : typeTextWithXdotool(text)
 
-export const typeTextInFocusedApp = (
-  text: string,
-): Effect.Effect<TextInjectionResult, TextInjectionError | WtypeError | XdotoolError> =>
-  Effect.gen(function* () {
+export const typeTextInFocusedApp = Effect.fn("pie/input/textInjection.typeTextInFocusedApp")(
+  function* (
+    text: string,
+  ): Effect.fn.Return<TextInjectionResult, TextInjectionError | WtypeError | XdotoolError> {
     const normalizedText = normalizeTextForInjection(text)
     if (normalizedText.length === 0) {
       return yield* new TextInjectionError({
@@ -56,14 +61,7 @@ export const typeTextInFocusedApp = (
     }
 
     const sessionType = detectDesktopSessionType()
-    const primaryBackend = chooseTextInjectionBackend(sessionType)
-
-    if (primaryBackend === undefined) {
-      return yield* new TextInjectionError({
-        message:
-          "Could not detect graphical session. Set XDG_SESSION_TYPE or ensure WAYLAND_DISPLAY/DISPLAY is available.",
-      })
-    }
+    const primaryBackend = yield* chooseTextInjectionBackend(sessionType)
 
     const resolvedBackend = yield* runTextInjectionBackend(primaryBackend, normalizedText).pipe(
       Effect.as(primaryBackend),
@@ -74,4 +72,5 @@ export const typeTextInFocusedApp = (
       backend: resolvedBackend,
       text: normalizedText,
     }
-  })
+  },
+)

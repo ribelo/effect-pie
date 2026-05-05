@@ -56,7 +56,7 @@ test("sortedWavPaths returns WAV files sorted", async () => {
   await writeFile(path.join(tempDir, "a.wav"), Buffer.from(""), "utf8")
   await writeFile(path.join(tempDir, "m.txt"), Buffer.from(""), "utf8")
 
-  const result = await sortedWavPaths(tempDir)
+  const result = await Effect.runPromise(sortedWavPaths(tempDir))
   assert.strictEqual(result.length, 2)
   assert.ok(result[0]?.includes("a.wav"))
   assert.ok(result[1]?.includes("z.wav"))

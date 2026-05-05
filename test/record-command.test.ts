@@ -3,7 +3,7 @@ import * as assert from "node:assert/strict"
 
 import { pcmRms, pcmPeak, normalizePcmForStt } from "../src/audio/pcm.js"
 
-test("trim PCM data to expected duration bytes", () => {
+test("preserves full PCM data without silent truncation", () => {
   const sampleRate = 16_000
   const channels = 1
   const durationSeconds = 2
@@ -19,10 +19,10 @@ test("trim PCM data to expected duration bytes", () => {
     view.setInt16(i, Math.round(sample), true)
   }
 
-  const trimmed = rawData.length > expectedBytes ? rawData.slice(0, expectedBytes) : rawData
+  const outputData = rawData
 
-  assert.strictEqual(trimmed.length, expectedBytes)
-  assert.strictEqual(trimmed.length, rawData.length - extraBytes)
+  assert.strictEqual(outputData.length, rawData.length)
+  assert.strictEqual(outputData.length, expectedBytes + extraBytes)
 })
 
 test("raw mode preserves original PCM without normalization", () => {

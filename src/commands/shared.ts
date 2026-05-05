@@ -9,7 +9,7 @@ export const positiveIntegerFlag = (name: string, description: string, defaultVa
     Flag.withDefault(defaultValue),
     Flag.filter(
       (value) => value > 0,
-      () => `--${name} must be greater than 0`,
+      () => "must be greater than 0",
     ),
   )
 
@@ -72,17 +72,12 @@ export const concatChunks = (chunks: ReadonlyArray<Uint8Array>): Uint8Array => {
   return out
 }
 
-export const makePttClipPath = (outputDir: string): string => {
-  const now = new Date()
-  const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(
-    now.getDate(),
-  ).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(
-    now.getMinutes(),
-  ).padStart(2, "0")}-${String(now.getSeconds()).padStart(2, "0")}-${String(
-    now.getMilliseconds(),
-  ).padStart(3, "0")}`
+const formatTimestamp = (date: Date): string => {
+  return date.toISOString().replace("T", "_").replace(/:/g, "-").replace(".", "-").slice(0, 23)
+}
 
-  return path.join(outputDir, `ptt-${stamp}.wav`)
+export const makePttClipPath = (outputDir: string): string => {
+  return path.join(outputDir, `ptt-${formatTimestamp(new Date())}.wav`)
 }
 
 export class NoSpeechDetectedError extends Data.TaggedError("NoSpeechDetectedError")<{
@@ -111,11 +106,11 @@ export const percentile = (values: ReadonlyArray<number>, rank: number): number 
   const upper = Math.ceil(position)
 
   if (lower === upper) {
-    return sorted[lower] ?? 0
+    return sorted[lower]!
   }
 
-  const lowerValue = sorted[lower] ?? 0
-  const upperValue = sorted[upper] ?? 0
+  const lowerValue = sorted[lower]!
+  const upperValue = sorted[upper]!
   const weight = position - lower
 
   return lowerValue * (1 - weight) + upperValue * weight
@@ -128,28 +123,35 @@ export const drainPendingStdin = Effect.sync(() => {
 
   try {
     while (process.stdin.read() !== null) {}
-  } catch {
-    // best-effort stdin drain to avoid replaying injected text into readline prompts
+  } catch (cause) {
+    Effect.runFork(Effect.logWarning("Failed to drain stdin").pipe(Effect.annotateLogs({ cause })))
   }
 })
 
-export const waitForEnter = (message: string): Effect.Effect<void, CliError> =>
-  Effect.promise(async () => {
+export const waitForEnter = Effect.fn("pie/commands/shared.waitForEnter")(function* (
+  message: string,
+): Effect.fn.Return<void, CliError> {
+  return yield* Effect.callback<void, CliError>((resume) => {
     const rl = createInterface({
       input: process.stdin,
       output: process.stdout,
     })
-    try {
-      await rl.question(`${message}\n`)
-    } finally {
-      rl.close()
-    }
-  }).pipe(
-    Effect.mapError(
-      (cause) =>
-        new CliError({
-          message: `Failed to read terminal input for prompt: ${message}`,
-          cause,
-        }),
-    ),
-  )
+
+    rl.question(`${message}\n`)
+      .then(() => {
+        resume(Effect.void)
+      })
+      .catch((cause: unknown) => {
+        resume(
+          Effect.fail(
+            new CliError({
+              message: `Failed to read terminal input for prompt: ${message}`,
+              cause,
+            }),
+          ),
+        )
+      })
+
+    return Effect.sync(() => rl.close())
+  })
+})

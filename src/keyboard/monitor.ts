@@ -13,6 +13,7 @@ const A11Y_MANAGER_SERVICE = "org.freedesktop.a11y.Manager"
 const A11Y_MANAGER_PATH = "/org/freedesktop/a11y/Manager"
 const A11Y_KEYBOARD_INTERFACE = "org.freedesktop.a11y.KeyboardMonitor"
 const A11Y_DBUS_CONNECT_TIMEOUT_MS = 5000
+const A11Y_DBUS_METHOD_TIMEOUT_MS = 5000
 
 export type KeyboardMonitorKeyEvent = {
   readonly released: boolean
@@ -79,9 +80,8 @@ const make = Effect.gen(function* () {
   return { subscribe }
 })
 
-export const layer: Layer.Layer<KeyboardMonitorService> = Layer.effect(KeyboardMonitorService)(
-  Effect.orDie(make),
-)
+export const layer: Layer.Layer<KeyboardMonitorService, PttKeyboardError> =
+  Layer.effect(KeyboardMonitorService)(make)
 
 const connectKeyboardMonitorBus = (): Effect.Effect<MessageBus, PttKeyboardError> =>
   Effect.tryPromise({
@@ -179,7 +179,16 @@ const callKeyboardMonitorMethod = (
       cause instanceof PttKeyboardError
         ? cause
         : new PttKeyboardError({ message: `Failed to call ${member}`, cause }),
-  })
+  }).pipe(
+    Effect.timeout(`${A11Y_DBUS_METHOD_TIMEOUT_MS} millis`),
+    Effect.catchTag("TimeoutError", () =>
+      Effect.fail(
+        new PttKeyboardError({
+          message: `D-Bus method ${member} timed out after ${A11Y_DBUS_METHOD_TIMEOUT_MS}ms`,
+        }),
+      ),
+    ),
+  )
 
 const parseKeyboardMonitorSignal = (message: DbusMessage): KeyboardMonitorKeyEvent | undefined => {
   if (message.type !== MessageType.SIGNAL) {

@@ -8,7 +8,7 @@ import * as Data from "effect/Data"
 import { promises as fs } from "node:fs"
 
 import { PA_DEFAULT_SOCKET_PATH } from "../src/pulse/defs.ts"
-import { PulseAudioClient, layer } from "../src/pulse/client.ts"
+import { PulseAudioClient } from "../src/pulse/client.ts"
 import { createRecordStream } from "../src/pulse/stream.ts"
 
 class PulseTestTimeoutError extends Data.TaggedError("PulseTestTimeoutError")<{
@@ -32,10 +32,8 @@ test("connects to PulseAudio and records audio", { timeout: 30_000 }, async () =
   const program = Effect.gen(function* () {
     const client = yield* PulseAudioClient
 
-    yield* client.connect()
-
     const serverInfo = yield* client.getServerInfo
-    assert.ok(serverInfo.name.length > 0)
+    assert.ok(serverInfo.name !== null && serverInfo.name.length > 0)
 
     const sources = yield* client.listSources
     assert.ok(sources.length > 0)
@@ -52,8 +50,6 @@ test("connects to PulseAudio and records audio", { timeout: 30_000 }, async () =
 
     const byteCount = yield* Ref.get(byteCountRef)
     assert.ok(byteCount > 0)
-
-    yield* client.disconnect
   }).pipe(
     Effect.timeoutOrElse({
       duration: "20 seconds",
@@ -62,7 +58,7 @@ test("connects to PulseAudio and records audio", { timeout: 30_000 }, async () =
           new PulseTestTimeoutError({ message: "PulseAudio integration test timed out" }),
         ),
     }),
-    Effect.provide(layer()),
+    Effect.provide(PulseAudioClient.layer()),
   )
 
   await Effect.runPromise(program)

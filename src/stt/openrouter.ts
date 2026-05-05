@@ -3,10 +3,8 @@ import { Data, Effect, Layer, Redacted, Schema, Stream } from "effect"
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
-import type * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
+import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
 import { buildPcmWavHeader, isRecord } from "../utils/runtime.js"
-
-const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 const extractStructuredFieldText = (
   value: unknown,
@@ -50,11 +48,10 @@ const readEnvString = (
 export const resolveOpenRouterApiKey = (env: NodeJS.ProcessEnv = process.env): string | undefined =>
   readEnvString(env, "ERG_OPENROUTER_API_KEY", "OPENROUTER_API_KEY")
 
-export const resolveOpenRouterBaseUrl = (env: NodeJS.ProcessEnv = process.env): string =>
-  (
-    readEnvString(env, "ERG_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL") ??
-    DEFAULT_OPENROUTER_BASE_URL
-  ).replace(/\/+$/, "")
+export const resolveOpenRouterBaseUrl = (
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined =>
+  readEnvString(env, "ERG_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL")?.replace(/\/+$/, "")
 
 export const renderTemplate = (
   template: string,
@@ -108,7 +105,7 @@ const decodeStructuredField = (config: {
     return text
   })
 
-export const decodeStructuredTransciption = (
+export const decodeStructuredTranscription = (
   responseBody: string,
 ): Effect.Effect<string, OpenRouterSttError> =>
   decodeStructuredField({
@@ -135,6 +132,9 @@ const messageFromUnknown = (value: unknown): string | undefined => {
   return typeof maybeMessage === "string" ? maybeMessage : undefined
 }
 
+// SSE protocol sends `data: [DONE]` as the stream terminator. The generated
+// client does not recognize this sentinel and throws a schema parse error.
+// Filtering it is intentional protocol handling, not error swallowing.
 const isDoneSentinelSchemaError = (cause: unknown): boolean => {
   const message = messageFromUnknown(cause)
   if (message === undefined) {
@@ -193,6 +193,14 @@ export const patchSystemFingerprint = (body: unknown): unknown => {
   return body
 }
 
+export const patchServiceTier = (body: unknown): unknown => {
+  if (isRecord(body) && "service_tier" in body) {
+    const { service_tier: _, ...rest } = body
+    return rest
+  }
+  return body
+}
+
 const makeOpenRouterClientLayer = (apiKey: string, baseUrl: string) => {
   const referer = readEnvString(process.env, "OPENROUTER_HTTP_REFERER", "OR_SITE_URL")
   const title = readEnvString(process.env, "OPENROUTER_X_TITLE", "OR_APP_NAME")
@@ -225,26 +233,16 @@ const makeOpenRouterClientLayer = (apiKey: string, baseUrl: string) => {
 
             const text = yield* response.text
             const parsed: unknown = JSON.parse(text)
-            const patched = patchSystemFingerprint(parsed)
+            const patched = patchServiceTier(patchSystemFingerprint(parsed))
             const patchedText = JSON.stringify(patched)
 
-            const proto = Object.getPrototypeOf(response) as object
-            const patchedResponse = Object.create(proto) as HttpClientResponse.HttpClientResponse
-            Object.assign(patchedResponse, response)
-            Object.defineProperty(patchedResponse, "text", {
-              value: Effect.succeed(patchedText),
-              writable: true,
-              enumerable: true,
-              configurable: true,
-            })
-            Object.defineProperty(patchedResponse, "json", {
-              value: Effect.succeed(patched),
-              writable: true,
-              enumerable: true,
-              configurable: true,
-            })
-
-            return patchedResponse
+            return HttpClientResponse.fromWeb(
+              response.request,
+              new Response(patchedText, {
+                status: response.status,
+                headers: { "content-type": "application/json" },
+              }),
+            )
           }),
         ),
       ),
@@ -278,7 +276,7 @@ const runOpenRouterAudioStreaming = (config: {
     readonly schema: typeof TRANSCRIPTION_JSON_SCHEMA | typeof TRANSLATION_JSON_SCHEMA
   }
   readonly structuredDecoder?: (responseBody: string) => Effect.Effect<string, OpenRouterSttError>
-  readonly onDelta?: (delta: string) => Effect.Effect<void, OpenRouterSttError>
+  readonly onDelta?: (delta: string) => Effect.Effect<void>
 }): Effect.Effect<string, OpenRouterSttError> =>
   Effect.gen(function* () {
     const apiKey = resolveOpenRouterApiKey()
@@ -289,6 +287,11 @@ const runOpenRouterAudioStreaming = (config: {
     }
 
     const baseUrl = resolveOpenRouterBaseUrl()
+    if (baseUrl === undefined) {
+      return yield* new OpenRouterSttError({
+        message: "Missing OpenRouter base URL. Set ERG_OPENROUTER_BASE_URL or OPENROUTER_BASE_URL.",
+      })
+    }
 
     const payloadBase = {
       model: config.model,
@@ -441,7 +444,7 @@ export const transcribePcmWithOpenRouter = (config: {
   readonly sampleRate: number
   readonly language: string
   readonly promptTemplate: string
-  readonly onDelta?: (delta: string) => Effect.Effect<void, OpenRouterSttError>
+  readonly onDelta?: (delta: string) => Effect.Effect<void>
 }): Effect.Effect<string, OpenRouterSttError> =>
   runOpenRouterAudioStreaming({
     model: config.model,
@@ -452,7 +455,7 @@ export const transcribePcmWithOpenRouter = (config: {
     ...(config.onDelta === undefined
       ? {
           jsonSchema: { name: "transcription_response", schema: TRANSCRIPTION_JSON_SCHEMA },
-          structuredDecoder: decodeStructuredTransciption,
+          structuredDecoder: decodeStructuredTranscription,
         }
       : { onDelta: config.onDelta }),
   })
@@ -464,7 +467,7 @@ export const transcribeAndTranslatePcmWithOpenRouter = (config: {
   readonly sourceLanguage: string
   readonly targetLanguage: string
   readonly promptTemplate: string
-  readonly onDelta?: (delta: string) => Effect.Effect<void, OpenRouterSttError>
+  readonly onDelta?: (delta: string) => Effect.Effect<void>
 }): Effect.Effect<string, OpenRouterSttError> =>
   runOpenRouterAudioStreaming({
     model: config.model,

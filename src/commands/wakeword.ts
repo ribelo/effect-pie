@@ -1,4 +1,4 @@
-import { Console, Effect, Fiber, Option, Ref, Stream } from "effect"
+import { Console, Effect, Option, Ref, Stream } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import { validateWakewordAssets, type WakewordAssetError } from "../wakeword/assets.js"
 import { createWakewordTelemetryStream } from "../wakeword/live.js"
@@ -14,7 +14,11 @@ import {
   optionalSourceFlag,
   positiveIntegerFlag,
 } from "./shared.js"
-import { detectionTuningPathFor, readDetectionTuningSnapshot } from "./wakewordHelpers.js"
+import {
+  detectionTuningPathFor,
+  readDetectionTuningSnapshot,
+  type WakewordDetectionTuningSnapshot,
+} from "./wakewordHelpers.js"
 
 export const wakewordCommand = Command.make(
   "wakeword",
@@ -55,166 +59,180 @@ export const wakewordCommand = Command.make(
     ),
   },
   (config) =>
-    Effect.gen(function* () {
-      const wakewordModels = Option.isSome(config.models)
-        ? config.models.value
-            .split(",")
-            .map((entry) => entry.trim())
-            .filter((entry) => entry.length > 0)
-        : undefined
+    Effect.scoped(
+      Effect.gen(function* () {
+        const wakewordModels = Option.isSome(config.models)
+          ? config.models.value
+              .split(",")
+              .map((entry) => entry.trim())
+              .filter((entry) => entry.length > 0)
+          : undefined
 
-      const assetOptions: {
-        rootDir?: string
-        wakewordModels?: ReadonlyArray<string>
-      } = {}
+        const assetOptions: {
+          rootDir?: string
+          wakewordModels?: ReadonlyArray<string>
+        } = {}
 
-      if (Option.isSome(config.assetRoot)) {
-        assetOptions.rootDir = config.assetRoot.value
-      }
-
-      if (wakewordModels !== undefined && wakewordModels.length > 0) {
-        assetOptions.wakewordModels = wakewordModels
-      }
-
-      const assets = yield* validateWakewordAssets(assetOptions).pipe(
-        Effect.mapError(
-          (cause: WakewordAssetError) =>
-            new CliError({
-              message: `Wakeword assets are invalid: ${cause.message}`,
-              cause,
-            }),
-        ),
-      )
-
-      const sessions = yield* loadWakewordModelSessions(assets).pipe(
-        Effect.mapError(
-          (cause: WakewordRuntimeError) =>
-            new CliError({
-              message: `Failed to initialize wakeword model sessions: ${cause.message}`,
-              cause,
-            }),
-        ),
-      )
-
-      const pipeline = yield* makeWakewordPipeline(sessions).pipe(
-        Effect.mapError(
-          (cause: WakewordPipelineError) =>
-            new CliError({
-              message: `Failed to initialize wakeword inference pipeline: ${cause.message}`,
-              cause,
-            }),
-        ),
-      )
-
-      const modelNames = Object.keys(assets.wakewordModelPaths)
-      const tuningModelName = modelNames.length === 1 ? modelNames[0] : undefined
-      const tuningPath =
-        tuningModelName === undefined ? undefined : detectionTuningPathFor(tuningModelName)
-
-      const tuningSnapshot =
-        config.noAutoTune || tuningPath === undefined
-          ? undefined
-          : yield* readDetectionTuningSnapshot(tuningPath)
-
-      const resolvedThreshold = Option.isSome(config.threshold)
-        ? config.threshold.value
-        : (tuningSnapshot?.trigger.threshold ?? 0.5)
-      const resolvedSmoothingWindow = Option.isSome(config.smoothingWindow)
-        ? config.smoothingWindow.value
-        : (tuningSnapshot?.trigger.smoothingWindow ?? 4)
-      const resolvedConsecutiveFrames = Option.isSome(config.consecutiveFrames)
-        ? config.consecutiveFrames.value
-        : (tuningSnapshot?.trigger.consecutiveFrames ?? 3)
-      const resolvedCooldownMs = Option.isSome(config.cooldownMs)
-        ? config.cooldownMs.value
-        : (tuningSnapshot?.trigger.cooldownMs ?? 1500)
-
-      if (tuningSnapshot !== undefined && tuningPath !== undefined) {
-        yield* Console.log(`Loaded wakeword tuning from ${tuningPath}`)
-      }
-
-      yield* Console.log(
-        `Trigger tuning: threshold=${resolvedThreshold.toFixed(3)} smoothing_window=${resolvedSmoothingWindow} consecutive_frames=${resolvedConsecutiveFrames} cooldown_ms=${resolvedCooldownMs}`,
-      )
-
-      const triggerMachine = yield* createWakewordTriggerMachine({
-        threshold: resolvedThreshold,
-        smoothingWindow: resolvedSmoothingWindow,
-        consecutiveFrames: resolvedConsecutiveFrames,
-        cooldownMs: resolvedCooldownMs,
-      })
-
-      const scoreCounter = yield* Ref.make(0)
-
-      yield* Console.log(
-        `Listening for wakewords (${Object.keys(assets.wakewordModelPaths).join(", ")}) for ${config.duration}s...`,
-      )
-
-      const wakewordRecordOptions = makePcmRecordOptions({
-        rate: 16_000,
-        fragmentSize: config.fragmentSize,
-        sourceName: undefined,
-      })
-
-      const resolvedSourceName = yield* Effect.gen(function* () {
-        if (Option.isSome(config.source)) {
-          return config.source.value
+        if (Option.isSome(config.assetRoot)) {
+          assetOptions.rootDir = config.assetRoot.value
         }
 
-        const client = yield* PulseAudioClient
-        yield* client.connect()
+        if (wakewordModels !== undefined && wakewordModels.length > 0) {
+          assetOptions.wakewordModels = wakewordModels
+        }
 
-        const serverInfo = yield* client.getServerInfo.pipe(Effect.ensuring(client.disconnect))
+        const assets = yield* validateWakewordAssets(assetOptions).pipe(
+          Effect.mapError(
+            (cause: WakewordAssetError) =>
+              new CliError({
+                message: `Wakeword assets are invalid: ${cause.message}`,
+                cause,
+              }),
+          ),
+        )
 
-        return serverInfo.defaultSource
-      })
+        const sessions = yield* loadWakewordModelSessions(assets).pipe(
+          Effect.mapError(
+            (cause: WakewordRuntimeError) =>
+              new CliError({
+                message: `Failed to initialize wakeword model sessions: ${cause.message}`,
+                cause,
+              }),
+          ),
+        )
 
-      if (resolvedSourceName.length > 0) {
-        wakewordRecordOptions.sourceName = resolvedSourceName
-      }
+        yield* Effect.addFinalizer(() => sessions.dispose)
 
-      yield* Console.log(
-        `Wakeword source: ${wakewordRecordOptions.sourceName ?? "@DEFAULT_SOURCE@"}`,
-      )
+        const pipeline = yield* makeWakewordPipeline(sessions).pipe(
+          Effect.mapError(
+            (cause: WakewordPipelineError) =>
+              new CliError({
+                message: `Failed to initialize wakeword inference pipeline: ${cause.message}`,
+                cause,
+              }),
+          ),
+        )
 
-      const telemetryFiber = yield* createWakewordTelemetryStream({
-        pipeline,
-        trigger: triggerMachine,
-        recordStream: wakewordRecordOptions,
-      }).pipe(
-        Stream.runForEach((event) =>
+        const modelNames = Object.keys(assets.wakewordModelPaths)
+
+        const tuningSnapshots = config.noAutoTune
+          ? new Map<string, WakewordDetectionTuningSnapshot>()
+          : yield* Effect.gen(function* () {
+              const snapshots = new Map<string, WakewordDetectionTuningSnapshot>()
+              for (const modelName of modelNames) {
+                const tuningPath = detectionTuningPathFor(modelName)
+                const snapshot = yield* readDetectionTuningSnapshot(tuningPath)
+                if (snapshot !== undefined) {
+                  snapshots.set(modelName, snapshot)
+                  yield* Console.log(`Loaded wakeword tuning for ${modelName} from ${tuningPath}`)
+                }
+              }
+              return snapshots
+            })
+
+        const firstModelName = modelNames[0]
+        const firstTuning =
+          firstModelName !== undefined ? tuningSnapshots.get(firstModelName) : undefined
+
+        const resolvedThreshold = Option.isSome(config.threshold)
+          ? config.threshold.value
+          : (firstTuning?.trigger.threshold ?? 0.5)
+        const resolvedSmoothingWindow = Option.isSome(config.smoothingWindow)
+          ? config.smoothingWindow.value
+          : (firstTuning?.trigger.smoothingWindow ?? 4)
+        const resolvedConsecutiveFrames = Option.isSome(config.consecutiveFrames)
+          ? config.consecutiveFrames.value
+          : (firstTuning?.trigger.consecutiveFrames ?? 3)
+        const resolvedCooldownMs = Option.isSome(config.cooldownMs)
+          ? config.cooldownMs.value
+          : (firstTuning?.trigger.cooldownMs ?? 1500)
+
+        yield* Console.log(
+          `Trigger tuning: threshold=${resolvedThreshold.toFixed(3)} smoothing_window=${resolvedSmoothingWindow} consecutive_frames=${resolvedConsecutiveFrames} cooldown_ms=${resolvedCooldownMs}`,
+        )
+
+        const triggerMachine = createWakewordTriggerMachine({
+          threshold: resolvedThreshold,
+          smoothingWindow: resolvedSmoothingWindow,
+          consecutiveFrames: resolvedConsecutiveFrames,
+          cooldownMs: resolvedCooldownMs,
+        })
+
+        const scoreCounter = yield* Ref.make(0)
+
+        yield* Console.log(
+          `Listening for wakewords (${Object.keys(assets.wakewordModelPaths).join(", ")}) for ${config.duration}s...`,
+        )
+
+        const resolvedSourceName = yield* Effect.gen(function* () {
+          if (Option.isSome(config.source)) {
+            return config.source.value
+          }
+
+          const client = yield* PulseAudioClient
+          const serverInfo = yield* client.getServerInfo
+
+          if (serverInfo.defaultSource === null || serverInfo.defaultSource.length === 0) {
+            return yield* new CliError({
+              message: "PulseAudio did not return a default capture source",
+            })
+          }
+
+          return serverInfo.defaultSource
+        })
+
+        const wakewordRecordOptions = makePcmRecordOptions({
+          rate: 16_000,
+          fragmentSize: config.fragmentSize,
+          sourceName: resolvedSourceName,
+        })
+
+        yield* Console.log(
+          `Wakeword source: ${wakewordRecordOptions.sourceName ?? "@DEFAULT_SOURCE@"}`,
+        )
+
+        yield* Effect.scoped(
           Effect.gen(function* () {
-            if (event.type === "score") {
-              const trackedModels = Object.keys(event.frame.scores)
-              if (trackedModels.length === 0) {
-                return
-              }
+            yield* createWakewordTelemetryStream({
+              pipeline,
+              trigger: triggerMachine,
+              recordStream: wakewordRecordOptions,
+            }).pipe(
+              Stream.runForEach((event) =>
+                Effect.gen(function* () {
+                  if (event.type === "score") {
+                    const trackedModels = Object.keys(event.frame.scores)
+                    if (trackedModels.length === 0) {
+                      return
+                    }
 
-              const frameIndex = yield* Ref.updateAndGet(scoreCounter, (count) => count + 1)
-              if (frameIndex % config.scoreEvery !== 0) {
-                return
-              }
+                    const frameIndex = yield* Ref.updateAndGet(scoreCounter, (count) => count + 1)
+                    if (frameIndex % config.scoreEvery !== 0) {
+                      return
+                    }
 
-              const formattedScores = Object.entries(event.frame.scores)
-                .map(([model, score]) => `${model}=${score.toFixed(6)}`)
-                .join(" ")
+                    const formattedScores = Object.entries(event.frame.scores)
+                      .map(([model, score]) => `${model}=${score.toFixed(6)}`)
+                      .join(" ")
 
-              yield* Console.log(
-                `[score t=${event.frame.timestampMs.toFixed(0)}ms] ${formattedScores}`,
-              )
-              return
-            }
+                    yield* Console.log(
+                      `[score t=${event.frame.timestampMs.toFixed(0)}ms] ${formattedScores}`,
+                    )
+                    return
+                  }
 
-            yield* Console.log(
-              `[trigger t=${event.event.timestampMs.toFixed(0)}ms] ${event.event.model} score=${event.event.score.toFixed(3)} raw=${event.event.rawScore.toFixed(3)}`,
+                  yield* Console.log(
+                    `[trigger t=${event.event.timestampMs.toFixed(0)}ms] ${event.event.model} score=${event.event.score.toFixed(3)} raw=${event.event.rawScore.toFixed(3)}`,
+                  )
+                }),
+              ),
+              Effect.forkScoped,
             )
-          }),
-        ),
-        Effect.forkDetach,
-      )
 
-      yield* Effect.sleep(`${config.duration} seconds`)
-      yield* Fiber.interrupt(telemetryFiber)
-      yield* Console.log("Wakeword session complete")
-    }),
+            yield* Effect.sleep(`${config.duration} seconds`)
+          }),
+        )
+        yield* Console.log("Wakeword session complete")
+      }),
+    ),
 ).pipe(Command.withDescription("Run live openWakeWord detection on PulseAudio input"))

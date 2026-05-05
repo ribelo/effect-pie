@@ -1,7 +1,6 @@
-import { Console, Effect, Fiber, Option, Ref, Stream } from "effect"
+import { Console, Effect, Option, Ref, Stream } from "effect"
 import { Command } from "effect/unstable/cli"
-import { PulseAudioClient } from "../pulse/client.js"
-import { PA_SAMPLE_FORMAT } from "../pulse/defs.js"
+import { makePcmRecordOptions } from "../pulse/defs.js"
 import { createRecordStream } from "../pulse/stream.js"
 import { pcmPeak, pcmRms } from "../audio/pcm.js"
 import { optionalSourceFlag, positiveIntegerFlag } from "./shared.js"
@@ -18,61 +17,47 @@ export const meterCommand = Command.make(
   },
   (config) =>
     Effect.gen(function* () {
-      const client = yield* PulseAudioClient
-      yield* client.connect()
-
       const program = Effect.gen(function* () {
         const maxRmsRef = yield* Ref.make(0)
         const maxPeakRef = yield* Ref.make(0)
         const chunkCountRef = yield* Ref.make(0)
 
-        const recordOptions: {
-          sampleSpec: {
-            format: PA_SAMPLE_FORMAT
-            channels: number
-            rate: number
-          }
-          fragmentSize: number
-          sourceName?: string
-        } = {
-          sampleSpec: {
-            format: PA_SAMPLE_FORMAT.S16LE,
-            channels: config.channels,
-            rate: config.sampleRate,
-          },
+        const recordOptions = makePcmRecordOptions({
+          channels: config.channels,
+          rate: config.sampleRate,
           fragmentSize: config.fragmentSize,
-        }
-
-        if (Option.isSome(config.source)) {
-          recordOptions.sourceName = config.source.value
-        }
+          sourceName: Option.getOrUndefined(config.source),
+        })
 
         yield* Console.log(
           `Meter running for ${config.duration}s on source ${Option.isSome(config.source) ? config.source.value : "@DEFAULT_SOURCE@"}`,
         )
 
-        const meterFiber = yield* createRecordStream(recordOptions).pipe(
-          Stream.runForEach((chunk) =>
-            Effect.gen(function* () {
-              const rms = pcmRms(chunk)
-              const peak = pcmPeak(chunk)
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            yield* createRecordStream(recordOptions).pipe(
+              Stream.runForEach((chunk) =>
+                Effect.gen(function* () {
+                  const rms = pcmRms(chunk)
+                  const peak = pcmPeak(chunk)
 
-              yield* Ref.update(maxRmsRef, (value) => (rms > value ? rms : value))
-              yield* Ref.update(maxPeakRef, (value) => (peak > value ? peak : value))
+                  yield* Ref.update(maxRmsRef, (value) => (rms > value ? rms : value))
+                  yield* Ref.update(maxPeakRef, (value) => (peak > value ? peak : value))
 
-              const chunkIndex = yield* Ref.updateAndGet(chunkCountRef, (value) => value + 1)
-              if (chunkIndex % config.every === 0) {
-                yield* Console.log(
-                  `[meter chunk=${chunkIndex}] rms=${rms.toFixed(4)} peak=${peak.toFixed(4)}`,
-                )
-              }
-            }),
-          ),
-          Effect.forkDetach,
+                  const chunkIndex = yield* Ref.updateAndGet(chunkCountRef, (value) => value + 1)
+                  if (chunkIndex % config.every === 0) {
+                    yield* Console.log(
+                      `[meter chunk=${chunkIndex}] rms=${rms.toFixed(4)} peak=${peak.toFixed(4)}`,
+                    )
+                  }
+                }),
+              ),
+              Effect.forkScoped,
+            )
+
+            yield* Effect.sleep(`${config.duration} seconds`)
+          }),
         )
-
-        yield* Effect.sleep(`${config.duration} seconds`)
-        yield* Fiber.interrupt(meterFiber)
 
         const maxRms = yield* Ref.get(maxRmsRef)
         const maxPeak = yield* Ref.get(maxPeakRef)
@@ -83,7 +68,7 @@ export const meterCommand = Command.make(
         )
       })
 
-      yield* program.pipe(Effect.ensuring(client.disconnect))
+      yield* program
     }),
 ).pipe(
   Command.withDescription("Print live input RMS/peak to verify microphone level and threshold"),
