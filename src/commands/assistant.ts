@@ -1,6 +1,4 @@
 import { Console, Duration, Effect, Option, Queue, Ref, Stream } from "effect"
-import * as path from "node:path"
-import { mkdir as mkdirNode, writeFile as writeNodeFile } from "node:fs/promises"
 import { loadSttRuntimeConfig, type SttConfigError, type SttRuntimeConfig } from "../stt/config.js"
 import {
   transcribeAndTranslatePcmWithOpenRouter,
@@ -39,8 +37,13 @@ import {
   pttDeadInputDetectorSync,
 } from "../ptt/deadInput.js"
 import { toPttKeyboardError } from "./ptt.js"
-import { EFFECT_PI_RUNTIME_DIR } from "../paths.js"
 import { CliError, concatChunks } from "./shared.js"
+import {
+  setAssistantRecordingMode,
+  ASSISTANT_RECORDING_STATE_PATH,
+  type AssistantRecordingMode,
+  type AssistantRecordingRuntimeState,
+} from "./assistant/recordingState.js"
 import { recordPcmUntilTrailingSilence } from "./audioCapture.js"
 import {
   calibrationPathFor,
@@ -58,8 +61,6 @@ const DEFAULT_ASSISTANT_WAKEWORD_FRAGMENT_SIZE = 1024
 const DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE = 4096
 const DEFAULT_ASSISTANT_MIN_DURATION_MS = 120
 const DEFAULT_ASSISTANT_WAKEWORD_SPEECH_START_TIMEOUT_SECONDS = 8
-const ASSISTANT_RECORDING_STATE_PATH = path.join(EFFECT_PI_RUNTIME_DIR, "recording.json")
-
 const resolveWakewordSpeechStartTimeoutSeconds = (config: {
   readonly silenceSeconds: number
   readonly maxSeconds: number
@@ -68,89 +69,6 @@ const resolveWakewordSpeechStartTimeoutSeconds = (config: {
     config.maxSeconds,
     Math.max(DEFAULT_ASSISTANT_WAKEWORD_SPEECH_START_TIMEOUT_SECONDS, config.silenceSeconds + 2),
   )
-
-type AssistantRecordingMode = "ptt-transcribe" | "ptt-translate" | "wakeword"
-
-type AssistantRecordingState = {
-  readonly active: boolean
-  readonly mode: AssistantRecordingMode | "idle"
-  readonly startedAt: string | null
-  readonly updatedAt: string
-}
-
-type AssistantRecordingRuntimeState = {
-  readonly mode: AssistantRecordingMode | undefined
-  readonly startedAtMs: number | undefined
-}
-
-const persistAssistantRecordingState = (
-  state: AssistantRecordingState,
-): Effect.Effect<void, CliError> =>
-  Effect.tryPromise({
-    try: async () => {
-      await mkdirNode(path.dirname(ASSISTANT_RECORDING_STATE_PATH), { recursive: true })
-      await writeNodeFile(
-        ASSISTANT_RECORDING_STATE_PATH,
-        `${JSON.stringify(state, null, 2)}\n`,
-        "utf8",
-      )
-    },
-    catch: (cause) =>
-      new CliError({
-        message: `Failed to write assistant recording state at ${ASSISTANT_RECORDING_STATE_PATH}`,
-        cause,
-      }),
-  })
-
-const setAssistantRecordingMode = (config: {
-  readonly ref: Ref.Ref<AssistantRecordingRuntimeState>
-  readonly mode: AssistantRecordingMode | undefined
-}): Effect.Effect<void, CliError> =>
-  Effect.gen(function* () {
-    const nowMs = Date.now()
-    const nowIso = new Date(nowMs).toISOString()
-
-    const state = yield* Ref.modify(config.ref, (current) => {
-      if (config.mode === undefined) {
-        const nextState: AssistantRecordingState = {
-          active: false,
-          mode: "idle",
-          startedAt: null,
-          updatedAt: nowIso,
-        }
-
-        const nextRuntime: AssistantRecordingRuntimeState = {
-          mode: undefined,
-          startedAtMs: undefined,
-        }
-
-        return [nextState, nextRuntime] as const
-      }
-
-      const startedAtMs =
-        current.mode === config.mode && current.startedAtMs !== undefined
-          ? current.startedAtMs
-          : nowMs
-
-      const nextState: AssistantRecordingState = {
-        active: true,
-        mode: config.mode,
-        startedAt: new Date(startedAtMs).toISOString(),
-        updatedAt: nowIso,
-      }
-
-      const nextRuntime: AssistantRecordingRuntimeState = {
-        mode: config.mode,
-        startedAtMs,
-      }
-
-      return [nextState, nextRuntime] as const
-    })
-
-    yield* persistAssistantRecordingState(state).pipe(
-      Effect.tapError((cause: CliError) => Console.log(`[assistant] ${cause.message}`)),
-    )
-  })
 
 const normalizeWakewordModelName = (modelName: string): string =>
   modelName.endsWith(".json") ? modelName.slice(0, -".json".length) : modelName
