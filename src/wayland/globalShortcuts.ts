@@ -43,9 +43,8 @@ export type PortalShortcutSession = {
   readonly createRequestHandle: string
   readonly bindRequestHandle: string
   readonly sessionHandle: string
+  readonly bus: MessageBus
 }
-
-const sessionBuses = new Map<string, MessageBus>()
 
 const randomToken = (prefix: string): string => `${prefix}_${crypto.randomUUID()}`
 
@@ -569,13 +568,12 @@ export const setupGlobalShortcutSession = Effect.fn(
           })
         }
 
-        sessionBuses.set(sessionHandle, bus)
-
         return {
           shortcut: config.shortcut,
           createRequestHandle,
           bindRequestHandle,
           sessionHandle,
+          bus,
         }
       } catch (error) {
         bus.disconnect()
@@ -588,27 +586,18 @@ export const setupGlobalShortcutSession = Effect.fn(
 
 export const closeGlobalShortcutSession = Effect.fn(
   "pie/wayland/globalShortcuts.closeGlobalShortcutSession",
-)(function* (sessionHandle: string): Effect.fn.Return<void, GlobalShortcutsPortalError> {
-  const bus = sessionBuses.get(sessionHandle)
-  if (bus === undefined) {
-    yield* Effect.logWarning("closeGlobalShortcutSession: unknown session handle").pipe(
-      Effect.annotateLogs({ sessionHandle }),
-    )
-    return
-  }
-
+)(function* (session: PortalShortcutSession): Effect.fn.Return<void, GlobalShortcutsPortalError> {
   return yield* Effect.tryPromise({
     try: async () => {
       try {
         await callPortalMethod({
-          bus,
-          path: sessionHandle,
+          bus: session.bus,
+          path: session.sessionHandle,
           interfaceName: SESSION_INTERFACE,
           member: "Close",
         })
       } finally {
-        sessionBuses.delete(sessionHandle)
-        bus.disconnect()
+        session.bus.disconnect()
       }
     },
     catch: (cause) => mapToPortalError(cause, "Failed to close portal global shortcut session"),

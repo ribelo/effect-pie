@@ -340,7 +340,7 @@ export const pttPortalCommand = Command.make(
       )
 
       return yield* monitorPortalSignals().pipe(
-        Effect.ensuring(closeGlobalShortcutSession(session.sessionHandle).pipe(Effect.ignore)),
+        Effect.ensuring(closeGlobalShortcutSession(session).pipe(Effect.ignore)),
       )
     }),
 ).pipe(Command.withDescription("Spike command for xdg-desktop-portal GlobalShortcuts capture"))
