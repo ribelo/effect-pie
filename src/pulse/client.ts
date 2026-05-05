@@ -49,6 +49,11 @@ export class PulseAudioClientError extends Data.TaggedError("PulseAudioClientErr
   readonly cause?: unknown
 }> {}
 
+export class PulseAudioParseError extends Data.TaggedError("PulseAudioParseError")<{
+  readonly message: string
+  readonly cause?: unknown
+}> {}
+
 export class PulseAudioAuthError extends Data.TaggedError("PulseAudioAuthError")<{
   readonly message: string
   readonly cause?: unknown
@@ -206,11 +211,14 @@ const shutdownRecordQueues = (connection: Connection): Effect.Effect<void> =>
 export class PulseAudioClient extends Context.Service<
   PulseAudioClient,
   {
-    readonly getServerInfo: Effect.Effect<ServerInfo, PulseAudioClientError>
-    readonly listSources: Effect.Effect<ReadonlyArray<SourceInfo>, PulseAudioClientError>
+    readonly getServerInfo: Effect.Effect<ServerInfo, PulseAudioClientError | PulseAudioParseError>
+    readonly listSources: Effect.Effect<
+      ReadonlyArray<SourceInfo>,
+      PulseAudioClientError | PulseAudioParseError
+    >
     readonly openRecordStream: (
       options?: Partial<RecordStreamOptions>,
-    ) => Effect.Effect<OpenRecordStream, PulseAudioClientError>
+    ) => Effect.Effect<OpenRecordStream, PulseAudioClientError | PulseAudioParseError>
     readonly closeRecordStream: (streamIndex: number) => Effect.Effect<void, PulseAudioClientError>
   }
 >()("pie/pulse/PulseAudioClient") {
@@ -344,7 +352,7 @@ const make = (defaults: PulseAudioClientConfig) =>
     const invoke = <A>(
       packet: CommandPacket,
       parser: (payload: Uint8Array) => A,
-    ): Effect.Effect<A, PulseAudioClientError> =>
+    ): Effect.Effect<A, PulseAudioClientError | PulseAudioParseError> =>
       Effect.gen(function* () {
         const connection = yield* getConnection
         const payload = yield* awaitReply(connection, packet)
@@ -352,7 +360,7 @@ const make = (defaults: PulseAudioClientConfig) =>
         const parsed = yield* Effect.try({
           try: () => parser(payload),
           catch: (cause) =>
-            new PulseAudioClientError({
+            new PulseAudioParseError({
               message: "failed to parse PulseAudio response",
               cause,
             }),
@@ -470,7 +478,7 @@ const make = (defaults: PulseAudioClientConfig) =>
 
     const openRecordStream = (
       options?: Partial<RecordStreamOptions>,
-    ): Effect.Effect<OpenRecordStream, PulseAudioClientError> =>
+    ): Effect.Effect<OpenRecordStream, PulseAudioClientError | PulseAudioParseError> =>
       Effect.gen(function* () {
         const connection = yield* ensureConnection
         const info = yield* invoke(
@@ -492,11 +500,16 @@ const make = (defaults: PulseAudioClientConfig) =>
           () => undefined,
         ).pipe(
           Effect.catchIf(
-            (error) => error.code === 1,
+            (error): error is PulseAudioClientError =>
+              error instanceof PulseAudioClientError && error.code === 1,
             () =>
               Effect.logWarning("Record stream already closed (PA_ERR_NOENTITY)").pipe(
                 Effect.asVoid,
               ),
+          ),
+          Effect.catchIf(
+            (error): error is PulseAudioParseError => error instanceof PulseAudioParseError,
+            () => Effect.void,
           ),
           Effect.asVoid,
         )

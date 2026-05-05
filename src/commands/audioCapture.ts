@@ -1,7 +1,11 @@
 import { Deferred, Effect, Fiber, Ref, Stream } from "effect"
 import { makePcmRecordOptions, type SourceInfo } from "../pulse/defs.js"
 import { createRecordStream } from "../pulse/stream.js"
-import type { PulseAudioClient, PulseAudioClientError } from "../pulse/client.js"
+import type {
+  PulseAudioClient,
+  PulseAudioClientError,
+  PulseAudioParseError,
+} from "../pulse/client.js"
 import { pcmPeak, pcmRms } from "../audio/pcm.js"
 import {
   concatChunks,
@@ -292,7 +296,7 @@ export const recordPcmUntilTrailingSilence = Effect.fn(
   readonly sourceName?: string
 }): Effect.fn.Return<
   Uint8Array,
-  NoSpeechDetectedError | CliError | PulseAudioClientError,
+  NoSpeechDetectedError | CliError | PulseAudioClientError | PulseAudioParseError,
   PulseAudioClient
 > {
   const bytesPerSecond = config.sampleRate * config.channels * 2
