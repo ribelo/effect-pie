@@ -7,11 +7,7 @@ import { makePcmRecordOptions } from "../pulse/defs.js"
 import { createRecordStream } from "../pulse/stream.js"
 import { MIN_GAIN_TO_APPLY, normalizePcmForStt, pcmPeak, pcmRms } from "../audio/pcm.js"
 import { loadSttRuntimeConfig, STT_CONFIG_PATH, type SttConfigError } from "../stt/config.js"
-import {
-  transcribeAndTranslatePcmWithOpenRouter,
-  transcribePcmWithOpenRouter,
-  type OpenRouterSttError,
-} from "../stt/openrouter.js"
+import { OpenRouterSttService, type OpenRouterSttError } from "../stt/openrouter.js"
 import { typeTextInFocusedApp, type TextInjectionBackendService } from "../input/textInjection.js"
 import type { DesktopSession } from "../desktop/session.js"
 import { notifyWarning } from "../desktop/notification.js"
@@ -64,7 +60,11 @@ type KeyboardMonitorPttConfig = {
   readonly armedMessage: (trigger: PttTriggerBinding) => string
   readonly onClip: (
     clip: PttCapturedClip,
-  ) => Effect.Effect<void, PttKeyboardError, DesktopSession | TextInjectionBackendService>
+  ) => Effect.Effect<
+    void,
+    PttKeyboardError,
+    DesktopSession | TextInjectionBackendService | OpenRouterSttService
+  >
 }
 
 const pttKeycodeFlag = optionalPositiveIntegerFlag(
@@ -88,7 +88,11 @@ export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMoni
 ): Effect.fn.Return<
   never,
   PttKeyboardError,
-  PulseAudioClient | KeyboardMonitorService | DesktopSession | TextInjectionBackendService
+  | PulseAudioClient
+  | KeyboardMonitorService
+  | DesktopSession
+  | TextInjectionBackendService
+  | OpenRouterSttService
 > {
   return yield* Effect.scoped(
     Effect.gen(function* () {
@@ -456,17 +460,20 @@ export const pttTranscribeCommand = Command.make(
           `PTT transcribe armed. Hold keycode=${trigger.keycode} keysym=${trigger.keysym} to dictate. Press Ctrl+C to stop.`,
         onClip: (clip) =>
           Effect.gen(function* () {
-            const transcript = yield* transcribePcmWithOpenRouter({
-              model: transcriptionModel,
-              pcmBytes: clip.pcmBytes,
-              sampleRate: config.sampleRate,
-              language: transcriptionLanguage,
-              promptTemplate: sttConfig.transcriptionPrompt,
-            }).pipe(
-              Effect.mapError((cause: OpenRouterSttError) =>
-                toPttKeyboardError(`STT request failed: ${cause.message}`, cause),
-              ),
-            )
+            const stt = yield* Effect.service(OpenRouterSttService)
+            const transcript = yield* stt
+              .transcribe({
+                model: transcriptionModel,
+                pcmBytes: clip.pcmBytes,
+                sampleRate: config.sampleRate,
+                language: transcriptionLanguage,
+                promptTemplate: sttConfig.transcriptionPrompt,
+              })
+              .pipe(
+                Effect.mapError((cause: OpenRouterSttError) =>
+                  toPttKeyboardError(`STT request failed: ${cause.message}`, cause),
+                ),
+              )
 
             const text = transcript.trim()
             if (text.length === 0) {
@@ -553,18 +560,21 @@ export const pttTranslateCommand = Command.make(
           `PTT translate armed. Hold keycode=${trigger.keycode} keysym=${trigger.keysym} to dictate. ${sourceLanguage} -> ${targetLanguage}. Press Ctrl+C to stop.`,
         onClip: (clip) =>
           Effect.gen(function* () {
-            const translated = yield* transcribeAndTranslatePcmWithOpenRouter({
-              model: translationModel,
-              pcmBytes: clip.pcmBytes,
-              sampleRate: config.sampleRate,
-              sourceLanguage,
-              targetLanguage,
-              promptTemplate: sttConfig.translationPrompt,
-            }).pipe(
-              Effect.mapError((cause: OpenRouterSttError) =>
-                toPttKeyboardError(`STT+translation request failed: ${cause.message}`, cause),
-              ),
-            )
+            const stt = yield* Effect.service(OpenRouterSttService)
+            const translated = yield* stt
+              .translate({
+                model: translationModel,
+                pcmBytes: clip.pcmBytes,
+                sampleRate: config.sampleRate,
+                sourceLanguage,
+                targetLanguage,
+                promptTemplate: sttConfig.translationPrompt,
+              })
+              .pipe(
+                Effect.mapError((cause: OpenRouterSttError) =>
+                  toPttKeyboardError(`STT+translation request failed: ${cause.message}`, cause),
+                ),
+              )
 
             const text = translated.trim()
             if (text.length === 0) {

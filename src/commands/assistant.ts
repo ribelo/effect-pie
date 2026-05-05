@@ -1,5 +1,6 @@
 import { Console, Effect, Option, Ref } from "effect"
 import { loadSttRuntimeConfig, type SttConfigError } from "../stt/config.js"
+import type { OpenRouterSttService } from "../stt/openrouter.js"
 import { PulseAudioClient } from "../pulse/client.js"
 import type { KeyboardMonitorService, PttKeyboardError } from "../keyboard/monitor.js"
 import type { TextInjectionBackendService } from "../input/textInjection.js"
@@ -52,7 +53,11 @@ export const runAssistantDefaultCommand = Effect.fn(
 }): Effect.fn.Return<
   void,
   CliError | SttConfigError | PttKeyboardError | Error,
-  PulseAudioClient | KeyboardMonitorService | DesktopSession | TextInjectionBackendService
+  | PulseAudioClient
+  | KeyboardMonitorService
+  | DesktopSession
+  | TextInjectionBackendService
+  | OpenRouterSttService
 > {
   const sttConfig = yield* loadSttRuntimeConfig().pipe(
     Effect.mapError(

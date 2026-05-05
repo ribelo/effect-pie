@@ -29,11 +29,7 @@ import {
 import { toPttKeyboardError } from "../ptt.js"
 import { concatChunks } from "../shared.js"
 import type { CliError } from "../shared.js"
-import {
-  transcribeAndTranslatePcmWithOpenRouter,
-  transcribePcmWithOpenRouter,
-  type OpenRouterSttError,
-} from "../../stt/openrouter.js"
+import { OpenRouterSttService, type OpenRouterSttError } from "../../stt/openrouter.js"
 import type { SttRuntimeConfig } from "../../stt/config.js"
 import {
   DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM,
@@ -59,7 +55,11 @@ export const runAssistantPttCombinedLoop = (config: {
 }): Effect.Effect<
   never,
   CliError | PttKeyboardError,
-  PulseAudioClient | KeyboardMonitorService | DesktopSession | TextInjectionBackendService
+  | PulseAudioClient
+  | KeyboardMonitorService
+  | DesktopSession
+  | TextInjectionBackendService
+  | OpenRouterSttService
 > =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -294,18 +294,21 @@ export const runAssistantPttCombinedLoop = (config: {
           if (mode === "transcribe") {
             config.diagnostics?.setState("stt")
             config.diagnostics?.sttStart(config.sttConfig.openrouter.transcriptionModel)
-            const transcript = yield* transcribePcmWithOpenRouter({
-              model: config.sttConfig.openrouter.transcriptionModel,
-              pcmBytes,
-              sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-              language: config.sttConfig.openrouter.transcriptionLanguage,
-              promptTemplate: config.sttConfig.transcriptionPrompt,
-            }).pipe(
-              Effect.mapError((cause: OpenRouterSttError) => {
-                config.diagnostics?.sttFailure(cause.message)
-                return toPttKeyboardError(`PTT transcription failed: ${cause.message}`, cause)
-              }),
-            )
+            const stt = yield* Effect.service(OpenRouterSttService)
+            const transcript = yield* stt
+              .transcribe({
+                model: config.sttConfig.openrouter.transcriptionModel,
+                pcmBytes,
+                sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+                language: config.sttConfig.openrouter.transcriptionLanguage,
+                promptTemplate: config.sttConfig.transcriptionPrompt,
+              })
+              .pipe(
+                Effect.mapError((cause: OpenRouterSttError) => {
+                  config.diagnostics?.sttFailure(cause.message)
+                  return toPttKeyboardError(`PTT transcription failed: ${cause.message}`, cause)
+                }),
+              )
             config.diagnostics?.sttComplete(transcript.length)
 
             const text = transcript.trim()
@@ -347,19 +350,22 @@ export const runAssistantPttCombinedLoop = (config: {
 
           config.diagnostics?.setState("stt")
           config.diagnostics?.sttStart(config.sttConfig.openrouter.translationModel)
-          const translated = yield* transcribeAndTranslatePcmWithOpenRouter({
-            model: config.sttConfig.openrouter.translationModel,
-            pcmBytes,
-            sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-            sourceLanguage,
-            targetLanguage,
-            promptTemplate: config.sttConfig.translationPrompt,
-          }).pipe(
-            Effect.mapError((cause: OpenRouterSttError) => {
-              config.diagnostics?.sttFailure(cause.message)
-              return toPttKeyboardError(`PTT translation failed: ${cause.message}`, cause)
-            }),
-          )
+          const stt = yield* Effect.service(OpenRouterSttService)
+          const translated = yield* stt
+            .translate({
+              model: config.sttConfig.openrouter.translationModel,
+              pcmBytes,
+              sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+              sourceLanguage,
+              targetLanguage,
+              promptTemplate: config.sttConfig.translationPrompt,
+            })
+            .pipe(
+              Effect.mapError((cause: OpenRouterSttError) => {
+                config.diagnostics?.sttFailure(cause.message)
+                return toPttKeyboardError(`PTT translation failed: ${cause.message}`, cause)
+              }),
+            )
           config.diagnostics?.sttComplete(translated.length)
 
           const text = translated.trim()

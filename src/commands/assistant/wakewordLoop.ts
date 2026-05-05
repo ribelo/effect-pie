@@ -23,7 +23,7 @@ import {
   readDetectionTuningSnapshot,
   type WakewordSnapshotError,
 } from "../wakewordHelpers.js"
-import { transcribePcmWithOpenRouter, type OpenRouterSttError } from "../../stt/openrouter.js"
+import { OpenRouterSttService, type OpenRouterSttError } from "../../stt/openrouter.js"
 import type { SttRuntimeConfig } from "../../stt/config.js"
 import { CliError } from "../shared.js"
 import {
@@ -49,7 +49,7 @@ export const runAssistantWakewordTranscribeLoop = (config: {
 }): Effect.Effect<
   void,
   CliError,
-  PulseAudioClient | DesktopSession | TextInjectionBackendService
+  PulseAudioClient | DesktopSession | TextInjectionBackendService | OpenRouterSttService
 > =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -207,21 +207,24 @@ export const runAssistantWakewordTranscribeLoop = (config: {
 
               config.diagnostics?.setState("stt")
               config.diagnostics?.sttStart(config.sttConfig.openrouter.transcriptionModel)
-              const transcript = yield* transcribePcmWithOpenRouter({
-                model: config.sttConfig.openrouter.transcriptionModel,
-                pcmBytes,
-                sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-                language: config.sttConfig.openrouter.transcriptionLanguage,
-                promptTemplate: config.sttConfig.transcriptionPrompt,
-              }).pipe(
-                Effect.mapError(
-                  (cause: OpenRouterSttError) =>
-                    new CliError({
-                      message: `Wakeword transcription failed: ${cause.message}`,
-                      cause,
-                    }),
-                ),
-              )
+              const stt = yield* Effect.service(OpenRouterSttService)
+              const transcript = yield* stt
+                .transcribe({
+                  model: config.sttConfig.openrouter.transcriptionModel,
+                  pcmBytes,
+                  sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+                  language: config.sttConfig.openrouter.transcriptionLanguage,
+                  promptTemplate: config.sttConfig.transcriptionPrompt,
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause: OpenRouterSttError) =>
+                      new CliError({
+                        message: `Wakeword transcription failed: ${cause.message}`,
+                        cause,
+                      }),
+                  ),
+                )
 
               config.diagnostics?.sttComplete(transcript.length)
 

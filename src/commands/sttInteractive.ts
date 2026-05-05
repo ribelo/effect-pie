@@ -1,7 +1,7 @@
 import { Console, Effect, Option, Ref, Stream } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import { loadSttRuntimeConfig, type SttConfigError } from "../stt/config.js"
-import { transcribePcmWithOpenRouter, type OpenRouterSttError } from "../stt/openrouter.js"
+import { OpenRouterSttService, type OpenRouterSttError } from "../stt/openrouter.js"
 import { createRecordStream } from "../pulse/stream.js"
 import { makePcmRecordOptions } from "../pulse/defs.js"
 import { typeTextWithWtype, type WtypeError } from "../wayland/wtype.js"
@@ -98,34 +98,37 @@ export const sttInteractiveCommand = Command.make(
           continue
         }
 
-        const transcript = yield* transcribePcmWithOpenRouter({
-          model: transcriptionModel,
-          pcmBytes,
-          sampleRate: config.sampleRate,
-          language: transcriptionLanguage,
-          promptTemplate: sttConfig.transcriptionPrompt,
-          ...(config.noType
-            ? {}
-            : {
-                onDelta: (delta: string) =>
-                  typeTextWithWtype(delta).pipe(
-                    Effect.tapError((cause: WtypeError) =>
-                      Console.log(
-                        `[stt-interactive] wtype typing error for delta: ${cause.message}`,
+        const stt = yield* Effect.service(OpenRouterSttService)
+        const transcript = yield* stt
+          .transcribe({
+            model: transcriptionModel,
+            pcmBytes,
+            sampleRate: config.sampleRate,
+            language: transcriptionLanguage,
+            promptTemplate: sttConfig.transcriptionPrompt,
+            ...(config.noType
+              ? {}
+              : {
+                  onDelta: (delta: string) =>
+                    typeTextWithWtype(delta).pipe(
+                      Effect.tapError((cause: WtypeError) =>
+                        Console.log(
+                          `[stt-interactive] wtype typing error for delta: ${cause.message}`,
+                        ),
                       ),
+                      Effect.ignore,
                     ),
-                    Effect.ignore,
-                  ),
-              }),
-        }).pipe(
-          Effect.mapError(
-            (cause: OpenRouterSttError) =>
-              new CliError({
-                message: `Streaming STT failed: ${cause.message}`,
-                cause,
-              }),
-          ),
-        )
+                }),
+          })
+          .pipe(
+            Effect.mapError(
+              (cause: OpenRouterSttError) =>
+                new CliError({
+                  message: `Streaming STT failed: ${cause.message}`,
+                  cause,
+                }),
+            ),
+          )
 
         yield* Console.log("")
         yield* Console.log(`[stt-interactive] Transcript: ${transcript}`)

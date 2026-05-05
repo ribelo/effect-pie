@@ -1,4 +1,5 @@
 import { type Generated as OpenAiGenerated, OpenAiClientGenerated } from "@effect/ai-openai"
+import * as Context from "effect/Context"
 import { Data, Effect, Layer, Redacted, Schema, Stream } from "effect"
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
 import * as HttpClient from "effect/unstable/http/HttpClient"
@@ -89,18 +90,22 @@ const decodeStructuredField = (config: {
 
     const extracted = extractStructuredFieldText(structuredUnknown, config.fields)
     if (extracted === undefined) {
-      return yield* new OpenRouterSttError({
-        message: `OpenRouter response must be a JSON object with one ${config.description} string field`,
-        responseBody: config.responseBody,
-      })
+      return yield* Effect.fail(
+        new OpenRouterSttError({
+          message: `OpenRouter response must be a JSON object with one ${config.description} string field`,
+          responseBody: config.responseBody,
+        }),
+      )
     }
 
     const text = extracted.trim()
     if (text.length === 0) {
-      return yield* new OpenRouterSttError({
-        message: "OpenRouter response did not contain transcript text",
-        responseBody: config.responseBody,
-      })
+      return yield* Effect.fail(
+        new OpenRouterSttError({
+          message: "OpenRouter response did not contain transcript text",
+          responseBody: config.responseBody,
+        }),
+      )
     }
 
     return text
@@ -133,9 +138,6 @@ const messageFromUnknown = (value: unknown): string | undefined => {
   return typeof maybeMessage === "string" ? maybeMessage : undefined
 }
 
-// SSE protocol sends `data: [DONE]` as the stream terminator. The generated
-// client does not recognize this sentinel and throws a schema parse error.
-// Filtering it is intentional protocol handling, not error swallowing.
 const isDoneSentinelSchemaError = (cause: unknown): boolean => {
   const message = messageFromUnknown(cause)
   if (message === undefined) {
@@ -268,7 +270,7 @@ export const TRANSLATION_JSON_SCHEMA = {
   additionalProperties: false,
 }
 
-const runOpenRouterAudioStreaming = (config: {
+type RunOpenRouterAudioStreamingConfig = {
   readonly model: string
   readonly prompt: string
   readonly wavData: Uint8Array
@@ -278,21 +280,13 @@ const runOpenRouterAudioStreaming = (config: {
   }
   readonly structuredDecoder?: (responseBody: string) => Effect.Effect<string, OpenRouterSttError>
   readonly onDelta?: (delta: string) => Effect.Effect<void>
-}): Effect.Effect<string, OpenRouterSttError> =>
-  Effect.gen(function* () {
-    const apiKey = resolveOpenRouterApiKey()
-    if (apiKey === undefined) {
-      return yield* new OpenRouterSttError({
-        message: "Missing OpenRouter API key. Set ERG_OPENROUTER_API_KEY or OPENROUTER_API_KEY.",
-      })
-    }
+}
 
-    const baseUrl = resolveOpenRouterBaseUrl()
-    if (baseUrl === undefined) {
-      return yield* new OpenRouterSttError({
-        message: "Missing OpenRouter base URL. Set ERG_OPENROUTER_BASE_URL or OPENROUTER_BASE_URL.",
-      })
-    }
+const runOpenRouterAudioStreamingCore = (
+  config: RunOpenRouterAudioStreamingConfig,
+): Effect.Effect<string, OpenRouterSttError, OpenAiClientGenerated.OpenAiClientGenerated> =>
+  Effect.gen(function* () {
+    const client = yield* OpenAiClientGenerated.OpenAiClientGenerated
 
     const payloadBase = {
       model: config.model,
@@ -329,62 +323,41 @@ const runOpenRouterAudioStreaming = (config: {
           }),
     }
 
-    const openAiLayer = makeOpenRouterClientLayer(apiKey, baseUrl)
-
     if (config.onDelta === undefined) {
       const nonStreamingPayload = {
         ...payloadBase,
         stream: false as const,
       } as unknown as typeof OpenAiGenerated.CreateChatCompletionRequestJson.Encoded
 
-      const nonStreamingEffect = Effect.gen(function* () {
-        const client = yield* OpenAiClientGenerated.OpenAiClientGenerated
+      const response = yield* client.createChatCompletion({
+        payload: nonStreamingPayload,
+      })
 
-        const response = yield* client.createChatCompletion({
-          payload: nonStreamingPayload,
-        })
-
-        const rawOutput = extractRawContentFromChatCompletion(response)?.trim()
-        if (rawOutput === undefined || rawOutput.length === 0) {
-          return yield* new OpenRouterSttError({
+      const rawOutput = extractRawContentFromChatCompletion(response)?.trim()
+      if (rawOutput === undefined || rawOutput.length === 0) {
+        return yield* Effect.fail(
+          new OpenRouterSttError({
             message: "OpenRouter response did not contain transcript text",
-          })
-        }
-
-        if (config.structuredDecoder === undefined) {
-          return rawOutput
-        }
-
-        return yield* config.structuredDecoder(rawOutput).pipe(
-          Effect.mapError(
-            () =>
-              new OpenRouterSttError({
-                message: "OpenRouter structured response did not match expected schema",
-                responseBody: rawOutput,
-              }),
-          ),
+          }),
         )
-      }).pipe(
-        Effect.mapError((cause) =>
-          cause instanceof OpenRouterSttError
-            ? cause
-            : new OpenRouterSttError({
-                message: "OpenRouter request failed",
-                cause,
-              }),
+      }
+
+      if (config.structuredDecoder === undefined) {
+        return rawOutput
+      }
+
+      return yield* config.structuredDecoder(rawOutput).pipe(
+        Effect.mapError(
+          () =>
+            new OpenRouterSttError({
+              message: "OpenRouter structured response did not match expected schema",
+              responseBody: rawOutput,
+            }),
         ),
       )
-
-      return yield* nonStreamingEffect.pipe(Effect.provide(openAiLayer))
     }
 
     const onDelta = config.onDelta
-    if (onDelta === undefined) {
-      return yield* new OpenRouterSttError({
-        message: "Streaming mode requires onDelta handler",
-      })
-    }
-
     const streamingPayload = {
       ...payloadBase,
       stream: true as const,
@@ -392,51 +365,75 @@ const runOpenRouterAudioStreaming = (config: {
 
     let streamedContent = ""
 
-    const streamingEffect = Effect.gen(function* () {
-      const client = yield* OpenAiClientGenerated.OpenAiClientGenerated
-
-      yield* client.createChatCompletionSse({ payload: streamingPayload }).pipe(
-        Stream.catchIf(
-          (cause) => isDoneSentinelSchemaError(cause),
-          () => Stream.empty,
-        ),
-        Stream.runForEach(({ data }) => {
-          const choice = data.choices[0]
-          if (choice === undefined) {
-            return Effect.void
-          }
-
-          const delta = choice.delta.content
-          if (typeof delta !== "string" || delta.length === 0) {
-            return Effect.void
-          }
-
-          streamedContent += delta
-          return onDelta(delta)
-        }),
-      )
-
-      return streamedContent
-    }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new OpenRouterSttError({
-            message: "OpenRouter streaming request failed",
-            cause,
-          }),
+    yield* client.createChatCompletionSse({ payload: streamingPayload }).pipe(
+      Stream.catchIf(
+        (cause) => isDoneSentinelSchemaError(cause),
+        () => Stream.empty,
       ),
+      Stream.runForEach(({ data }) => {
+        const choice = data.choices[0]
+        if (choice === undefined) {
+          return Effect.void
+        }
+
+        const delta = choice.delta.content
+        if (typeof delta !== "string" || delta.length === 0) {
+          return Effect.void
+        }
+
+        streamedContent += delta
+        return onDelta(delta)
+      }),
     )
 
-    const rawOutput = yield* streamingEffect.pipe(Effect.provide(openAiLayer))
-    const text = rawOutput.trim()
+    const text = streamedContent.trim()
 
     if (text.length === 0) {
-      return yield* new OpenRouterSttError({
-        message: "OpenRouter response did not contain transcript text",
-      })
+      return yield* Effect.fail(
+        new OpenRouterSttError({
+          message: "OpenRouter response did not contain transcript text",
+        }),
+      )
     }
 
     return text
+  }).pipe(
+    Effect.mapError((cause) =>
+      cause instanceof OpenRouterSttError
+        ? cause
+        : new OpenRouterSttError({
+            message: "OpenRouter request failed",
+            cause,
+          }),
+    ),
+  )
+
+// Backward-compatible wrapper that resolves env vars and provides Layer internally
+const runOpenRouterAudioStreaming = (
+  config: RunOpenRouterAudioStreamingConfig,
+): Effect.Effect<string, OpenRouterSttError> =>
+  Effect.gen(function* () {
+    const apiKey = resolveOpenRouterApiKey()
+    if (apiKey === undefined) {
+      return yield* Effect.fail(
+        new OpenRouterSttError({
+          message: "Missing OpenRouter API key. Set ERG_OPENROUTER_API_KEY or OPENROUTER_API_KEY.",
+        }),
+      )
+    }
+
+    const baseUrl = resolveOpenRouterBaseUrl()
+    if (baseUrl === undefined) {
+      return yield* Effect.fail(
+        new OpenRouterSttError({
+          message:
+            "Missing OpenRouter base URL. Set ERG_OPENROUTER_BASE_URL or OPENROUTER_BASE_URL.",
+        }),
+      )
+    }
+
+    const openAiLayer = makeOpenRouterClientLayer(apiKey, baseUrl)
+    return yield* runOpenRouterAudioStreamingCore(config).pipe(Effect.provide(openAiLayer))
   })
 
 export const transcribePcmWithOpenRouter = (config: {
@@ -484,3 +481,87 @@ export const transcribeAndTranslatePcmWithOpenRouter = (config: {
         }
       : { onDelta: config.onDelta }),
   })
+
+export class OpenRouterSttService extends Context.Service<
+  OpenRouterSttService,
+  {
+    readonly transcribe: (config: {
+      readonly model: string
+      readonly pcmBytes: Uint8Array
+      readonly sampleRate: number
+      readonly language: string
+      readonly promptTemplate: string
+      readonly onDelta?: (delta: string) => Effect.Effect<void>
+    }) => Effect.Effect<string, OpenRouterSttError>
+
+    readonly translate: (config: {
+      readonly model: string
+      readonly pcmBytes: Uint8Array
+      readonly sampleRate: number
+      readonly sourceLanguage: string
+      readonly targetLanguage: string
+      readonly promptTemplate: string
+      readonly onDelta?: (delta: string) => Effect.Effect<void>
+    }) => Effect.Effect<string, OpenRouterSttError>
+  }
+>()("pie/stt/OpenRouterSttService") {
+  static readonly layer = Layer.effect(OpenRouterSttService)(
+    Effect.sync(() => {
+      const apiKey = resolveOpenRouterApiKey()
+      const baseUrl = resolveOpenRouterBaseUrl()
+
+      if (apiKey === undefined) {
+        throw new Error(
+          "Missing OpenRouter API key. Set ERG_OPENROUTER_API_KEY or OPENROUTER_API_KEY.",
+        )
+      }
+
+      if (baseUrl === undefined) {
+        throw new Error(
+          "Missing OpenRouter base URL. Set ERG_OPENROUTER_BASE_URL or OPENROUTER_BASE_URL.",
+        )
+      }
+
+      const openAiLayer = makeOpenRouterClientLayer(apiKey, baseUrl)
+
+      return OpenRouterSttService.of({
+        transcribe: (config) =>
+          runOpenRouterAudioStreamingCore({
+            model: config.model,
+            prompt: renderTemplate(config.promptTemplate, {
+              language: config.language,
+            }),
+            wavData: encodePcm16MonoWav(config.pcmBytes, config.sampleRate),
+            ...(config.onDelta === undefined
+              ? {
+                  jsonSchema: {
+                    name: "transcription_response",
+                    schema: TRANSCRIPTION_JSON_SCHEMA,
+                  },
+                  structuredDecoder: decodeStructuredTranscription,
+                }
+              : { onDelta: config.onDelta }),
+          }).pipe(Effect.provide(openAiLayer)),
+
+        translate: (config) =>
+          runOpenRouterAudioStreamingCore({
+            model: config.model,
+            prompt: renderTemplate(config.promptTemplate, {
+              source_language: config.sourceLanguage,
+              target_language: config.targetLanguage,
+            }),
+            wavData: encodePcm16MonoWav(config.pcmBytes, config.sampleRate),
+            ...(config.onDelta === undefined
+              ? {
+                  jsonSchema: {
+                    name: "translation_response",
+                    schema: TRANSLATION_JSON_SCHEMA,
+                  },
+                  structuredDecoder: decodeStructuredTranslation,
+                }
+              : { onDelta: config.onDelta }),
+          }).pipe(Effect.provide(openAiLayer)),
+      })
+    }),
+  )
+}

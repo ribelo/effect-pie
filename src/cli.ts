@@ -6,6 +6,7 @@ import { PulseAudioClient } from "./pulse/client.js"
 import { layer as keyboardLayer } from "./keyboard/monitor.js"
 import { DesktopSession } from "./desktop/session.js"
 import { TextInjectionBackendLive } from "./input/textInjection.js"
+import { OpenRouterSttService } from "./stt/openrouter.js"
 
 import { sourcesCommand } from "./commands/sources.js"
 import { meterCommand } from "./commands/meter.js"
@@ -64,6 +65,7 @@ const runtimeLayer = Layer.mergeAll(
   keyboardLayer,
   DesktopSession.live,
   textInjectionLayer,
+  OpenRouterSttService.layer,
 )
 
 const main = Command.run(rootCommand, { version: "0.1.0" }).pipe(Effect.provide(runtimeLayer))
