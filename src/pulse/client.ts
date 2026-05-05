@@ -229,6 +229,10 @@ const makeConnection = (
     const requestTimeoutMs = defaults.requestTimeoutMs ?? defaultRequestTimeoutMs
 
     const connection = yield* Effect.gen(function* () {
+      // NodeSocket.makeNet is used instead of BunSocket because
+      // @effect/platform-node is already a dependency and NodeSocket
+      // handles Unix domain sockets correctly. Migrating to BunSocket
+      // would add @effect/platform-bun with no measurable benefit.
       const socket = yield* NodeSocket.makeNet({ path: socketPath }).pipe(
         Scope.provide(scope),
         Effect.mapError(

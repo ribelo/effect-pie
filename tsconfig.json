@@ -21,6 +21,10 @@
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,
     "erasableSyntaxOnly": true,
+    // isolatedDeclarations is omitted because this is a private CLI application,
+    // not a published library. Adding it would require explicit type annotations on
+    // every exported symbol for faster parallel declaration emit, with no benefit
+    // to the application runtime.
     "noErrorTruncation": true,
     "skipLibCheck": true,
     "sourceMap": true,

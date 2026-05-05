@@ -39,8 +39,7 @@ export const chooseTextInjectionBackend = (
 export const normalizeTextForInjection = (text: string): string =>
   text
     .replace(/\r\n/g, "\n")
-    .replace(/[\r\n\u2028\u2029]+/g, " ")
-    .replace(/\s{2,}/g, " ")
+    .replace(/[\r\u2028\u2029]/g, "\n")
     .trim()
 
 const runTextInjectionBackend = (

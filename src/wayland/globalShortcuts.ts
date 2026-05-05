@@ -133,20 +133,10 @@ export const buildBindShortcutsArgs = (config: {
   "0",
 ]
 
-const asPortalError = (cause: unknown, fallbackMessage: string): GlobalShortcutsPortalError => {
-  if (cause instanceof GlobalShortcutsPortalError) {
-    return cause
-  }
-
-  if (cause instanceof Error) {
-    return new GlobalShortcutsPortalError({
-      message: `${fallbackMessage}: ${cause.message}`,
-      cause,
-    })
-  }
-
-  return new GlobalShortcutsPortalError({ message: fallbackMessage, cause })
-}
+const mapToPortalError = (cause: unknown, fallbackMessage: string): GlobalShortcutsPortalError =>
+  cause instanceof GlobalShortcutsPortalError
+    ? cause
+    : new GlobalShortcutsPortalError({ message: fallbackMessage, cause })
 
 const connectSessionBus = async (): Promise<MessageBus> => {
   const bus = sessionBus()
@@ -188,11 +178,6 @@ const connectSessionBus = async (): Promise<MessageBus> => {
 
     bus.on("connect", onConnect)
     bus.on("error", onError)
-
-    const sender = (bus as MessageBus & { readonly name?: unknown }).name
-    if (typeof sender === "string" && sender.length > 0) {
-      finish(resolve)
-    }
   })
 
   return bus
@@ -422,7 +407,9 @@ const listDbusNames = async (
   const body: ReadonlyArray<unknown> = Array.isArray(reply.body) ? reply.body : []
   const names = body[0]
   if (!Array.isArray(names) || !names.every((name) => typeof name === "string")) {
-    return []
+    throw new GlobalShortcutsPortalError({
+      message: `Unexpected D-Bus reply shape for ${member}: ${JSON.stringify(reply.body)}`,
+    })
   }
 
   return names
@@ -595,20 +582,23 @@ export const setupGlobalShortcutSession = Effect.fn(
         throw error
       }
     },
-    catch: (cause) => asPortalError(cause, "Failed to set up portal global shortcut session"),
+    catch: (cause) => mapToPortalError(cause, "Failed to set up portal global shortcut session"),
   })
 })
 
 export const closeGlobalShortcutSession = Effect.fn(
   "pie/wayland/globalShortcuts.closeGlobalShortcutSession",
 )(function* (sessionHandle: string): Effect.fn.Return<void, GlobalShortcutsPortalError> {
+  const bus = sessionBuses.get(sessionHandle)
+  if (bus === undefined) {
+    yield* Effect.logWarning("closeGlobalShortcutSession: unknown session handle").pipe(
+      Effect.annotateLogs({ sessionHandle }),
+    )
+    return
+  }
+
   return yield* Effect.tryPromise({
     try: async () => {
-      const bus = sessionBuses.get(sessionHandle)
-      if (bus === undefined) {
-        return
-      }
-
       try {
         await callPortalMethod({
           bus,
@@ -621,13 +611,13 @@ export const closeGlobalShortcutSession = Effect.fn(
         bus.disconnect()
       }
     },
-    catch: (cause) => asPortalError(cause, "Failed to close portal global shortcut session"),
+    catch: (cause) => mapToPortalError(cause, "Failed to close portal global shortcut session"),
   })
 })
 
 export const monitorPortalSignals = Effect.fn("pie/wayland/globalShortcuts.monitorPortalSignals")(
-  function* (): Effect.fn.Return<never, GlobalShortcutsPortalError> {
-    return yield* Effect.scoped(
+  function* (): Effect.fn.Return<void> {
+    yield* Effect.scoped(
       Effect.gen(function* () {
         const busctlExecutable = yield* findBusctlExecutable
 
@@ -663,10 +653,14 @@ export const monitorPortalSignals = Effect.fn("pie/wayland/globalShortcuts.monit
             }),
         })
 
-        return yield* new GlobalShortcutsPortalError({
-          message: `busctl monitor exited unexpectedly with code ${exitCode}`,
-        })
-      }),
+        yield* Effect.logWarning("busctl monitor exited unexpectedly").pipe(
+          Effect.annotateLogs({ exitCode }),
+        )
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Portal signal monitor failed").pipe(Effect.annotateLogs({ cause })),
+        ),
+      ),
     )
   },
 )

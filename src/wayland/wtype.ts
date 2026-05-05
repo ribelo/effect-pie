@@ -25,12 +25,12 @@ const runCommand = (
       let timeout: ReturnType<typeof setTimeout> | undefined
 
       try {
+        // Bun.spawn may return null streams; readStreamText handles null safely
+        const stdoutStream = process.stdout
+        const stderrStream = process.stderr
+
         const [exitCode, stdout, stderr] = await Promise.race([
-          Promise.all([
-            process.exited,
-            readStreamText(process.stdout),
-            readStreamText(process.stderr),
-          ]),
+          Promise.all([process.exited, readStreamText(stdoutStream), readStreamText(stderrStream)]),
           new Promise<never>((_resolve, reject) => {
             timeout = setTimeout(() => {
               try {
@@ -99,8 +99,17 @@ const buildWlPasteCommandArgs = (wlPasteExecutable: string): Array<string> => [
   "-n",
 ]
 
-export const shouldUseWtypeClipboardPaste = (text: string): boolean =>
-  /['"`\u2018\u2019]/u.test(text)
+const SAFE_DIRECT_TYPING_CHARACTERS = /^[\x20-\x7E]*$/u
+
+const PROBLEMATIC_DIRECT_CHARACTERS = /[\\$`"'\u2018\u2019]/u
+
+export const shouldUseWtypeClipboardPaste = (text: string): boolean => {
+  if (!SAFE_DIRECT_TYPING_CHARACTERS.test(text)) {
+    return true
+  }
+
+  return PROBLEMATIC_DIRECT_CHARACTERS.test(text)
+}
 
 export type WtypeInjectionMode = "direct" | "clipboard" | "auto"
 
@@ -166,14 +175,13 @@ const typeTextWithWtypeDirect = (
 const readClipboardText = (
   wlPasteExecutable: string | undefined,
   commandTimeoutMs: number,
-): Effect.Effect<string | undefined> => {
+): Effect.Effect<string | undefined, WtypeError> => {
   if (wlPasteExecutable === undefined) {
-    return Effect.as(Effect.void, undefined)
+    return Effect.succeed(undefined)
   }
 
   return runCommand(buildWlPasteCommandArgs(wlPasteExecutable), "wl-paste", commandTimeoutMs).pipe(
     Effect.map(({ stdout }) => stdout),
-    Effect.catch(() => Effect.as(Effect.void, undefined)),
   )
 }
 
@@ -204,7 +212,14 @@ const typeTextWithWtypeClipboardPaste = (config: {
       buildWlCopyCommandArgs(config.wlCopyExecutable, config.previousClipboard),
       "wl-copy",
       config.commandTimeoutMs,
-    ).pipe(Effect.catch(() => Effect.void))
+    ).pipe(
+      Effect.tapError((cause) =>
+        Effect.logWarning("Failed to restore clipboard after paste injection").pipe(
+          Effect.annotateLogs({ cause }),
+        ),
+      ),
+      Effect.catch(() => Effect.void),
+    )
   })
 
 const resolveCommandTimeoutMs = (
@@ -263,7 +278,17 @@ export const typeTextWithWtype = Effect.fn("pie/wayland/wtype.typeTextWithWtype"
   }
 
   const wlPasteExecutable = yield* findOptionalWlPasteExecutable
-  const previousClipboard = yield* readClipboardText(wlPasteExecutable, clipboardCommandTimeoutMs)
+  const previousClipboard = yield* readClipboardText(
+    wlPasteExecutable,
+    clipboardCommandTimeoutMs,
+  ).pipe(
+    Effect.tapError((cause) =>
+      Effect.logWarning("Clipboard read failed; falling back to direct typing").pipe(
+        Effect.annotateLogs({ cause }),
+      ),
+    ),
+    Effect.catch(() => Effect.succeed(undefined)),
+  )
 
   return yield* typeTextWithWtypeClipboardPaste({
     wtypeExecutable,

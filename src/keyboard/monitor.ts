@@ -129,11 +129,6 @@ const connectKeyboardMonitorBus = (): Effect.Effect<MessageBus, PttKeyboardError
 
         bus.on("connect", onConnect)
         bus.on("error", onError)
-
-        const sender = (bus as MessageBus & { readonly name?: unknown }).name
-        if (typeof sender === "string" && sender.length > 0) {
-          finish(resolve)
-        }
       })
 
       return bus

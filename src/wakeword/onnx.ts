@@ -1,6 +1,7 @@
 import * as Data from "effect/Data"
 import * as Effect from "effect/Effect"
 import { promises as fs } from "node:fs"
+import type { InferenceSession, Tensor } from "onnxruntime-web"
 
 import type { ResolvedWakewordAssets } from "./defs.js"
 import { isRecord } from "../utils/isRecord.js"
@@ -43,24 +44,11 @@ export type WakewordModelSessions = WakewordFeatureSessions & {
   readonly wakewords: Readonly<Record<string, WakewordScoringModel>>
 }
 
-type OrtModule = {
+export type OrtModule = {
   readonly InferenceSession: {
-    create: (modelPath: string, options?: Record<string, unknown>) => Promise<unknown>
+    create: (modelPath: string, options?: Record<string, unknown>) => Promise<InferenceSession>
   }
-  readonly Tensor: new (type: string, data: Float32Array, dims: ReadonlyArray<number>) => unknown
-}
-
-type OrtSession = {
-  readonly inputNames?: ReadonlyArray<string>
-  readonly outputNames?: ReadonlyArray<string>
-  readonly inputMetadata?: Record<string, { readonly dimensions?: ReadonlyArray<number | string> }>
-  readonly run: (feeds: Record<string, unknown>) => Promise<Record<string, unknown>>
-  readonly release: () => Promise<void>
-}
-
-type OrtTensor = {
-  readonly data?: Float32Array | ReadonlyArray<number>
-  readonly dims?: ReadonlyArray<number>
+  readonly Tensor: new (type: string, data: Float32Array, dims: ReadonlyArray<number>) => Tensor
 }
 
 type LinearWakewordModelFile = {
@@ -79,10 +67,7 @@ const isOrtModule = (value: unknown): value is OrtModule =>
   typeof value["InferenceSession"]["create"] === "function" &&
   typeof value["Tensor"] === "function"
 
-const isOrtSession = (value: unknown): value is OrtSession =>
-  isRecord(value) && typeof value["run"] === "function"
-
-const isOrtTensor = (value: unknown): value is OrtTensor =>
+const isOrtTensor = (value: unknown): value is Tensor =>
   isRecord(value) &&
   (value["data"] instanceof Float32Array ||
     (Array.isArray(value["data"]) && value["data"].every((entry) => typeof entry === "number")))
@@ -112,10 +97,7 @@ const isLinearWakewordModelFile = (value: unknown): value is LinearWakewordModel
   )
 }
 
-const toFloat32Array = (value: Float32Array | ReadonlyArray<number>): Float32Array =>
-  value instanceof Float32Array ? value : Float32Array.from(value)
-
-const readOutputTensor = (outputs: Record<string, unknown>, outputName: string): OrtTensor => {
+const readOutputTensor = (outputs: Record<string, unknown>, outputName: string): Tensor => {
   const output = outputs[outputName] ?? Object.values(outputs)[0]
   if (!isOrtTensor(output)) {
     throw new WakewordRuntimeError({
@@ -153,12 +135,6 @@ export const makeSession = Effect.fn("pie/wakeword/onnx.makeSession")(function* 
         executionProviders: ["wasm"],
       })
 
-      if (!isOrtSession(session)) {
-        throw new WakewordRuntimeError({
-          message: `ONNX model session for ${modelPath} did not expose the expected API`,
-        })
-      }
-
       const inputName = session.inputNames?.[0]
       const outputName = session.outputNames?.[0]
 
@@ -173,20 +149,21 @@ export const makeSession = Effect.fn("pie/wakeword/onnx.makeSession")(function* 
         })
       }
 
-      const inputDims = session.inputMetadata?.[inputName]?.dimensions ?? []
+      const inputMeta = session.inputMetadata?.find((meta) => meta.name === inputName)
+      const inputDims = inputMeta?.isTensor === true ? inputMeta.shape : []
 
       const runPromise = async (input: OnnxTensorData): Promise<OnnxTensorData> => {
         const tensor = new ort.Tensor("float32", input.data, input.dims)
         const outputs = await session.run({ [inputName]: tensor })
         const output = readOutputTensor(outputs, outputName)
         const outputData = output.data
-        if (!outputData) {
+        if (!(outputData instanceof Float32Array)) {
           throw new WakewordRuntimeError({
-            message: `Model output '${outputName}' is missing tensor data`,
+            message: `Model output '${outputName}' has unexpected tensor data type`,
           })
         }
 
-        const data = toFloat32Array(outputData)
+        const data = outputData
 
         return {
           data,
