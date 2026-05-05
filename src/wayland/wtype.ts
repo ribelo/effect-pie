@@ -1,80 +1,31 @@
 import { Data, Effect } from "effect"
-import { readStreamText } from "../utils/subprocess.js"
+
+import { runExternalTool } from "../utils/subprocess.js"
 
 export class WtypeError extends Data.TaggedError("WtypeError")<{
   readonly message: string
   readonly cause?: unknown
   readonly stderr?: string
 }> {}
+
 const DEFAULT_DIRECT_COMMAND_TIMEOUT_MS = 30_000
 const DEFAULT_CLIPBOARD_COMMAND_TIMEOUT_MS = 2_000
 const MAX_COMMAND_TIMEOUT_MS = 300_000
 
 const runCommand = (
-  commandArgs: Array<string>,
+  commandArgs: ReadonlyArray<string>,
   executableName: string,
   timeoutMs: number,
 ): Effect.Effect<{ readonly stdout: string; readonly stderr: string }, WtypeError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const process = Bun.spawn(commandArgs, {
-        stdout: "pipe",
-        stderr: "pipe",
-      })
-
-      let timeout: ReturnType<typeof setTimeout> | undefined
-
-      try {
-        // Bun.spawn may return null streams; readStreamText handles null safely
-        const stdoutStream = process.stdout
-        const stderrStream = process.stderr
-
-        const [exitCode, stdout, stderr] = await Promise.race([
-          Promise.all([
-            process.exited,
-            Effect.runPromise(readStreamText(stdoutStream)),
-            Effect.runPromise(readStreamText(stderrStream)),
-          ]),
-          new Promise<never>((_resolve, reject) => {
-            timeout = setTimeout(() => {
-              try {
-                process.kill()
-              } catch {
-                // ignore
-              }
-              reject(
-                new WtypeError({ message: `${executableName} timed out after ${timeoutMs}ms` }),
-              )
-            }, timeoutMs)
-          }),
-        ])
-
-        if (exitCode !== 0) {
-          const details = stderr.trim()
-          throw new WtypeError({
-            message:
-              details.length > 0
-                ? `${executableName} failed with exit code ${exitCode}: ${details}`
-                : `${executableName} failed with exit code ${exitCode}`,
-            stderr,
-          })
-        }
-
-        return {
-          stdout,
-          stderr,
-        }
-      } finally {
-        if (timeout !== undefined) {
-          clearTimeout(timeout)
-        }
-      }
-    },
-    catch: (cause) =>
-      cause instanceof WtypeError
-        ? cause
-        : new WtypeError({ message: `Failed to execute ${executableName}`, cause }),
-  })
+  runExternalTool({ command: commandArgs, timeoutMs }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new WtypeError({
+          message: cause.message.replace("Subprocess", executableName),
+          cause,
+        }),
+    ),
+  )
 
 const buildWtypeCommandArgs = (wtypeExecutable: string, text: string, delayMs = 0): Array<string> =>
   delayMs > 0 ? [wtypeExecutable, "-d", String(delayMs), "--", text] : [wtypeExecutable, "--", text]

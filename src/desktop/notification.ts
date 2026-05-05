@@ -1,5 +1,7 @@
 import { Data, Effect } from "effect"
 
+import { runExternalTool } from "../utils/subprocess.js"
+
 export class NotificationError extends Data.TaggedError("NotificationError")<{
   readonly message: string
   readonly cause?: unknown
@@ -15,24 +17,19 @@ export const notifyWarning = Effect.fn("pie/desktop/notification.notifyWarning")
       })
     }
 
-    return yield* Effect.tryPromise({
-      try: async () => {
-        const proc = Bun.spawn([notifySendPath, "--urgency=normal", title, message])
-        const code = await proc.exited
-        if (code !== 0) {
-          throw new NotificationError({
-            message: `notify-send exited with code ${code}`,
-          })
-        }
-      },
-      catch: (cause) =>
-        cause instanceof NotificationError
-          ? cause
-          : new NotificationError({
-              message: `notify-send failed: ${String(cause)}`,
-              cause,
-            }),
-    })
+    yield* runExternalTool({
+      command: [notifySendPath, "--urgency=normal", title, message],
+      timeoutMs: 5_000,
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new NotificationError({
+            message: cause.message.replace("Subprocess", "notify-send"),
+            cause,
+          }),
+      ),
+      Effect.asVoid,
+    )
   },
   Effect.tapError((cause) =>
     Effect.logWarning(`Notification failed: ${cause.message}`).pipe(
