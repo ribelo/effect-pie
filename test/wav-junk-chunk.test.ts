@@ -6,7 +6,7 @@ import * as path from "node:path"
 import * as os from "node:os"
 
 import { decodePcmWavFile } from "../src/wakeword/training.ts"
-import { buildPcmWavHeader } from "../src/utils/runtime.js"
+import { buildPcmWavHeader } from "../src/audio/pcm.js"
 
 const makeWavWithJunkChunk = (pcmBytes: Uint8Array): Uint8Array => {
   const header = buildPcmWavHeader(pcmBytes.length, 16_000)

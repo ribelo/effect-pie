@@ -45,8 +45,8 @@ const writeValidWav = async (outputPath: string, pcmBytes: Uint8Array, sampleRat
   await writeFile(outputPath, wavData)
 }
 
-test("makeWakewordTrainingPlan includes silenceDir", () => {
-  const plan = makeWakewordTrainingPlan({ name: "test_model" })
+test("makeWakewordTrainingPlan includes silenceDir", async () => {
+  const plan = await Effect.runPromise(makeWakewordTrainingPlan({ name: "test_model" }))
   assert.ok(plan.silenceDir.includes("silence"))
 })
 

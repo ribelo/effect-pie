@@ -3,7 +3,7 @@ import * as Data from "effect/Data"
 import * as path from "node:path"
 import { mkdir as mkdirNode, readFile, writeFile as writeNodeFile } from "node:fs/promises"
 import { EFFECT_PI_WAKEWORD_CONFIG_DIR } from "../paths.js"
-import { isRecord } from "../utils/runtime.js"
+import { isRecord } from "../utils/isRecord.js"
 import { clamp, percentile, type CliError } from "./shared.js"
 import { createWakewordTriggerMachine } from "../wakeword/trigger.js"
 import {

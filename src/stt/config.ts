@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises"
 import * as path from "node:path"
 
 import { EFFECT_PI_CONFIG_DIR } from "../paths.js"
-import { isRecord } from "../utils/runtime.js"
+import { isRecord } from "../utils/isRecord.js"
 
 export const STT_CONFIG_PATH = path.join(EFFECT_PI_CONFIG_DIR, "stt.json")
 

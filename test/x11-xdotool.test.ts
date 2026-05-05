@@ -2,17 +2,7 @@ import { test } from "node:test"
 import * as assert from "node:assert/strict"
 import { Cause, Effect, Exit } from "effect"
 
-import { buildXdotoolCommandArgs, typeTextWithXdotool } from "../src/x11/xdotool.ts"
-
-test("buildXdotoolCommandArgs builds argv with text payload", () => {
-  assert.deepStrictEqual(buildXdotoolCommandArgs("/usr/bin/xdotool", "hello world"), [
-    "/usr/bin/xdotool",
-    "type",
-    "--clearmodifiers",
-    "--",
-    "hello world",
-  ])
-})
+import { typeTextWithXdotool } from "../src/x11/xdotool.ts"
 
 test("typeTextWithXdotool reports missing xdotool as a typed failure", async () => {
   const originalWhich = Bun.which

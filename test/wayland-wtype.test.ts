@@ -3,30 +3,11 @@ import * as assert from "node:assert/strict"
 import { Cause, Duration, Effect, Exit } from "effect"
 
 import {
-  buildWtypeCommandArgs,
   buildWtypePasteShortcutArgs,
   resolveWtypeInjectionMode,
   shouldUseWtypeClipboardPaste,
   typeTextWithWtype,
 } from "../src/wayland/wtype.ts"
-
-test("buildWtypeCommandArgs builds argv with text payload", () => {
-  assert.deepStrictEqual(buildWtypeCommandArgs("/run/current-system/sw/bin/wtype", "hello world"), [
-    "/run/current-system/sw/bin/wtype",
-    "--",
-    "hello world",
-  ])
-})
-
-test("buildWtypeCommandArgs adds delay when requested", () => {
-  assert.deepStrictEqual(buildWtypeCommandArgs("/run/current-system/sw/bin/wtype", "zazolc", 8), [
-    "/run/current-system/sw/bin/wtype",
-    "-d",
-    "8",
-    "--",
-    "zazolc",
-  ])
-})
 
 test("buildWtypePasteShortcutArgs builds Ctrl+V shortcut argv", () => {
   assert.deepStrictEqual(buildWtypePasteShortcutArgs("/run/current-system/sw/bin/wtype"), [

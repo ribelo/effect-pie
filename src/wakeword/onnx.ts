@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect"
 import { promises as fs } from "node:fs"
 
 import type { ResolvedWakewordAssets } from "./defs.js"
-import { isRecord } from "../utils/runtime.js"
+import { isRecord } from "../utils/isRecord.js"
 import { flattenMatrix, sigmoid } from "./signal.js"
 
 export class WakewordRuntimeError extends Data.TaggedError("WakewordRuntimeError")<{

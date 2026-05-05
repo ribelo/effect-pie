@@ -13,16 +13,16 @@ type TriggerModelState = {
   cooldownUntilMs: number
 }
 
-const defaultConfig: WakewordTriggerConfig = {
+const defaultConfig: WakewordTriggerConfig = Object.freeze({
   threshold: 0.5,
   smoothingWindow: 4,
   consecutiveFrames: 3,
   cooldownMs: 1_500,
-}
+})
 
 const average = (values: ReadonlyArray<number>): number => {
   if (values.length === 0) {
-    return 0
+    throw new Error("average called with empty array")
   }
   const sum = values.reduce((acc, value) => acc + value, 0)
   return sum / values.length
@@ -62,30 +62,35 @@ export const createWakewordTriggerMachine = (
 
     for (const [model, rawScore] of Object.entries(frame.scores)) {
       const modelState = getOrCreateModelState(model)
-      modelState.recentScores.push(rawScore)
+      const nextScores = [...modelState.recentScores, rawScore].slice(-config.smoothingWindow)
+      const smoothedScore = average(nextScores)
 
-      while (modelState.recentScores.length > config.smoothingWindow) {
-        modelState.recentScores.shift()
-      }
-
-      const smoothedScore = average(modelState.recentScores)
-
-      if (smoothedScore >= config.threshold) {
-        modelState.consecutiveAboveThreshold += 1
-      } else {
-        modelState.consecutiveAboveThreshold = 0
-      }
+      const nextConsecutive =
+        smoothedScore >= config.threshold ? modelState.consecutiveAboveThreshold + 1 : 0
 
       if (frame.timestampMs < modelState.cooldownUntilMs) {
+        modelStates.set(model, {
+          ...modelState,
+          recentScores: nextScores,
+          consecutiveAboveThreshold: nextConsecutive,
+        })
         continue
       }
 
-      if (modelState.consecutiveAboveThreshold < config.consecutiveFrames) {
+      if (nextConsecutive < config.consecutiveFrames) {
+        modelStates.set(model, {
+          ...modelState,
+          recentScores: nextScores,
+          consecutiveAboveThreshold: nextConsecutive,
+        })
         continue
       }
 
-      modelState.cooldownUntilMs = frame.timestampMs + config.cooldownMs
-      modelState.consecutiveAboveThreshold = 0
+      modelStates.set(model, {
+        recentScores: nextScores,
+        consecutiveAboveThreshold: 0,
+        cooldownUntilMs: frame.timestampMs + config.cooldownMs,
+      })
 
       events.push({
         timestampMs: frame.timestampMs,

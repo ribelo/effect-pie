@@ -12,11 +12,13 @@ import {
 } from "../src/wakeword/training.ts"
 
 describe("wakeword training workflow", () => {
-  test("builds normalized training plan", () => {
-    const plan = makeWakewordTrainingPlan({
-      name: "Hey Jarvis.onnx",
-      assetRootDir: "/tmp/pie-openwakeword",
-    })
+  test("builds normalized training plan", async () => {
+    const plan = await Effect.runPromise(
+      makeWakewordTrainingPlan({
+        name: "Hey Jarvis.onnx",
+        assetRootDir: "/tmp/pie-openwakeword",
+      }),
+    )
 
     assert.strictEqual(plan.modelName, "hey_jarvis")
     assert.strictEqual(plan.outputModelFileName, "hey_jarvis.json")
@@ -25,10 +27,12 @@ describe("wakeword training workflow", () => {
 
   test("creates workspace directories and readme", async () => {
     const assetRoot = await fs.mkdtemp(path.join(tmpdir(), "pie-train-"))
-    const plan = makeWakewordTrainingPlan({
-      name: "custom-word",
-      assetRootDir: assetRoot,
-    })
+    const plan = await Effect.runPromise(
+      makeWakewordTrainingPlan({
+        name: "custom-word",
+        assetRootDir: assetRoot,
+      }),
+    )
 
     await Effect.runPromise(initializeWakewordTrainingWorkspace(plan))
 

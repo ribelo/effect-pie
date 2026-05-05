@@ -72,11 +72,7 @@ const runCommand = (
         : new WtypeError({ message: `Failed to execute ${executableName}`, cause }),
   })
 
-export const buildWtypeCommandArgs = (
-  wtypeExecutable: string,
-  text: string,
-  delayMs = 0,
-): Array<string> =>
+const buildWtypeCommandArgs = (wtypeExecutable: string, text: string, delayMs = 0): Array<string> =>
   delayMs > 0 ? [wtypeExecutable, "-d", String(delayMs), "--", text] : [wtypeExecutable, "--", text]
 
 export const buildWtypePasteShortcutArgs = (wtypeExecutable: string): Array<string> => [

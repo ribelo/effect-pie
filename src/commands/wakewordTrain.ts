@@ -136,14 +136,7 @@ export const wakewordTrainCommand = Command.make(
           trainingOptions.outputDir = config.outputDir.value
         }
 
-        const plan = yield* Effect.try({
-          try: () => makeWakewordTrainingPlan(trainingOptions),
-          catch: (cause) =>
-            new WakewordTrainingError({
-              message: "Failed to build wakeword training plan",
-              cause,
-            }),
-        })
+        const plan = yield* makeWakewordTrainingPlan(trainingOptions)
 
         yield* initializeWakewordTrainingWorkspace(plan)
 

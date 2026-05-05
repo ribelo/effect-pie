@@ -11,7 +11,7 @@ import {
   type ResolvedWakewordAssets,
   type WakewordAssetManifest,
 } from "./defs.js"
-import { isRecord } from "../utils/runtime.js"
+import { isRecord } from "../utils/isRecord.js"
 
 export class WakewordAssetError extends Data.TaggedError("WakewordAssetError")<{
   readonly message: string
@@ -29,7 +29,7 @@ export type WakewordAssetOptions = {
 const defaultRootDir = EFFECT_PI_OPENWAKEWORD_DATA_DIR
 const requireFromModule = createRequire(import.meta.url)
 
-const isWakewordAssetManifest = (value: unknown): value is WakewordAssetManifest => {
+export const isWakewordAssetManifest = (value: unknown): value is WakewordAssetManifest => {
   if (!isRecord(value) || !isRecord(value["runtime"]) || !isRecord(value["models"])) {
     return false
   }

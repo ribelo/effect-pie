@@ -4,13 +4,14 @@ import { promises as fs } from "node:fs"
 import * as path from "node:path"
 
 import { EFFECT_PI_OPENWAKEWORD_DATA_DIR } from "../paths.js"
-import { buildPcmWavHeader, isRecord } from "../utils/runtime.js"
-import { decodeS16leSamples } from "../audio/pcm.js"
+import { buildPcmWavHeader, decodeS16leSamples } from "../audio/pcm.js"
 import {
   OPENWAKEWORD_MEL_BINS,
   OPENWAKEWORD_MEL_WINDOW_FRAMES,
   OPENWAKEWORD_SAMPLE_RATE,
+  type WakewordAssetManifest,
 } from "./defs.js"
+import { isWakewordAssetManifest } from "./assets.js"
 import type { WakewordFeatureSessions, WakewordRuntimeError } from "./onnx.js"
 import { flattenMatrix, sigmoid, toFrameMatrix, transformMelspectrogram } from "./signal.js"
 
@@ -130,41 +131,44 @@ const resolveLogitScale = (
 
 export const makeWakewordTrainingPlan = (
   options: WakewordTrainingPlanOptions,
-): WakewordTrainingPlan => {
-  const modelName = sanitizeModelName(options.name)
+): Effect.Effect<WakewordTrainingPlan, WakewordTrainingError> =>
+  Effect.gen(function* () {
+    const modelName = sanitizeModelName(options.name)
 
-  if (modelName.length === 0) {
-    throw new WakewordTrainingError({
-      message: "Invalid wakeword model name. Use letters, numbers, hyphen, or underscore.",
-    })
-  }
+    if (modelName.length === 0) {
+      return yield* new WakewordTrainingError({
+        message: "Invalid wakeword model name. Use letters, numbers, hyphen, or underscore.",
+      })
+    }
 
-  const assetRootDir = path.resolve(options.assetRootDir ?? EFFECT_PI_OPENWAKEWORD_DATA_DIR)
+    const assetRootDir = path.resolve(options.assetRootDir ?? EFFECT_PI_OPENWAKEWORD_DATA_DIR)
 
-  const datasetRootDir = path.resolve(options.datasetRootDir ?? path.join(assetRootDir, "training"))
-  const outputDir = path.resolve(options.outputDir ?? path.join(assetRootDir, "wakewords"))
-  const manifestPath = path.resolve(
-    options.manifestPath ?? path.join(assetRootDir, "manifest.json"),
-  )
+    const datasetRootDir = path.resolve(
+      options.datasetRootDir ?? path.join(assetRootDir, "training"),
+    )
+    const outputDir = path.resolve(options.outputDir ?? path.join(assetRootDir, "wakewords"))
+    const manifestPath = path.resolve(
+      options.manifestPath ?? path.join(assetRootDir, "manifest.json"),
+    )
 
-  const workspaceDir = path.join(datasetRootDir, modelName)
-  const outputModelFileName = `${modelName}.json`
+    const workspaceDir = path.join(datasetRootDir, modelName)
+    const outputModelFileName = `${modelName}.json`
 
-  return {
-    modelName,
-    outputModelFileName,
-    assetRootDir,
-    datasetRootDir,
-    workspaceDir,
-    positiveDir: path.join(workspaceDir, "positive"),
-    negativeDir: path.join(workspaceDir, "negative"),
-    silenceDir: path.join(workspaceDir, "silence"),
-    testDir: path.join(workspaceDir, "test"),
-    outputDir,
-    outputModelPath: path.join(outputDir, outputModelFileName),
-    manifestPath,
-  }
-}
+    return {
+      modelName,
+      outputModelFileName,
+      assetRootDir,
+      datasetRootDir,
+      workspaceDir,
+      positiveDir: path.join(workspaceDir, "positive"),
+      negativeDir: path.join(workspaceDir, "negative"),
+      silenceDir: path.join(workspaceDir, "silence"),
+      testDir: path.join(workspaceDir, "test"),
+      outputDir,
+      outputModelPath: path.join(outputDir, outputModelFileName),
+      manifestPath,
+    }
+  })
 
 const buildTrainingReadme = (
   plan: WakewordTrainingPlan,
@@ -248,30 +252,20 @@ export const initializeWakewordTrainingWorkspace = Effect.fn(
   })
 })
 
-type WakewordManifest = {
-  readonly schemaVersion: number
-  readonly runtime: {
-    readonly package: string
-    readonly version: string
-  }
-  readonly models: {
-    readonly melspectrogram: string
-    readonly embedding: string
-    readonly wakewords: Array<string>
+type MutableWakewordManifest = Omit<WakewordAssetManifest, "models"> & {
+  readonly models: Omit<WakewordAssetManifest["models"], "wakewords"> & {
+    wakewords: Array<string>
   }
 }
 
-const isWakewordManifest = (value: unknown): value is WakewordManifest =>
-  isRecord(value) &&
-  isRecord(value["runtime"]) &&
-  isRecord(value["models"]) &&
-  typeof value["schemaVersion"] === "number" &&
-  typeof value["runtime"]["package"] === "string" &&
-  typeof value["runtime"]["version"] === "string" &&
-  typeof value["models"]["melspectrogram"] === "string" &&
-  typeof value["models"]["embedding"] === "string" &&
-  Array.isArray(value["models"]["wakewords"]) &&
-  value["models"]["wakewords"].every((entry) => typeof entry === "string")
+const asMutableWakewordManifest = (value: unknown): MutableWakewordManifest | undefined => {
+  if (!isWakewordAssetManifest(value)) {
+    return undefined
+  }
+  // Runtime shape validated above; JSON.parse returns mutable arrays
+  // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
+  return value as MutableWakewordManifest
+}
 
 export const registerWakewordModelInManifest = Effect.fn(
   "pie/wakeword/training.registerWakewordModelInManifest",
@@ -282,9 +276,10 @@ export const registerWakewordModelInManifest = Effect.fn(
   return yield* Effect.tryPromise({
     try: async () => {
       const raw = await fs.readFile(manifestPath, "utf8")
-      const manifest: unknown = JSON.parse(raw)
+      const parsed: unknown = JSON.parse(raw)
 
-      if (!isWakewordManifest(manifest)) {
+      const manifest = asMutableWakewordManifest(parsed)
+      if (manifest === undefined) {
         throw new WakewordTrainingError({
           message: "manifest must match the wakeword asset schema",
         })

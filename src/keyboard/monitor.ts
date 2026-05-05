@@ -53,8 +53,12 @@ const make = Effect.gen(function* () {
       return
     }
 
-    for (const queue of subscribers) {
-      Queue.offerUnsafe(queue, event)
+    const snapshot = Array.from(subscribers)
+    for (const queue of snapshot) {
+      const accepted = Queue.offerUnsafe(queue, event)
+      if (!accepted) {
+        subscribers.delete(queue)
+      }
     }
   }
 

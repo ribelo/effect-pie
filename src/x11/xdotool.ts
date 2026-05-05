@@ -6,7 +6,7 @@ export class XdotoolError extends Data.TaggedError("XdotoolError")<{
   readonly cause?: unknown
   readonly stderr?: string
 }> {}
-export const buildXdotoolCommandArgs = (xdotoolExecutable: string, text: string): Array<string> => [
+const buildXdotoolCommandArgs = (xdotoolExecutable: string, text: string): Array<string> => [
   xdotoolExecutable,
   "type",
   "--clearmodifiers",

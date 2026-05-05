@@ -4,7 +4,8 @@ import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse"
-import { buildPcmWavHeader, isRecord } from "../utils/runtime.js"
+import { buildPcmWavHeader } from "../audio/pcm.js"
+import { isRecord } from "../utils/isRecord.js"
 
 const extractStructuredFieldText = (
   value: unknown,
