@@ -135,7 +135,7 @@ test("patchServiceTier leaves non-record untouched", () => {
   assert.deepStrictEqual(patchServiceTier(null), null)
 })
 
-test("OpenRouterSttService.layer fails with a typed error when required env is missing", async () => {
+test("OpenRouterSttService.layer starts and method fails typed when required env is missing", async () => {
   const originalEnv = {
     ERG_OPENROUTER_API_KEY: process.env["ERG_OPENROUTER_API_KEY"],
     OPENROUTER_API_KEY: process.env["OPENROUTER_API_KEY"],
@@ -149,8 +149,18 @@ test("OpenRouterSttService.layer fails with a typed error when required env is m
   delete process.env["OPENROUTER_BASE_URL"]
 
   try {
-    const exit = await Effect.runPromiseExit(
+    const service = await Effect.runPromise(
       Effect.service(OpenRouterSttService).pipe(Effect.provide(OpenRouterSttService.layer)),
+    )
+
+    const exit = await Effect.runPromiseExit(
+      service.transcribe({
+        model: "test-model",
+        pcmBytes: new Uint8Array(),
+        sampleRate: 16_000,
+        language: "English",
+        promptTemplate: "Transcribe in {{language}}.",
+      }),
     )
 
     assert.strictEqual(Exit.isFailure(exit), true)

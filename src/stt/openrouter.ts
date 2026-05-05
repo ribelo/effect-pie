@@ -505,64 +505,11 @@ export class OpenRouterSttService extends Context.Service<
     }) => Effect.Effect<string, OpenRouterSttError>
   }
 >()("pie/stt/OpenRouterSttService") {
-  static readonly layer = Layer.effect(OpenRouterSttService)(
-    Effect.gen(function* () {
-      const apiKey = resolveOpenRouterApiKey()
-      const baseUrl = resolveOpenRouterBaseUrl()
-
-      if (apiKey === undefined) {
-        return yield* new OpenRouterSttError({
-          message: "Missing OpenRouter API key. Set ERG_OPENROUTER_API_KEY or OPENROUTER_API_KEY.",
-        })
-      }
-
-      if (baseUrl === undefined) {
-        return yield* new OpenRouterSttError({
-          message:
-            "Missing OpenRouter base URL. Set ERG_OPENROUTER_BASE_URL or OPENROUTER_BASE_URL.",
-        })
-      }
-
-      const openAiLayer = makeOpenRouterClientLayer(apiKey, baseUrl)
-
-      return OpenRouterSttService.of({
-        transcribe: (config) =>
-          runOpenRouterAudioStreamingCore({
-            model: config.model,
-            prompt: renderTemplate(config.promptTemplate, {
-              language: config.language,
-            }),
-            wavData: encodePcm16MonoWav(config.pcmBytes, config.sampleRate),
-            ...(config.onDelta === undefined
-              ? {
-                  jsonSchema: {
-                    name: "transcription_response",
-                    schema: TRANSCRIPTION_JSON_SCHEMA,
-                  },
-                  structuredDecoder: decodeStructuredTranscription,
-                }
-              : { onDelta: config.onDelta }),
-          }).pipe(Effect.provide(openAiLayer)),
-
-        translate: (config) =>
-          runOpenRouterAudioStreamingCore({
-            model: config.model,
-            prompt: renderTemplate(config.promptTemplate, {
-              source_language: config.sourceLanguage,
-              target_language: config.targetLanguage,
-            }),
-            wavData: encodePcm16MonoWav(config.pcmBytes, config.sampleRate),
-            ...(config.onDelta === undefined
-              ? {
-                  jsonSchema: {
-                    name: "translation_response",
-                    schema: TRANSLATION_JSON_SCHEMA,
-                  },
-                  structuredDecoder: decodeStructuredTranslation,
-                }
-              : { onDelta: config.onDelta }),
-          }).pipe(Effect.provide(openAiLayer)),
-      })
+  static readonly layer = Layer.succeed(
+    OpenRouterSttService,
+    OpenRouterSttService.of({
+      transcribe: transcribePcmWithOpenRouter,
+      translate: transcribeAndTranslatePcmWithOpenRouter,
     }),
   )
 }
