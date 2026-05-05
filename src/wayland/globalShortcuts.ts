@@ -103,15 +103,14 @@ export const parseSessionHandleFromRequestResponseOutput = (output: string): str
 export const buildCreateSessionOptionsArgs = (tokens: {
   readonly handleToken: string
   readonly sessionHandleToken: string
-}): ReadonlyArray<string> => [
-  "2",
-  "handle_token",
-  "s",
-  tokens.handleToken,
-  "session_handle_token",
-  "s",
-  tokens.sessionHandleToken,
-]
+}): ReadonlyArray<string> => {
+  const options = buildCreateSessionOptions(tokens)
+  const args: Array<string> = [String(Object.keys(options).length)]
+  for (const [key, value] of Object.entries(options)) {
+    args.push(key, value.signature, value.value)
+  }
+  return args
+}
 
 export const buildBindShortcutsArgs = (config: {
   readonly sessionHandle: string
