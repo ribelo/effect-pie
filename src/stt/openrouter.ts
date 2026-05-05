@@ -33,6 +33,8 @@ export class OpenRouterSttError extends Data.TaggedError("OpenRouterSttError")<{
   readonly responseBody?: string
 }> {}
 
+const OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+
 const readEnvString = (
   env: NodeJS.ProcessEnv,
   ...names: ReadonlyArray<string>
@@ -50,10 +52,9 @@ const readEnvString = (
 export const resolveOpenRouterApiKey = (env: NodeJS.ProcessEnv = process.env): string | undefined =>
   readEnvString(env, "ERG_OPENROUTER_API_KEY", "OPENROUTER_API_KEY")
 
-export const resolveOpenRouterBaseUrl = (
-  env: NodeJS.ProcessEnv = process.env,
-): string | undefined =>
-  readEnvString(env, "ERG_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL")?.replace(/\/+$/, "")
+export const resolveOpenRouterBaseUrl = (env: NodeJS.ProcessEnv = process.env): string =>
+  readEnvString(env, "ERG_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL")?.replace(/\/+$/, "") ??
+  OPENROUTER_DEFAULT_BASE_URL
 
 export const renderTemplate = (
   template: string,
@@ -423,14 +424,6 @@ const runOpenRouterAudioStreaming = (
     }
 
     const baseUrl = resolveOpenRouterBaseUrl()
-    if (baseUrl === undefined) {
-      return yield* Effect.fail(
-        new OpenRouterSttError({
-          message:
-            "Missing OpenRouter base URL. Set ERG_OPENROUTER_BASE_URL or OPENROUTER_BASE_URL.",
-        }),
-      )
-    }
 
     const openAiLayer = makeOpenRouterClientLayer(apiKey, baseUrl)
     return yield* runOpenRouterAudioStreamingCore(config).pipe(Effect.provide(openAiLayer))

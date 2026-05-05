@@ -10,6 +10,7 @@ import {
   patchServiceTier,
   patchSystemFingerprint,
   renderTemplate,
+  resolveOpenRouterBaseUrl,
   TRANSCRIPTION_JSON_SCHEMA,
   TRANSLATION_JSON_SCHEMA,
 } from "../src/stt/openrouter.js"
@@ -72,6 +73,17 @@ test("renderTemplate substitutes {{source_language}} and {{target_language}} for
 test("renderTemplate leaves unknown placeholders empty", () => {
   const result = renderTemplate("Hello {{name}}.", {})
   assert.strictEqual(result, "Hello .")
+})
+
+test("resolveOpenRouterBaseUrl defaults to the public OpenRouter API", () => {
+  assert.strictEqual(resolveOpenRouterBaseUrl({}), "https://openrouter.ai/api/v1")
+})
+
+test("resolveOpenRouterBaseUrl preserves explicit override without trailing slash", () => {
+  assert.strictEqual(
+    resolveOpenRouterBaseUrl({ OPENROUTER_BASE_URL: "https://example.test/api/" }),
+    "https://example.test/api",
+  )
 })
 
 test("TRANSCRIPTION_JSON_SCHEMA requires transcription string field", () => {
