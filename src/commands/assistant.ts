@@ -826,9 +826,10 @@ export const runAssistantDefaultCommand = Effect.fn(
   yield* setRecordingMode(undefined)
   yield* Console.log(`[assistant] Recording state file: ${ASSISTANT_RECORDING_STATE_PATH}`)
 
-  const diagnostics = isShellTraceEnabled(process.env["PIE_SHELL_TRACE"])
-    ? new AssistantDiagnostics()
-    : undefined
+  const shellTraceEnabled = yield* Effect.sync(() =>
+    isShellTraceEnabled(process.env["PIE_SHELL_TRACE"]),
+  )
+  const diagnostics = shellTraceEnabled ? new AssistantDiagnostics() : undefined
 
   const effect = Effect.all(
     [
