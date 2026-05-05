@@ -506,20 +506,21 @@ export class OpenRouterSttService extends Context.Service<
   }
 >()("pie/stt/OpenRouterSttService") {
   static readonly layer = Layer.effect(OpenRouterSttService)(
-    Effect.sync(() => {
+    Effect.gen(function* () {
       const apiKey = resolveOpenRouterApiKey()
       const baseUrl = resolveOpenRouterBaseUrl()
 
       if (apiKey === undefined) {
-        throw new Error(
-          "Missing OpenRouter API key. Set ERG_OPENROUTER_API_KEY or OPENROUTER_API_KEY.",
-        )
+        return yield* new OpenRouterSttError({
+          message: "Missing OpenRouter API key. Set ERG_OPENROUTER_API_KEY or OPENROUTER_API_KEY.",
+        })
       }
 
       if (baseUrl === undefined) {
-        throw new Error(
-          "Missing OpenRouter base URL. Set ERG_OPENROUTER_BASE_URL or OPENROUTER_BASE_URL.",
-        )
+        return yield* new OpenRouterSttError({
+          message:
+            "Missing OpenRouter base URL. Set ERG_OPENROUTER_BASE_URL or OPENROUTER_BASE_URL.",
+        })
       }
 
       const openAiLayer = makeOpenRouterClientLayer(apiKey, baseUrl)

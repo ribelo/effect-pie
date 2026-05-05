@@ -2,6 +2,7 @@ import * as dbusNext from "dbus-next"
 import type { Message as DbusMessage, MessageBus, Variant as DbusVariant } from "dbus-next"
 import { Data, Effect } from "effect"
 
+import { findExecutable, runLongRunningExternalTool } from "../utils/subprocess.js"
 import { connectDbusSessionBus } from "./dbus.js"
 
 const { Message, MessageType, Variant } = dbusNext
@@ -429,15 +430,16 @@ const buildPortalShortcutTuple = (
   },
 ]
 
-const findBusctlExecutable = Effect.sync(() => Bun.which("busctl")).pipe(
-  Effect.flatMap((executable) =>
-    executable === null
-      ? Effect.fail(
-          new GlobalShortcutsPortalError({
-            message: "busctl is required for portal signal monitoring but was not found in PATH",
-          }),
-        )
-      : Effect.succeed(executable),
+const findBusctlExecutable = findExecutable({
+  name: "busctl",
+  missingMessage: "busctl is required for portal signal monitoring but was not found in PATH",
+}).pipe(
+  Effect.mapError(
+    (cause) =>
+      new GlobalShortcutsPortalError({
+        message: cause.message,
+        cause,
+      }),
   ),
 )
 
@@ -605,37 +607,19 @@ export const monitorPortalSignals = Effect.fn("pie/wayland/globalShortcuts.monit
       Effect.gen(function* () {
         const busctlExecutable = yield* findBusctlExecutable
 
-        const monitor = yield* Effect.acquireRelease(
-          Effect.sync(() =>
-            Bun.spawn(
-              [busctlExecutable, "--user", "--no-pager", "monitor", PORTAL_DESKTOP_SERVICE],
-              {
-                stdout: "inherit",
-                stderr: "inherit",
-              },
-            ),
+        const { exitCode } = yield* runLongRunningExternalTool({
+          command: [busctlExecutable, "--user", "--no-pager", "monitor", PORTAL_DESKTOP_SERVICE],
+          stdout: "inherit",
+          stderr: "inherit",
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new GlobalShortcutsPortalError({
+                message: "busctl monitor process failed",
+                cause,
+              }),
           ),
-          (process) =>
-            Effect.sync(() => {
-              process.kill()
-            }).pipe(
-              Effect.tapError((cause) =>
-                Effect.logWarning("Failed to kill busctl monitor process").pipe(
-                  Effect.annotateLogs({ cause }),
-                ),
-              ),
-              Effect.ignore,
-            ),
         )
-
-        const exitCode = yield* Effect.tryPromise({
-          try: () => monitor.exited,
-          catch: (cause) =>
-            new GlobalShortcutsPortalError({
-              message: "busctl monitor process exited abnormally",
-              cause,
-            }),
-        })
 
         yield* Effect.logWarning("busctl monitor exited unexpectedly").pipe(
           Effect.annotateLogs({ exitCode }),

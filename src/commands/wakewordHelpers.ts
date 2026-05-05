@@ -72,27 +72,33 @@ const isEnoent = (error: unknown): boolean =>
 
 export const readCalibrationSnapshot = (
   calibrationPath: string,
-): Effect.Effect<WakewordCalibrationSnapshot | undefined> =>
+): Effect.Effect<WakewordCalibrationSnapshot | undefined, WakewordSnapshotError> =>
   Effect.tryPromise({
     try: async () => {
       const contents = await readFile(calibrationPath, "utf8")
       const parsed: unknown = JSON.parse(contents)
-      return isWakewordCalibrationSnapshot(parsed) ? parsed : undefined
+      if (!isWakewordCalibrationSnapshot(parsed)) {
+        throw new WakewordSnapshotError({
+          message: `Invalid calibration snapshot format at ${calibrationPath}`,
+        })
+      }
+      return parsed
     },
     catch: (cause) =>
-      new WakewordSnapshotError({
-        message: `Failed to read calibration snapshot at ${calibrationPath}`,
-        cause,
-      }),
+      cause instanceof WakewordSnapshotError
+        ? cause
+        : new WakewordSnapshotError({
+            message: `Failed to read calibration snapshot at ${calibrationPath}`,
+            cause,
+          }),
   }).pipe(
-    Effect.catchIf(isEnoent, () => Effect.succeed(undefined)),
+    Effect.catchIf(
+      (error) => isEnoent(error.cause),
+      () => Effect.succeed(undefined),
+    ),
     Effect.tapError((error) =>
       Effect.logWarning(error.message).pipe(Effect.annotateLogs({ cause: error.cause })),
     ),
-    Effect.matchEffect({
-      onFailure: () => Effect.succeed(undefined),
-      onSuccess: (value) => Effect.succeed(value),
-    }),
   )
 
 export const writeCalibrationSnapshot = Effect.fn(

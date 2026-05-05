@@ -5,7 +5,7 @@ import { makePcmRecordOptions } from "../../pulse/defs.js"
 import { createRecordStream } from "../../pulse/stream.js"
 import { MIN_GAIN_TO_APPLY, normalizePcmForStt, pcmPeak, pcmRms } from "../../audio/pcm.js"
 import { KeyboardMonitorService, type PttKeyboardError } from "../../keyboard/monitor.js"
-import { injectTranscript, type TextInjectionBackendService } from "../../input/textInjection.js"
+import type { TextInjectionBackendService } from "../../input/textInjection.js"
 import type { DesktopSession } from "../../desktop/session.js"
 import type { AssistantDiagnostics } from "../../assistant/diagnostics.js"
 import { notifyWarning } from "../../desktop/notification.js"
@@ -25,7 +25,8 @@ import {
 import { toPttKeyboardError } from "../ptt.js"
 import { concatChunks } from "../shared.js"
 import type { CliError } from "../shared.js"
-import { OpenRouterSttService, type OpenRouterSttError } from "../../stt/openrouter.js"
+import type { OpenRouterSttService } from "../../stt/openrouter.js"
+import { transcribeAndInject } from "../../stt/transcribeAndInject.js"
 import type { SttRuntimeConfig } from "../../stt/config.js"
 import {
   DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM,
@@ -288,65 +289,47 @@ export const runAssistantPttCombinedLoop = (config: {
           }
 
           if (mode === "transcribe") {
-            config.diagnostics?.setState("stt")
-            config.diagnostics?.sttStart(config.sttConfig.openrouter.transcriptionModel)
-            const stt = yield* Effect.service(OpenRouterSttService)
-            const transcript = yield* stt
-              .transcribe({
-                model: config.sttConfig.openrouter.transcriptionModel,
-                pcmBytes,
-                sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-                language: config.sttConfig.openrouter.transcriptionLanguage,
-                promptTemplate: config.sttConfig.transcriptionPrompt,
-              })
-              .pipe(
-                Effect.mapError((cause: OpenRouterSttError) => {
-                  config.diagnostics?.sttFailure(cause.message)
-                  return toPttKeyboardError(`PTT transcription failed: ${cause.message}`, cause)
-                }),
-              )
-            config.diagnostics?.sttComplete(transcript.length)
-
-            yield* injectTranscript({
-              text: transcript,
+            yield* transcribeAndInject({
+              operation: "transcribe",
+              model: config.sttConfig.openrouter.transcriptionModel,
+              pcmBytes,
+              sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+              language: config.sttConfig.openrouter.transcriptionLanguage,
+              promptTemplate: config.sttConfig.transcriptionPrompt,
               logPrefix: "assistant-ptt-transcribe",
               diagnostics: config.diagnostics,
             }).pipe(
-              Effect.mapError((cause) =>
-                toPttKeyboardError(`Failed to type transcript text: ${cause.message}`, cause),
-              ),
+              Effect.mapError((cause) => {
+                const message =
+                  cause["_tag"] === "OpenRouterSttError"
+                    ? `PTT transcription failed: ${cause.message}`
+                    : `Failed to type transcript text: ${cause.message}`
+
+                return toPttKeyboardError(message, cause)
+              }),
             )
             return
           }
 
-          config.diagnostics?.setState("stt")
-          config.diagnostics?.sttStart(config.sttConfig.openrouter.translationModel)
-          const stt = yield* Effect.service(OpenRouterSttService)
-          const translated = yield* stt
-            .translate({
-              model: config.sttConfig.openrouter.translationModel,
-              pcmBytes,
-              sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-              sourceLanguage,
-              targetLanguage,
-              promptTemplate: config.sttConfig.translationPrompt,
-            })
-            .pipe(
-              Effect.mapError((cause: OpenRouterSttError) => {
-                config.diagnostics?.sttFailure(cause.message)
-                return toPttKeyboardError(`PTT translation failed: ${cause.message}`, cause)
-              }),
-            )
-          config.diagnostics?.sttComplete(translated.length)
-
-          yield* injectTranscript({
-            text: translated,
+          yield* transcribeAndInject({
+            operation: "translate",
+            model: config.sttConfig.openrouter.translationModel,
+            pcmBytes,
+            sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+            sourceLanguage,
+            targetLanguage,
+            promptTemplate: config.sttConfig.translationPrompt,
             logPrefix: "assistant-ptt-translate",
             diagnostics: config.diagnostics,
           }).pipe(
-            Effect.mapError((cause) =>
-              toPttKeyboardError(`Failed to type translated text: ${cause.message}`, cause),
-            ),
+            Effect.mapError((cause) => {
+              const message =
+                cause["_tag"] === "OpenRouterSttError"
+                  ? `PTT translation failed: ${cause.message}`
+                  : `Failed to type translated text: ${cause.message}`
+
+              return toPttKeyboardError(message, cause)
+            }),
           )
         }).pipe(Effect.ensuring(Ref.set(config.pttActiveRef, false)))
       }

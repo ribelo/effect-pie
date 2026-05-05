@@ -189,7 +189,15 @@ export const wakewordTrainCommand = Command.make(
 
           yield* saveTrainedWakewordModel(plan.outputModelPath, model)
 
-          const calibrationSnapshot = yield* readCalibrationSnapshot(calibrationPath)
+          const calibrationSnapshot = yield* readCalibrationSnapshot(calibrationPath).pipe(
+            Effect.mapError(
+              (cause) =>
+                new WakewordTrainingError({
+                  message: `Failed to read calibration snapshot: ${cause.message}`,
+                  cause,
+                }),
+            ),
+          )
           const sourceName = calibrationSnapshot?.sourceName ?? "unknown"
 
           yield* runPostTrainValidationAndTuning({
@@ -237,7 +245,15 @@ export const wakewordTrainCommand = Command.make(
 
           const savedCalibration =
             autoCalibrate && !config.recalibrate
-              ? yield* readCalibrationSnapshot(calibrationPath)
+              ? yield* readCalibrationSnapshot(calibrationPath).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new WakewordTrainingError({
+                        message: `Failed to read calibration snapshot: ${cause.message}`,
+                        cause,
+                      }),
+                  ),
+                )
               : undefined
 
           const calibrationResult =

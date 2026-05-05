@@ -18,6 +18,25 @@ export const readStreamText = (
   })
 }
 
+export const findExecutable = (config: {
+  readonly name: string
+  readonly missingMessage: string
+}): Effect.Effect<string, SubprocessError> =>
+  Effect.try({
+    try: () => Bun.which(config.name),
+    catch: (cause) =>
+      new SubprocessError({
+        message: `Failed to resolve executable '${config.name}'`,
+        cause,
+      }),
+  }).pipe(
+    Effect.flatMap((executable) =>
+      executable === null
+        ? Effect.fail(new SubprocessError({ message: config.missingMessage }))
+        : Effect.succeed(executable),
+    ),
+  )
+
 export const runExternalTool = (config: {
   readonly command: ReadonlyArray<string>
   readonly timeoutMs?: number
@@ -87,3 +106,46 @@ export const runExternalTool = (config: {
             cause,
           }),
   })
+
+export const runLongRunningExternalTool = (config: {
+  readonly command: ReadonlyArray<string>
+  readonly stdout?: "inherit" | "ignore" | "pipe"
+  readonly stderr?: "inherit" | "ignore" | "pipe"
+}): Effect.Effect<{ readonly exitCode: number }, SubprocessError> =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const process = yield* Effect.acquireRelease(
+        Effect.try({
+          try: () =>
+            Bun.spawn(Array.from(config.command), {
+              stdout: config.stdout ?? "inherit",
+              stderr: config.stderr ?? "inherit",
+            }),
+          catch: (cause) =>
+            new SubprocessError({
+              message: `Failed to start subprocess: ${config.command.join(" ")}`,
+              cause,
+            }),
+        }),
+        (process) =>
+          Effect.sync(() => {
+            try {
+              process.kill()
+            } catch {
+              return
+            }
+          }),
+      )
+
+      const exitCode = yield* Effect.tryPromise({
+        try: () => process.exited,
+        catch: (cause) =>
+          new SubprocessError({
+            message: `Subprocess failed while waiting for exit: ${config.command.join(" ")}`,
+            cause,
+          }),
+      })
+
+      return { exitCode }
+    }),
+  )

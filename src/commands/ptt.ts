@@ -7,8 +7,9 @@ import { makePcmRecordOptions } from "../pulse/defs.js"
 import { createRecordStream } from "../pulse/stream.js"
 import { MIN_GAIN_TO_APPLY, normalizePcmForStt, pcmPeak, pcmRms } from "../audio/pcm.js"
 import { loadSttRuntimeConfig, STT_CONFIG_PATH, type SttConfigError } from "../stt/config.js"
-import { OpenRouterSttService, type OpenRouterSttError } from "../stt/openrouter.js"
-import { injectTranscript, type TextInjectionBackendService } from "../input/textInjection.js"
+import type { OpenRouterSttService } from "../stt/openrouter.js"
+import type { TextInjectionBackendService } from "../input/textInjection.js"
+import { transcribeAndInject } from "../stt/transcribeAndInject.js"
 import type { DesktopSession } from "../desktop/session.js"
 import { notifyWarning } from "../desktop/notification.js"
 import {
@@ -459,32 +460,25 @@ export const pttTranscribeCommand = Command.make(
         armedMessage: (trigger) =>
           `PTT transcribe armed. Hold keycode=${trigger.keycode} keysym=${trigger.keysym} to dictate. Press Ctrl+C to stop.`,
         onClip: (clip) =>
-          Effect.gen(function* () {
-            const stt = yield* Effect.service(OpenRouterSttService)
-            const transcript = yield* stt
-              .transcribe({
-                model: transcriptionModel,
-                pcmBytes: clip.pcmBytes,
-                sampleRate: config.sampleRate,
-                language: transcriptionLanguage,
-                promptTemplate: sttConfig.transcriptionPrompt,
-              })
-              .pipe(
-                Effect.mapError((cause: OpenRouterSttError) =>
-                  toPttKeyboardError(`STT request failed: ${cause.message}`, cause),
-                ),
-              )
+          transcribeAndInject({
+            operation: "transcribe",
+            model: transcriptionModel,
+            pcmBytes: clip.pcmBytes,
+            sampleRate: config.sampleRate,
+            language: transcriptionLanguage,
+            promptTemplate: sttConfig.transcriptionPrompt,
+            logPrefix: "ptt-transcribe",
+            inject: config.inject,
+          }).pipe(
+            Effect.mapError((cause) => {
+              const message =
+                cause["_tag"] === "OpenRouterSttError"
+                  ? `STT request failed: ${cause.message}`
+                  : `Failed to inject transcript text: ${cause.message}`
 
-            yield* injectTranscript({
-              text: transcript,
-              logPrefix: "ptt-transcribe",
-              inject: config.inject,
-            }).pipe(
-              Effect.mapError((cause) =>
-                toPttKeyboardError(`Failed to inject transcript text: ${cause.message}`, cause),
-              ),
-            )
-          }),
+              return toPttKeyboardError(message, cause)
+            }),
+          ),
       })
     }),
 ).pipe(
@@ -547,33 +541,26 @@ export const pttTranslateCommand = Command.make(
         armedMessage: (trigger) =>
           `PTT translate armed. Hold keycode=${trigger.keycode} keysym=${trigger.keysym} to dictate. ${sourceLanguage} -> ${targetLanguage}. Press Ctrl+C to stop.`,
         onClip: (clip) =>
-          Effect.gen(function* () {
-            const stt = yield* Effect.service(OpenRouterSttService)
-            const translated = yield* stt
-              .translate({
-                model: translationModel,
-                pcmBytes: clip.pcmBytes,
-                sampleRate: config.sampleRate,
-                sourceLanguage,
-                targetLanguage,
-                promptTemplate: sttConfig.translationPrompt,
-              })
-              .pipe(
-                Effect.mapError((cause: OpenRouterSttError) =>
-                  toPttKeyboardError(`STT+translation request failed: ${cause.message}`, cause),
-                ),
-              )
+          transcribeAndInject({
+            operation: "translate",
+            model: translationModel,
+            pcmBytes: clip.pcmBytes,
+            sampleRate: config.sampleRate,
+            sourceLanguage,
+            targetLanguage,
+            promptTemplate: sttConfig.translationPrompt,
+            logPrefix: "ptt-translate",
+            inject: config.inject,
+          }).pipe(
+            Effect.mapError((cause) => {
+              const message =
+                cause["_tag"] === "OpenRouterSttError"
+                  ? `STT+translation request failed: ${cause.message}`
+                  : `Failed to inject translated text: ${cause.message}`
 
-            yield* injectTranscript({
-              text: translated,
-              logPrefix: "ptt-translate",
-              inject: config.inject,
-            }).pipe(
-              Effect.mapError((cause) =>
-                toPttKeyboardError(`Failed to inject translated text: ${cause.message}`, cause),
-              ),
-            )
-          }),
+              return toPttKeyboardError(message, cause)
+            }),
+          ),
       })
     }),
 ).pipe(

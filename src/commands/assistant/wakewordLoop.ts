@@ -8,7 +8,7 @@ import { createWakewordTelemetryStream } from "../../wakeword/live.js"
 import { loadWakewordModelSessions, type WakewordRuntimeError } from "../../wakeword/onnx.js"
 import { makeWakewordPipeline, type WakewordPipelineError } from "../../wakeword/pipeline.js"
 import { createWakewordTriggerMachine } from "../../wakeword/trigger.js"
-import { injectTranscript, type TextInjectionBackendService } from "../../input/textInjection.js"
+import type { TextInjectionBackendService } from "../../input/textInjection.js"
 import type { DesktopSession } from "../../desktop/session.js"
 import type { AssistantDiagnostics } from "../../assistant/diagnostics.js"
 import { recordPcmUntilTrailingSilence } from "../audioCapture.js"
@@ -18,7 +18,8 @@ import {
   readCalibrationSnapshot,
 } from "../wakewordHelpers.js"
 import { readDetectionTuningSnapshot, type WakewordSnapshotError } from "../../wakeword/tuning.js"
-import { OpenRouterSttService, type OpenRouterSttError } from "../../stt/openrouter.js"
+import type { OpenRouterSttService } from "../../stt/openrouter.js"
+import { transcribeAndInject } from "../../stt/transcribeAndInject.js"
 import type { SttRuntimeConfig } from "../../stt/config.js"
 import { CliError } from "../shared.js"
 import {
@@ -107,7 +108,15 @@ export const runAssistantWakewordTranscribeLoop = (config: {
             }),
         ),
       )
-      const calibrationSnapshot = yield* readCalibrationSnapshot(calibrationPath)
+      const calibrationSnapshot = yield* readCalibrationSnapshot(calibrationPath).pipe(
+        Effect.mapError(
+          (cause) =>
+            new CliError({
+              message: `Failed to read wakeword calibration for '${normalizedModelName}': ${cause.message}`,
+              cause,
+            }),
+        ),
+      )
 
       const triggerMachine = createWakewordTriggerMachine({
         threshold: tuningSnapshot.trigger.threshold,
@@ -200,41 +209,27 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                 )
               }
 
-              config.diagnostics?.setState("stt")
-              config.diagnostics?.sttStart(config.sttConfig.openrouter.transcriptionModel)
-              const stt = yield* Effect.service(OpenRouterSttService)
-              const transcript = yield* stt
-                .transcribe({
-                  model: config.sttConfig.openrouter.transcriptionModel,
-                  pcmBytes,
-                  sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-                  language: config.sttConfig.openrouter.transcriptionLanguage,
-                  promptTemplate: config.sttConfig.transcriptionPrompt,
-                })
-                .pipe(
-                  Effect.mapError(
-                    (cause: OpenRouterSttError) =>
-                      new CliError({
-                        message: `Wakeword transcription failed: ${cause.message}`,
-                        cause,
-                      }),
-                  ),
-                )
-
-              config.diagnostics?.sttComplete(transcript.length)
-
-              yield* injectTranscript({
-                text: transcript,
+              yield* transcribeAndInject({
+                operation: "transcribe",
+                model: config.sttConfig.openrouter.transcriptionModel,
+                pcmBytes,
+                sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+                language: config.sttConfig.openrouter.transcriptionLanguage,
+                promptTemplate: config.sttConfig.transcriptionPrompt,
                 logPrefix: "wakeword-transcribe",
                 diagnostics: config.diagnostics,
               }).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new CliError({
-                      message: `Failed to type wakeword transcript: ${cause.message}`,
-                      cause,
-                    }),
-                ),
+                Effect.mapError((cause) => {
+                  const message =
+                    cause["_tag"] === "OpenRouterSttError"
+                      ? `Wakeword transcription failed: ${cause.message}`
+                      : `Failed to type wakeword transcript: ${cause.message}`
+
+                  return new CliError({
+                    message,
+                    cause,
+                  })
+                }),
               )
             }).pipe(
               Effect.catch((cause: CliError) => {

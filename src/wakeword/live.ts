@@ -101,16 +101,7 @@ export const createWakewordTelemetryStream = (
         onSuccess: () => Queue.shutdown(queue),
       }).pipe(Effect.forkScoped)
 
-      yield* Effect.addFinalizer(() =>
-        Queue.shutdown(queue).pipe(
-          Effect.tapError((cause) =>
-            Effect.logWarning("Wakeword live stream finalizer failed").pipe(
-              Effect.annotateLogs({ cause }),
-            ),
-          ),
-          Effect.orElseSucceed(() => undefined),
-        ),
-      )
+      yield* Effect.addFinalizer(() => Queue.shutdown(queue))
 
       return Stream.fromQueue(queue)
     }),

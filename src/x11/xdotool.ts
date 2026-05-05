@@ -1,6 +1,6 @@
 import { Data, Effect } from "effect"
 
-import { runExternalTool } from "../utils/subprocess.js"
+import { findExecutable, runExternalTool } from "../utils/subprocess.js"
 
 export class XdotoolError extends Data.TaggedError("XdotoolError")<{
   readonly message: string
@@ -16,15 +16,16 @@ const buildXdotoolCommandArgs = (xdotoolExecutable: string, text: string): Array
   text,
 ]
 
-const findXdotoolExecutable = Effect.sync(() => Bun.which("xdotool")).pipe(
-  Effect.flatMap((executable) =>
-    executable === null
-      ? Effect.fail(
-          new XdotoolError({
-            message: "xdotool is required for X11 text injection but was not found in PATH",
-          }),
-        )
-      : Effect.succeed(executable),
+const findXdotoolExecutable = findExecutable({
+  name: "xdotool",
+  missingMessage: "xdotool is required for X11 text injection but was not found in PATH",
+}).pipe(
+  Effect.mapError(
+    (cause) =>
+      new XdotoolError({
+        message: cause.message,
+        cause,
+      }),
   ),
 )
 

@@ -1,6 +1,6 @@
 import { Data, Effect } from "effect"
 
-import { runExternalTool } from "../utils/subprocess.js"
+import { findExecutable, runExternalTool } from "../utils/subprocess.js"
 
 export class WtypeError extends Data.TaggedError("WtypeError")<{
   readonly message: string
@@ -102,11 +102,16 @@ const shouldAttemptClipboardPaste = (mode: WtypeInjectionMode, text: string): bo
   return shouldUseWtypeClipboardPaste(text)
 }
 
-const findWtypeExecutable = Effect.sync(() => Bun.which("wtype")).pipe(
-  Effect.flatMap((executable) =>
-    executable === null
-      ? Effect.fail(new WtypeError({ message: "wtype is required but was not found in PATH" }))
-      : Effect.succeed(executable),
+const findWtypeExecutable = findExecutable({
+  name: "wtype",
+  missingMessage: "wtype is required but was not found in PATH",
+}).pipe(
+  Effect.mapError(
+    (cause) =>
+      new WtypeError({
+        message: cause.message,
+        cause,
+      }),
   ),
 )
 
