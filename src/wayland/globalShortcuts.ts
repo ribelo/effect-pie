@@ -472,6 +472,109 @@ const findBusctlExecutable = Effect.sync(() => Bun.which("busctl")).pipe(
   ),
 )
 
+const createPortalSession = async (
+  bus: MessageBus,
+): Promise<{
+  readonly sessionHandle: string
+  readonly createRequestHandle: string
+}> => {
+  const createHandleToken = randomToken("pie_create_req")
+  const sessionHandleToken = randomToken("pie_session")
+
+  const pendingCreateResponse = waitForRequestResponseByHandleToken(
+    bus,
+    createHandleToken,
+    "CreateSession",
+  )
+
+  const createReply = await callPortalMethod({
+    bus,
+    path: PORTAL_DESKTOP_PATH,
+    interfaceName: GLOBAL_SHORTCUTS_INTERFACE,
+    member: "CreateSession",
+    signature: "a{sv}",
+    body: [
+      buildCreateSessionOptions({
+        handleToken: createHandleToken,
+        sessionHandleToken,
+      }),
+    ],
+  }).catch((error: unknown) => {
+    pendingCreateResponse.cancel()
+    throw error
+  })
+
+  const createRequestHandle = parseRequestHandleFromMethodReply(createReply, "CreateSession")
+  const createResponse = await pendingCreateResponse.promise
+  ensureSuccessfulPortalResponse(createResponse, "CreateSession")
+
+  const sessionHandle =
+    parseSessionHandleFromResponseResults(createResponse.results) ??
+    deriveSessionHandleFromRequestHandle(createRequestHandle, sessionHandleToken)
+
+  if (sessionHandle === undefined) {
+    throw new GlobalShortcutsPortalError({
+      message: `Could not determine session handle from CreateSession response for ${createRequestHandle}`,
+    })
+  }
+
+  return { sessionHandle, createRequestHandle }
+}
+
+const bindPortalShortcuts = async (config: {
+  readonly bus: MessageBus
+  readonly sessionHandle: string
+  readonly shortcut: PortalShortcutSpec
+  readonly parentWindow: string
+}): Promise<{ readonly bindRequestHandle: string }> => {
+  const bindHandleToken = randomToken("pie_bind_req")
+
+  const pendingBindResponse = waitForRequestResponseByHandleToken(
+    config.bus,
+    bindHandleToken,
+    "BindShortcuts",
+  )
+
+  const bindReply = await callPortalMethod({
+    bus: config.bus,
+    path: PORTAL_DESKTOP_PATH,
+    interfaceName: GLOBAL_SHORTCUTS_INTERFACE,
+    member: "BindShortcuts",
+    signature: "oa(sa{sv})sa{sv}",
+    body: [
+      config.sessionHandle,
+      [buildPortalShortcutTuple(config.shortcut)],
+      config.parentWindow,
+      buildBindShortcutsOptions(bindHandleToken),
+    ],
+  }).catch((error: unknown) => {
+    pendingBindResponse.cancel()
+    throw error
+  })
+
+  const bindRequestHandle = parseRequestHandleFromMethodReply(bindReply, "BindShortcuts")
+  const bindResponse = await pendingBindResponse.promise
+
+  if (bindResponse.responseCode !== 0) {
+    const diagnostic = await diagnoseBindFailure(config.bus)
+    const suffix = diagnostic === undefined ? "" : ` Hint: ${diagnostic}`
+    const reason =
+      bindResponse.responseCode === 1
+        ? "cancelled by user or compositor"
+        : bindResponse.responseCode === 2
+          ? "failed by portal/backend"
+          : "returned unexpected status"
+
+    throw new GlobalShortcutsPortalError({
+      message:
+        `BindShortcuts was not successful (${reason}, code ${bindResponse.responseCode}). ` +
+        `Request handle: ${bindResponse.requestHandle}. Response results: ${formatPortalResults(bindResponse.results)}.${suffix}`,
+    })
+  }
+
+  return { bindRequestHandle }
+}
+
 export const setupGlobalShortcutSession = Effect.fn(
   "pie/wayland/globalShortcuts.setupGlobalShortcutSession",
 )(function* (config: {
@@ -483,89 +586,13 @@ export const setupGlobalShortcutSession = Effect.fn(
       const bus = await connectSessionBus()
 
       try {
-        const createHandleToken = randomToken("pie_create_req")
-        const sessionHandleToken = randomToken("pie_session")
-        const bindHandleToken = randomToken("pie_bind_req")
-
-        const pendingCreateResponse = waitForRequestResponseByHandleToken(
+        const { sessionHandle, createRequestHandle } = await createPortalSession(bus)
+        const { bindRequestHandle } = await bindPortalShortcuts({
           bus,
-          createHandleToken,
-          "CreateSession",
-        )
-
-        const createReply = await callPortalMethod({
-          bus,
-          path: PORTAL_DESKTOP_PATH,
-          interfaceName: GLOBAL_SHORTCUTS_INTERFACE,
-          member: "CreateSession",
-          signature: "a{sv}",
-          body: [
-            buildCreateSessionOptions({
-              handleToken: createHandleToken,
-              sessionHandleToken,
-            }),
-          ],
-        }).catch((error: unknown) => {
-          pendingCreateResponse.cancel()
-          throw error
+          sessionHandle,
+          shortcut: config.shortcut,
+          parentWindow: config.parentWindow,
         })
-
-        const createRequestHandle = parseRequestHandleFromMethodReply(createReply, "CreateSession")
-        const createResponse = await pendingCreateResponse.promise
-        ensureSuccessfulPortalResponse(createResponse, "CreateSession")
-
-        const sessionHandle =
-          parseSessionHandleFromResponseResults(createResponse.results) ??
-          deriveSessionHandleFromRequestHandle(createRequestHandle, sessionHandleToken)
-
-        if (sessionHandle === undefined) {
-          throw new GlobalShortcutsPortalError({
-            message: `Could not determine session handle from CreateSession response for ${createRequestHandle}`,
-          })
-        }
-
-        const pendingBindResponse = waitForRequestResponseByHandleToken(
-          bus,
-          bindHandleToken,
-          "BindShortcuts",
-        )
-
-        const bindReply = await callPortalMethod({
-          bus,
-          path: PORTAL_DESKTOP_PATH,
-          interfaceName: GLOBAL_SHORTCUTS_INTERFACE,
-          member: "BindShortcuts",
-          signature: "oa(sa{sv})sa{sv}",
-          body: [
-            sessionHandle,
-            [buildPortalShortcutTuple(config.shortcut)],
-            config.parentWindow,
-            buildBindShortcutsOptions(bindHandleToken),
-          ],
-        }).catch((error: unknown) => {
-          pendingBindResponse.cancel()
-          throw error
-        })
-
-        const bindRequestHandle = parseRequestHandleFromMethodReply(bindReply, "BindShortcuts")
-        const bindResponse = await pendingBindResponse.promise
-
-        if (bindResponse.responseCode !== 0) {
-          const diagnostic = await diagnoseBindFailure(bus)
-          const suffix = diagnostic === undefined ? "" : ` Hint: ${diagnostic}`
-          const reason =
-            bindResponse.responseCode === 1
-              ? "cancelled by user or compositor"
-              : bindResponse.responseCode === 2
-                ? "failed by portal/backend"
-                : "returned unexpected status"
-
-          throw new GlobalShortcutsPortalError({
-            message:
-              `BindShortcuts was not successful (${reason}, code ${bindResponse.responseCode}). ` +
-              `Request handle: ${bindResponse.requestHandle}. Response results: ${formatPortalResults(bindResponse.results)}.${suffix}`,
-          })
-        }
 
         return {
           shortcut: config.shortcut,
