@@ -1,8 +1,8 @@
 import { Data, Effect } from "effect"
 
 import { detectDesktopSessionType, type DesktopSessionType } from "../desktop/session.js"
-import { typeTextWithWtype, type WtypeError } from "../wayland/wtype.js"
-import { typeTextWithXdotool, type XdotoolError } from "../x11/xdotool.js"
+import { typeTextWithWtype } from "../wayland/wtype.js"
+import { typeTextWithXdotool } from "../x11/xdotool.js"
 
 export type TextInjectionBackend = "wtype" | "xdotool"
 
@@ -45,13 +45,32 @@ export const normalizeTextForInjection = (text: string): string =>
 const runTextInjectionBackend = (
   backend: TextInjectionBackend,
   text: string,
-): Effect.Effect<void, WtypeError | XdotoolError> =>
-  backend === "wtype" ? typeTextWithWtype(text) : typeTextWithXdotool(text)
+): Effect.Effect<void, TextInjectionError> => {
+  if (backend === "wtype") {
+    return typeTextWithWtype(text).pipe(
+      Effect.mapError(
+        (cause) =>
+          new TextInjectionError({
+            message: `${backend} text injection failed`,
+            cause,
+          }),
+      ),
+    )
+  }
+
+  return typeTextWithXdotool(text).pipe(
+    Effect.mapError(
+      (cause) =>
+        new TextInjectionError({
+          message: `${backend} text injection failed`,
+          cause,
+        }),
+    ),
+  )
+}
 
 export const typeTextInFocusedApp = Effect.fn("pie/input/textInjection.typeTextInFocusedApp")(
-  function* (
-    text: string,
-  ): Effect.fn.Return<TextInjectionResult, TextInjectionError | WtypeError | XdotoolError> {
+  function* (text: string): Effect.fn.Return<TextInjectionResult, TextInjectionError> {
     const normalizedText = normalizeTextForInjection(text)
     if (normalizedText.length === 0) {
       return yield* new TextInjectionError({
@@ -62,9 +81,9 @@ export const typeTextInFocusedApp = Effect.fn("pie/input/textInjection.typeTextI
     const sessionType = detectDesktopSessionType()
     const primaryBackend = yield* chooseTextInjectionBackend(sessionType)
 
-    const resolvedBackend = yield* runTextInjectionBackend(primaryBackend, normalizedText).pipe(
-      Effect.as(primaryBackend),
-    )
+    yield* runTextInjectionBackend(primaryBackend, normalizedText)
+
+    const resolvedBackend = primaryBackend
 
     return {
       sessionType,
