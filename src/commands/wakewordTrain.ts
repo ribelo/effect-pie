@@ -32,9 +32,9 @@ import {
   readCalibrationSnapshot,
   resolveTrainingSource,
   runAutoCalibration,
-  runPostTrainValidationAndTuning,
   writeCalibrationSnapshot,
 } from "./wakewordHelpers.js"
+import { runPostTrainValidationAndTuning } from "../wakeword/tuning.js"
 
 export const wakewordTrainCommand = Command.make(
   "wakeword-train",

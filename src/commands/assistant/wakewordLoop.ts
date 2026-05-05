@@ -16,9 +16,8 @@ import {
   calibrationPathFor,
   detectionTuningPathFor,
   readCalibrationSnapshot,
-  readDetectionTuningSnapshot,
-  type WakewordSnapshotError,
 } from "../wakewordHelpers.js"
+import { readDetectionTuningSnapshot, type WakewordSnapshotError } from "../../wakeword/tuning.js"
 import { OpenRouterSttService, type OpenRouterSttError } from "../../stt/openrouter.js"
 import type { SttRuntimeConfig } from "../../stt/config.js"
 import { CliError } from "../shared.js"

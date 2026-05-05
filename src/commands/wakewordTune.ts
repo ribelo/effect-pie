@@ -19,14 +19,14 @@ import {
   positiveIntegerFlag,
   waitForEnter,
 } from "./shared.js"
+import { detectionTuningPathFor } from "./wakewordHelpers.js"
 import {
-  detectionTuningPathFor,
   evaluateTriggerTuning,
   estimateWakePhraseCount,
   summarizeScores,
   writeDetectionTuningSnapshot,
   type CapturedScoreFrame,
-} from "./wakewordHelpers.js"
+} from "../wakeword/tuning.js"
 
 const collectWakewordScoresInteractive = (config: {
   readonly startPrompt: string

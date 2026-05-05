@@ -15,10 +15,10 @@ import {
   positiveIntegerFlag,
 } from "./shared.js"
 import {
-  detectionTuningPathFor,
   readDetectionTuningSnapshot,
   type WakewordDetectionTuningSnapshot,
-} from "./wakewordHelpers.js"
+} from "../wakeword/tuning.js"
+import { detectionTuningPathFor } from "./wakewordHelpers.js"
 
 export const wakewordCommand = Command.make(
   "wakeword",
