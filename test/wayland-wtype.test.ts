@@ -31,24 +31,35 @@ test("shouldUseWtypeClipboardPaste returns false for plain words", () => {
   assert.strictEqual(shouldUseWtypeClipboardPaste("plain text"), false)
 })
 
-test("resolveWtypeInjectionMode defaults to auto", () => {
-  assert.strictEqual(resolveWtypeInjectionMode({}), "auto")
+test("resolveWtypeInjectionMode defaults to auto", async () => {
+  const mode = await Effect.runPromise(resolveWtypeInjectionMode({}))
+  assert.strictEqual(mode, "auto")
 })
 
-test("resolveWtypeInjectionMode accepts explicit mode", () => {
-  assert.strictEqual(resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "direct" }), "direct")
-  assert.strictEqual(resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "auto" }), "auto")
-})
-
-test("resolveWtypeInjectionMode supports legacy env var", () => {
-  assert.strictEqual(
-    resolveWtypeInjectionMode({ EFFECT_PI_WAYLAND_INJECTION_MODE: "clipboard" }),
-    "clipboard",
+test("resolveWtypeInjectionMode accepts explicit mode", async () => {
+  const direct = await Effect.runPromise(
+    resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "direct" }),
   )
+  assert.strictEqual(direct, "direct")
+
+  const auto = await Effect.runPromise(
+    resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "auto" }),
+  )
+  assert.strictEqual(auto, "auto")
 })
 
-test("resolveWtypeInjectionMode falls back to auto for invalid values", () => {
-  assert.strictEqual(resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "weird" }), "auto")
+test("resolveWtypeInjectionMode supports legacy env var", async () => {
+  const mode = await Effect.runPromise(
+    resolveWtypeInjectionMode({ EFFECT_PI_WAYLAND_INJECTION_MODE: "clipboard" }),
+  )
+  assert.strictEqual(mode, "clipboard")
+})
+
+test("resolveWtypeInjectionMode fails for invalid values", async () => {
+  const exit = await Effect.runPromiseExit(
+    resolveWtypeInjectionMode({ PIE_WAYLAND_INJECTION_MODE: "weird" }),
+  )
+  assert.strictEqual(Exit.isFailure(exit), true)
 })
 
 test("typeTextWithWtype reports missing wtype as a typed failure", async () => {

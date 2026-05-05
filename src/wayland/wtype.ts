@@ -106,7 +106,7 @@ export type WtypeInjectionMode = "direct" | "clipboard" | "auto"
 
 export const resolveWtypeInjectionMode = (
   env: NodeJS.ProcessEnv = process.env,
-): WtypeInjectionMode => {
+): Effect.Effect<WtypeInjectionMode, WtypeError> => {
   const rawMode = (
     env["PIE_WAYLAND_INJECTION_MODE"] ??
     env["EFFECT_PI_WAYLAND_INJECTION_MODE"] ??
@@ -116,10 +116,14 @@ export const resolveWtypeInjectionMode = (
     .toLowerCase()
 
   if (rawMode === "direct" || rawMode === "clipboard" || rawMode === "auto") {
-    return rawMode
+    return Effect.succeed(rawMode)
   }
 
-  return "auto"
+  return Effect.fail(
+    new WtypeError({
+      message: `Invalid PIE_WAYLAND_INJECTION_MODE value "${rawMode}". Valid options: direct, clipboard, auto.`,
+    }),
+  )
 }
 
 const shouldAttemptClipboardPaste = (mode: WtypeInjectionMode, text: string): boolean => {
@@ -150,9 +154,11 @@ const typeTextWithWtypeDirect = (
   wtypeExecutable: string,
   text: string,
   commandTimeoutMs: number,
+  delayMs?: number,
 ): Effect.Effect<void, WtypeError> => {
-  const delayMs = Array.from(text).some((char) => char.charCodeAt(0) > 127) ? 8 : 0
-  const commandArgs = buildWtypeCommandArgs(wtypeExecutable, text, delayMs)
+  const resolvedDelayMs =
+    delayMs ?? (Array.from(text).some((char) => char.charCodeAt(0) > 127) ? 8 : 0)
+  const commandArgs = buildWtypeCommandArgs(wtypeExecutable, text, resolvedDelayMs)
 
   return runCommand(commandArgs, "wtype", commandTimeoutMs).pipe(Effect.asVoid)
 }
@@ -223,10 +229,11 @@ export const typeTextWithWtype = Effect.fn("pie/wayland/wtype.typeTextWithWtype"
   options?: {
     readonly mode?: WtypeInjectionMode
     readonly commandTimeoutMs?: number
+    readonly delayMs?: number
   },
 ): Effect.fn.Return<void, WtypeError> {
   const wtypeExecutable = yield* findWtypeExecutable
-  const mode = options?.mode ?? resolveWtypeInjectionMode()
+  const mode = options?.mode ?? (yield* resolveWtypeInjectionMode())
   const directCommandTimeoutMs = yield* resolveCommandTimeoutMs(
     options?.commandTimeoutMs,
     DEFAULT_DIRECT_COMMAND_TIMEOUT_MS,
@@ -237,12 +244,22 @@ export const typeTextWithWtype = Effect.fn("pie/wayland/wtype.typeTextWithWtype"
   )
 
   if (!shouldAttemptClipboardPaste(mode, text)) {
-    return yield* typeTextWithWtypeDirect(wtypeExecutable, text, directCommandTimeoutMs)
+    return yield* typeTextWithWtypeDirect(
+      wtypeExecutable,
+      text,
+      directCommandTimeoutMs,
+      options?.delayMs,
+    )
   }
 
   const wlCopyExecutable = yield* findOptionalWlCopyExecutable
   if (wlCopyExecutable === undefined) {
-    return yield* typeTextWithWtypeDirect(wtypeExecutable, text, directCommandTimeoutMs)
+    return yield* typeTextWithWtypeDirect(
+      wtypeExecutable,
+      text,
+      directCommandTimeoutMs,
+      options?.delayMs,
+    )
   }
 
   const wlPasteExecutable = yield* findOptionalWlPasteExecutable
@@ -255,6 +272,8 @@ export const typeTextWithWtype = Effect.fn("pie/wayland/wtype.typeTextWithWtype"
     text,
     commandTimeoutMs: clipboardCommandTimeoutMs,
   }).pipe(
-    Effect.catch(() => typeTextWithWtypeDirect(wtypeExecutable, text, directCommandTimeoutMs)),
+    Effect.catch(() =>
+      typeTextWithWtypeDirect(wtypeExecutable, text, directCommandTimeoutMs, options?.delayMs),
+    ),
   )
 })
