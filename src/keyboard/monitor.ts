@@ -1,5 +1,5 @@
 import * as dbusNext from "dbus-next"
-import type { MessageBus, Message as DbusMessage } from "dbus-next"
+import type { Message as DbusMessage, MessageBus } from "dbus-next"
 import * as Context from "effect/Context"
 import * as Data from "effect/Data"
 import * as Effect from "effect/Effect"
@@ -7,7 +7,9 @@ import * as Layer from "effect/Layer"
 import * as Queue from "effect/Queue"
 import type * as Scope from "effect/Scope"
 
-const { Message, MessageType, sessionBus } = dbusNext
+import { connectDbusSessionBus } from "../wayland/dbus.js"
+
+const { Message, MessageType } = dbusNext
 
 const A11Y_MANAGER_SERVICE = "org.freedesktop.a11y.Manager"
 const A11Y_MANAGER_PATH = "/org/freedesktop/a11y/Manager"
@@ -88,56 +90,18 @@ export const layer: Layer.Layer<KeyboardMonitorService, PttKeyboardError> =
   Layer.effect(KeyboardMonitorService)(make)
 
 const connectKeyboardMonitorBus = (): Effect.Effect<MessageBus, PttKeyboardError> =>
-  Effect.tryPromise({
-    try: async () => {
-      const bus = sessionBus()
-
-      await new Promise<void>((resolve, reject) => {
-        let finished = false
-
-        const finish = (callback: () => void): void => {
-          if (finished) {
-            return
-          }
-
-          finished = true
-          bus.off("connect", onConnect)
-          bus.off("error", onError)
-          clearTimeout(timeout)
-          callback()
-        }
-
-        const onConnect = (): void => {
-          finish(resolve)
-        }
-
-        const onError = (error: unknown): void => {
-          finish(() => {
-            reject(error)
-          })
-        }
-
-        const timeout = setTimeout(() => {
-          finish(() => {
-            reject(
-              new PttKeyboardError({
-                message: `Timed out connecting to session D-Bus after ${A11Y_DBUS_CONNECT_TIMEOUT_MS} ms`,
-              }),
-            )
-          })
-        }, A11Y_DBUS_CONNECT_TIMEOUT_MS)
-
-        bus.on("connect", onConnect)
-        bus.on("error", onError)
-      })
-
-      return bus
-    },
-    catch: (cause) =>
-      cause instanceof PttKeyboardError
-        ? cause
-        : new PttKeyboardError({ message: "Failed to connect to session D-Bus", cause }),
-  })
+  connectDbusSessionBus({
+    timeoutMs: A11Y_DBUS_CONNECT_TIMEOUT_MS,
+    errorMessage: "Failed to connect to session D-Bus",
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new PttKeyboardError({
+          message: cause.message,
+          cause,
+        }),
+    ),
+  )
 
 const callKeyboardMonitorMethod = (
   bus: MessageBus,

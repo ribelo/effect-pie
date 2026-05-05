@@ -2,7 +2,9 @@ import * as dbusNext from "dbus-next"
 import type { Message as DbusMessage, MessageBus, Variant as DbusVariant } from "dbus-next"
 import { Data, Effect } from "effect"
 
-const { Message, MessageType, Variant, sessionBus } = dbusNext
+import { connectDbusSessionBus } from "./dbus.js"
+
+const { Message, MessageType, Variant } = dbusNext
 
 const PORTAL_DESKTOP_SERVICE = "org.freedesktop.portal.Desktop"
 const PORTAL_DESKTOP_PATH = "/org/freedesktop/portal/desktop"
@@ -136,50 +138,17 @@ const mapToPortalError = (cause: unknown, fallbackMessage: string): GlobalShortc
     ? cause
     : new GlobalShortcutsPortalError({ message: fallbackMessage, cause })
 
-const connectSessionBus = async (): Promise<MessageBus> => {
-  const bus = sessionBus()
-
-  await new Promise<void>((resolve, reject) => {
-    let finished = false
-
-    const finish = (callback: () => void): void => {
-      if (finished) {
-        return
-      }
-
-      finished = true
-      bus.off("connect", onConnect)
-      bus.off("error", onError)
-      clearTimeout(timeout)
-      callback()
-    }
-
-    const onConnect = (): void => {
-      finish(resolve)
-    }
-
-    const onError = (error: unknown): void => {
-      finish(() => {
-        reject(error)
-      })
-    }
-
-    const timeout = setTimeout(() => {
-      finish(() => {
-        reject(
-          new GlobalShortcutsPortalError({
-            message: `Timed out connecting to session D-Bus after ${DBUS_CONNECT_TIMEOUT_SECONDS} seconds`,
-          }),
-        )
-      })
-    }, DBUS_CONNECT_TIMEOUT_SECONDS * 1000)
-
-    bus.on("connect", onConnect)
-    bus.on("error", onError)
-  })
-
-  return bus
-}
+const connectSessionBus = Effect.mapError(
+  connectDbusSessionBus({
+    timeoutMs: DBUS_CONNECT_TIMEOUT_SECONDS * 1000,
+    errorMessage: `Timed out connecting to session D-Bus after ${DBUS_CONNECT_TIMEOUT_SECONDS} seconds`,
+  }),
+  (cause) =>
+    new GlobalShortcutsPortalError({
+      message: cause.message,
+      cause,
+    }),
+)
 
 const callPortalMethod = async (config: {
   readonly bus: MessageBus
@@ -583,7 +552,7 @@ export const setupGlobalShortcutSession = Effect.fn(
 }): Effect.fn.Return<PortalShortcutSession, GlobalShortcutsPortalError> {
   return yield* Effect.tryPromise({
     try: async () => {
-      const bus = await connectSessionBus()
+      const bus = await Effect.runPromise(connectSessionBus)
 
       try {
         const { sessionHandle, createRequestHandle } = await createPortalSession(bus)
