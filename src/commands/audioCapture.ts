@@ -294,6 +294,7 @@ export const recordPcmUntilTrailingSilence = Effect.fn(
   readonly sampleRate: number
   readonly channels: number
   readonly sourceName?: string
+  readonly onChunk?: (chunk: Uint8Array) => Effect.Effect<void>
 }): Effect.fn.Return<
   Uint8Array,
   NoSpeechDetectedError | CliError | PulseAudioClientError | PulseAudioParseError,
@@ -327,6 +328,9 @@ export const recordPcmUntilTrailingSilence = Effect.fn(
         Stream.runForEach((chunk) =>
           Effect.gen(function* () {
             yield* Ref.update(chunksRef, (chunks) => [...chunks, chunk])
+            if (config.onChunk !== undefined) {
+              yield* config.onChunk(chunk)
+            }
 
             const capturedChunks = yield* Ref.updateAndGet(capturedChunksRef, (value) => value + 1)
             const rms = pcmRms(chunk)

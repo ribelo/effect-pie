@@ -1,8 +1,7 @@
-import { Console, Effect, Ref, Stream } from "effect"
+import { Console, Effect, Fiber, Queue, Ref, Stream, type Cause } from "effect"
 
 import type { PulseAudioClient } from "../../pulse/client.js"
 import { makePcmRecordOptions } from "../../pulse/defs.js"
-import { MIN_GAIN_TO_APPLY, normalizePcmForStt, pcmPeak, pcmRms } from "../../audio/pcm.js"
 import { validateWakewordAssets, type WakewordAssetError } from "../../wakeword/assets.js"
 import { createWakewordTelemetryStream } from "../../wakeword/live.js"
 import { loadWakewordModelSessions, type WakewordRuntimeError } from "../../wakeword/onnx.js"
@@ -18,8 +17,8 @@ import {
   readCalibrationSnapshot,
 } from "../wakewordHelpers.js"
 import { readDetectionTuningSnapshot, type WakewordSnapshotError } from "../../wakeword/tuning.js"
-import type { OpenRouterSttService } from "../../stt/openrouter.js"
-import { transcribeAndInject } from "../../stt/transcribeAndInject.js"
+import type { SttService } from "../../stt/service.js"
+import { transcribeStreamAndInject } from "../../stt/transcribeAndInject.js"
 import type { SttRuntimeConfig } from "../../stt/config.js"
 import { CliError } from "../shared.js"
 import {
@@ -45,7 +44,7 @@ export const runAssistantWakewordTranscribeLoop = (config: {
 }): Effect.Effect<
   void,
   CliError,
-  PulseAudioClient | DesktopSession | TextInjectionBackendService | OpenRouterSttService
+  PulseAudioClient | DesktopSession | TextInjectionBackendService | SttService
 > =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -165,16 +164,15 @@ export const runAssistantWakewordTranscribeLoop = (config: {
 
             const triggerEffect = Effect.gen(function* () {
               config.diagnostics?.setState("wakeword-dictation")
-              const dictationSilenceSeconds =
-                config.sttConfig.openrouter.wakewordDictationSilenceSeconds
-              const dictationMaxSeconds = config.sttConfig.openrouter.wakewordDictationMaxSeconds
+              const dictationSilenceSeconds = config.sttConfig.wakewordDictationSilenceSeconds
+              const dictationMaxSeconds = config.sttConfig.wakewordDictationMaxSeconds
               const dictationSpeechStartTimeoutSeconds = resolveWakewordSpeechStartTimeoutSeconds({
                 silenceSeconds: dictationSilenceSeconds,
                 maxSeconds: dictationMaxSeconds,
               })
               const dictationSpeechRmsThreshold =
                 calibrationSnapshot?.resolved.speechRms ??
-                config.sttConfig.openrouter.wakewordDictationSpeechRmsThreshold
+                config.sttConfig.wakewordDictationSpeechRmsThreshold
 
               yield* Console.log(
                 `[wakeword-transcribe] Trigger detected (${selectedModelName}). Dictation capture started (silence=${dictationSilenceSeconds}s, max=${dictationMaxSeconds}s, speech_start_timeout=${dictationSpeechStartTimeoutSeconds}s, speech_rms=${dictationSpeechRmsThreshold.toFixed(4)})...`,
@@ -182,46 +180,23 @@ export const runAssistantWakewordTranscribeLoop = (config: {
 
               yield* config.setRecordingMode("wakeword")
 
-              const rawPcmBytes = yield* recordPcmUntilTrailingSilence({
-                silenceSeconds: dictationSilenceSeconds,
-                maxSeconds: dictationMaxSeconds,
-                speechStartTimeoutSeconds: dictationSpeechStartTimeoutSeconds,
-                speechRmsThreshold: dictationSpeechRmsThreshold,
-                fragmentSize: DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
-                sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-                channels: 1,
-                sourceName: config.sourceName,
-              }).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new CliError({
-                      message: "Failed to capture wakeword dictation clip",
-                      cause,
-                    }),
-                ),
-                Effect.onExit(() => config.setRecordingMode(undefined)),
-              )
-
-              const { normalizedBytes: pcmBytes, gain } = normalizePcmForStt(rawPcmBytes)
-              if (gain > MIN_GAIN_TO_APPLY) {
-                yield* Console.log(
-                  `[wakeword-transcribe] Normalized dictation (rms=${pcmRms(rawPcmBytes).toFixed(4)} peak=${pcmPeak(rawPcmBytes).toFixed(4)} gain=${gain.toFixed(2)})`,
-                )
-              }
-
-              yield* transcribeAndInject({
+              const audioQueue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
+              const transcriptionFiber = yield* transcribeStreamAndInject({
                 operation: "transcribe",
-                model: config.sttConfig.openrouter.transcriptionModel,
-                pcmBytes,
+                model: config.sttConfig.transcriptionModel,
+                audio: Stream.fromQueue(audioQueue),
                 sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-                language: config.sttConfig.openrouter.transcriptionLanguage,
+                language: config.sttConfig.transcriptionLanguage,
                 promptTemplate: config.sttConfig.transcriptionPrompt,
                 logPrefix: "wakeword-transcribe",
                 diagnostics: config.diagnostics,
               }).pipe(
                 Effect.mapError((cause) => {
                   const message =
-                    cause["_tag"] === "OpenRouterSttError"
+                    cause["_tag"] === "OpenRouterSttError" ||
+                    cause["_tag"] === "CodexRealtimeSttError" ||
+                    cause["_tag"] === "CodexAuthError" ||
+                    cause["_tag"] === "SttDispatchError"
                       ? `Wakeword transcription failed: ${cause.message}`
                       : `Failed to type wakeword transcript: ${cause.message}`
 
@@ -230,7 +205,39 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                     cause,
                   })
                 }),
+                Effect.asVoid,
+                (effect) => Effect.forkChild(effect, { startImmediately: true }),
               )
+
+              yield* recordPcmUntilTrailingSilence({
+                silenceSeconds: dictationSilenceSeconds,
+                maxSeconds: dictationMaxSeconds,
+                speechStartTimeoutSeconds: dictationSpeechStartTimeoutSeconds,
+                speechRmsThreshold: dictationSpeechRmsThreshold,
+                fragmentSize: DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
+                sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+                channels: 1,
+                sourceName: config.sourceName,
+                onChunk: (chunk) => Queue.offer(audioQueue, chunk).pipe(Effect.asVoid),
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new CliError({
+                      message: "Failed to capture wakeword dictation clip",
+                      cause,
+                    }),
+                ),
+                Effect.tapError(() =>
+                  Queue.end(audioQueue).pipe(
+                    Effect.andThen(Fiber.interrupt(transcriptionFiber)),
+                    Effect.ignore,
+                  ),
+                ),
+                Effect.onExit(() => config.setRecordingMode(undefined)),
+              )
+
+              yield* Queue.end(audioQueue)
+              yield* Fiber.join(transcriptionFiber)
             }).pipe(
               Effect.catch((cause: CliError) => {
                 config.diagnostics?.sttFailure(cause.message)

@@ -1,9 +1,8 @@
-import { Console, Duration, Effect, Option, Queue, Ref, Stream } from "effect"
+import { Console, Duration, Effect, Fiber, Option, Queue, Ref, Stream, type Cause } from "effect"
 
 import type { PulseAudioClient } from "../../pulse/client.js"
 import { makePcmRecordOptions } from "../../pulse/defs.js"
 import { createRecordStream } from "../../pulse/stream.js"
-import { MIN_GAIN_TO_APPLY, normalizePcmForStt, pcmPeak, pcmRms } from "../../audio/pcm.js"
 import { KeyboardMonitorService, type PttKeyboardError } from "../../keyboard/monitor.js"
 import type { TextInjectionBackendService } from "../../input/textInjection.js"
 import type { DesktopSession } from "../../desktop/session.js"
@@ -25,8 +24,8 @@ import {
 import { toPttKeyboardError } from "../ptt.js"
 import { concatChunks } from "../shared.js"
 import type { CliError } from "../shared.js"
-import type { OpenRouterSttService } from "../../stt/openrouter.js"
-import { transcribeAndInject } from "../../stt/transcribeAndInject.js"
+import type { SttService } from "../../stt/service.js"
+import { transcribeStreamAndInject } from "../../stt/transcribeAndInject.js"
 import type { SttRuntimeConfig } from "../../stt/config.js"
 import {
   DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM,
@@ -38,6 +37,12 @@ import {
 import type { AssistantRecordingMode } from "./recordingState.js"
 
 type AssistantPttMode = "transcribe" | "translate"
+
+type AssistantPttStreamingCapture = {
+  readonly offer: (chunk: Uint8Array) => Effect.Effect<void>
+  readonly finish: Effect.Effect<void, PttKeyboardError>
+  readonly cancel: Effect.Effect<void>
+}
 
 export const runAssistantPttCombinedLoop = (config: {
   readonly sourceName: string
@@ -56,7 +61,7 @@ export const runAssistantPttCombinedLoop = (config: {
   | KeyboardMonitorService
   | DesktopSession
   | TextInjectionBackendService
-  | OpenRouterSttService
+  | SttService
 > =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -69,8 +74,68 @@ export const runAssistantPttCombinedLoop = (config: {
         () => DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM,
       )
 
-      const sourceLanguage = config.sttConfig.openrouter.translationSourceLanguage
-      const targetLanguage = config.sttConfig.openrouter.translationTargetLanguage
+      const sourceLanguage = config.sttConfig.translationSourceLanguage
+      const targetLanguage = config.sttConfig.translationTargetLanguage
+
+      const makeStreamingCapture = (
+        mode: AssistantPttMode,
+      ): Effect.Effect<
+        AssistantPttStreamingCapture,
+        PttKeyboardError,
+        SttService | DesktopSession | TextInjectionBackendService
+      > =>
+        Effect.gen(function* () {
+          const audioQueue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
+          const audio = Stream.fromQueue(audioQueue)
+          const transcript =
+            mode === "transcribe"
+              ? transcribeStreamAndInject({
+                  operation: "transcribe",
+                  model: config.sttConfig.transcriptionModel,
+                  audio,
+                  sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+                  language: config.sttConfig.transcriptionLanguage,
+                  promptTemplate: config.sttConfig.transcriptionPrompt,
+                  logPrefix: "assistant-ptt-transcribe",
+                  diagnostics: config.diagnostics,
+                })
+              : transcribeStreamAndInject({
+                  operation: "translate",
+                  model: config.sttConfig.translationModel,
+                  audio,
+                  sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+                  sourceLanguage,
+                  targetLanguage,
+                  promptTemplate: config.sttConfig.translationPrompt,
+                  logPrefix: "assistant-ptt-translate",
+                  diagnostics: config.diagnostics,
+                })
+
+          const fiber = yield* transcript.pipe(
+            Effect.mapError((cause) => {
+              const message =
+                cause["_tag"] === "OpenRouterSttError" ||
+                cause["_tag"] === "CodexRealtimeSttError" ||
+                cause["_tag"] === "CodexAuthError" ||
+                cause["_tag"] === "SttDispatchError"
+                  ? `${mode === "transcribe" ? "PTT transcription" : "PTT translation"} failed: ${cause.message}`
+                  : `Failed to type streamed ${mode} text: ${cause.message}`
+
+              return toPttKeyboardError(message, cause)
+            }),
+            Effect.asVoid,
+            (effect) => Effect.forkChild(effect, { startImmediately: true }),
+          )
+
+          return {
+            offer: (chunk) => Queue.offer(audioQueue, chunk).pipe(Effect.asVoid),
+            finish: Queue.end(audioQueue).pipe(Effect.andThen(Fiber.join(fiber))),
+            cancel: Queue.end(audioQueue).pipe(
+              Effect.andThen(Fiber.interrupt(fiber)),
+              Effect.ignore,
+            ),
+          }
+        })
 
       yield* Console.log(
         `[assistant] PTT transcribe armed on keysym=${transcribeKeysym} source=${config.sourceName}`,
@@ -90,11 +155,20 @@ export const runAssistantPttCombinedLoop = (config: {
       const captureModeRef = yield* Ref.make<AssistantPttMode | undefined>(undefined)
       const captureChunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([])
       const captureStartedAtRef = yield* Ref.make<number | undefined>(undefined)
+      const streamingCaptureRef = yield* Ref.make<AssistantPttStreamingCapture | undefined>(
+        undefined,
+      )
 
       yield* Effect.addFinalizer(() =>
         Effect.all(
           [
             Ref.set(config.pttActiveRef, false),
+            Ref.get(streamingCaptureRef).pipe(
+              Effect.flatMap((streamingCapture) =>
+                streamingCapture === undefined ? Effect.void : streamingCapture.cancel,
+              ),
+              Effect.ignore,
+            ),
             config.setRecordingMode(undefined).pipe(Effect.orDie),
           ],
           {
@@ -130,6 +204,11 @@ export const runAssistantPttCombinedLoop = (config: {
               next.push(chunk)
               return next
             })
+
+            const streamingCapture = yield* Ref.get(streamingCaptureRef)
+            if (streamingCapture !== undefined) {
+              yield* streamingCapture.offer(chunk)
+            }
 
             const { detector: nextDetector, warn } = pttDeadInputDetectorProcessChunk(
               yield* Ref.get(deadInputDetectorRef),
@@ -184,6 +263,8 @@ export const runAssistantPttCombinedLoop = (config: {
           yield* Ref.set(captureChunksRef, [])
           yield* Ref.set(captureStartedAtRef, Date.now())
           yield* Ref.set(captureModeRef, mode)
+          const streamingCapture = yield* makeStreamingCapture(mode)
+          yield* Ref.set(streamingCaptureRef, streamingCapture)
           yield* Ref.set(captureStateRef, nextState)
           yield* Ref.set(config.pttActiveRef, true)
           yield* config.setRecordingMode(recordingMode)
@@ -259,6 +340,8 @@ export const runAssistantPttCombinedLoop = (config: {
           const durationMs = startedAt === undefined ? 0 : Date.now() - startedAt
           const chunks = yield* Ref.get(captureChunksRef)
           yield* Ref.set(captureChunksRef, [])
+          const streamingCapture = yield* Ref.get(streamingCaptureRef)
+          yield* Ref.set(streamingCaptureRef, undefined)
 
           const capturedBytes = chunks.reduce((sum, chunk) => sum + chunk.length, 0)
           config.diagnostics?.pttFinalize(durationMs)
@@ -270,6 +353,9 @@ export const runAssistantPttCombinedLoop = (config: {
             yield* Console.log(
               `[${modePrefix}] Ignored short clip (${durationMs}ms < ${DEFAULT_ASSISTANT_MIN_DURATION_MS}ms)`,
             )
+            if (streamingCapture !== undefined) {
+              yield* streamingCapture.cancel
+            }
             config.diagnostics?.setState("idle")
             return
           }
@@ -277,60 +363,21 @@ export const runAssistantPttCombinedLoop = (config: {
           const rawPcmBytes = concatChunks(chunks)
           if (rawPcmBytes.length === 0) {
             yield* Console.log(`[${modePrefix}] Ignored empty clip`)
+            if (streamingCapture !== undefined) {
+              yield* streamingCapture.cancel
+            }
             config.diagnostics?.setState("idle")
             return
           }
 
-          const { normalizedBytes: pcmBytes, gain } = normalizePcmForStt(rawPcmBytes)
-          if (gain > MIN_GAIN_TO_APPLY) {
-            yield* Console.log(
-              `[${modePrefix}] Normalized clip (rms=${pcmRms(rawPcmBytes).toFixed(4)} peak=${pcmPeak(rawPcmBytes).toFixed(4)} gain=${gain.toFixed(2)})`,
+          if (streamingCapture === undefined) {
+            return yield* toPttKeyboardError(
+              `[${modePrefix}] Missing streaming STT capture`,
+              undefined,
             )
           }
 
-          if (mode === "transcribe") {
-            yield* transcribeAndInject({
-              operation: "transcribe",
-              model: config.sttConfig.openrouter.transcriptionModel,
-              pcmBytes,
-              sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-              language: config.sttConfig.openrouter.transcriptionLanguage,
-              promptTemplate: config.sttConfig.transcriptionPrompt,
-              logPrefix: "assistant-ptt-transcribe",
-              diagnostics: config.diagnostics,
-            }).pipe(
-              Effect.mapError((cause) => {
-                const message =
-                  cause["_tag"] === "OpenRouterSttError"
-                    ? `PTT transcription failed: ${cause.message}`
-                    : `Failed to type transcript text: ${cause.message}`
-
-                return toPttKeyboardError(message, cause)
-              }),
-            )
-            return
-          }
-
-          yield* transcribeAndInject({
-            operation: "translate",
-            model: config.sttConfig.openrouter.translationModel,
-            pcmBytes,
-            sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-            sourceLanguage,
-            targetLanguage,
-            promptTemplate: config.sttConfig.translationPrompt,
-            logPrefix: "assistant-ptt-translate",
-            diagnostics: config.diagnostics,
-          }).pipe(
-            Effect.mapError((cause) => {
-              const message =
-                cause["_tag"] === "OpenRouterSttError"
-                  ? `PTT translation failed: ${cause.message}`
-                  : `Failed to type translated text: ${cause.message}`
-
-              return toPttKeyboardError(message, cause)
-            }),
-          )
+          yield* streamingCapture.finish
         }).pipe(Effect.ensuring(Ref.set(config.pttActiveRef, false)))
       }
     }),

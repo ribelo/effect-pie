@@ -1,13 +1,12 @@
-import { Console, Effect, Option, Ref, Stream } from "effect"
+import { Console, Effect, Fiber, Option, Queue, Ref, Stream, type Cause } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import { loadSttRuntimeConfig, type SttConfigError } from "../stt/config.js"
-import { OpenRouterSttService, type OpenRouterSttError } from "../stt/openrouter.js"
+import { SttService, type SttServiceError } from "../stt/service.js"
 import { createRecordStream } from "../pulse/stream.js"
 import { makePcmRecordOptions } from "../pulse/defs.js"
 import { typeTextWithWtype, type WtypeError } from "../wayland/wtype.js"
 import {
   CliError,
-  concatChunks,
   drainPendingStdin,
   optionalSourceFlag,
   positiveIntegerFlag,
@@ -45,8 +44,8 @@ export const sttInteractiveCommand = Command.make(
         ),
       )
 
-      const transcriptionModel = sttConfig.openrouter.transcriptionModel
-      const transcriptionLanguage = sttConfig.openrouter.transcriptionLanguage
+      const transcriptionModel = sttConfig.transcriptionModel
+      const transcriptionLanguage = sttConfig.transcriptionLanguage
 
       yield* Console.log(
         `[stt-interactive] Ready. Model=${transcriptionModel}, language=${transcriptionLanguage}. Press Enter to start, Enter to stop, Ctrl+C to exit.`,
@@ -63,72 +62,90 @@ export const sttInteractiveCommand = Command.make(
 
         yield* waitForEnter("[stt-interactive] Press Enter to start listening")
 
-        const chunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([])
-
         const recordOptions = makePcmRecordOptions({
           rate: config.sampleRate,
           fragmentSize: config.fragmentSize,
           sourceName: Option.getOrUndefined(config.source),
         })
 
-        yield* Effect.scoped(
+        const transcript = yield* Effect.scoped(
           Effect.gen(function* () {
+            const audioQueue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
+            const capturedBytesRef = yield* Ref.make(0)
+
+            const transcriptFiber = yield* Effect.gen(function* () {
+              const stt = yield* SttService
+              return yield* stt.transcribeStream({
+                model: transcriptionModel,
+                audio: Stream.fromQueue(audioQueue),
+                sampleRate: config.sampleRate,
+                language: transcriptionLanguage,
+                promptTemplate: sttConfig.transcriptionPrompt,
+                ...(config.noType
+                  ? {}
+                  : {
+                      onDelta: (delta: string) =>
+                        typeTextWithWtype(delta).pipe(
+                          Effect.tapError((cause: WtypeError) =>
+                            Console.log(
+                              `[stt-interactive] wtype typing error for delta: ${cause.message}`,
+                            ),
+                          ),
+                          Effect.ignore,
+                        ),
+                    }),
+              })
+            }).pipe(
+              Effect.provide(SttService.live(sttConfig)),
+              Effect.mapError(
+                (cause: SttServiceError) =>
+                  new CliError({
+                    message: `Streaming STT failed: ${cause.message}`,
+                    cause,
+                  }),
+              ),
+              Effect.forkScoped,
+            )
+
             yield* createRecordStream(recordOptions).pipe(
-              Stream.runForEach((chunk) => Ref.update(chunksRef, (chunks) => [...chunks, chunk])),
+              Stream.runForEach((chunk) =>
+                Effect.all(
+                  [
+                    Ref.update(capturedBytesRef, (current) => current + chunk.length),
+                    Queue.offer(audioQueue, chunk),
+                  ],
+                  { discard: true },
+                ),
+              ),
               Effect.forkScoped,
             )
 
             yield* waitForEnter("[stt-interactive] Listening... Press Enter to stop")
+            yield* Queue.end(audioQueue)
+
+            const capturedBytes = yield* Ref.get(capturedBytesRef)
+            if (capturedBytes === 0) {
+              yield* Fiber.interrupt(transcriptFiber)
+              yield* Console.log("[stt-interactive] Ignored empty capture")
+              return undefined
+            }
+
+            const durationMs = Math.round((capturedBytes / 2 / config.sampleRate) * 1000)
+            if (durationMs < config.minDurationMs) {
+              yield* Fiber.interrupt(transcriptFiber)
+              yield* Console.log(
+                `[stt-interactive] Ignored short capture (${durationMs}ms < ${config.minDurationMs}ms)`,
+              )
+              return undefined
+            }
+
+            return yield* Fiber.join(transcriptFiber)
           }),
         )
 
-        const chunks = yield* Ref.get(chunksRef)
-        const pcmBytes = concatChunks(chunks)
-
-        if (pcmBytes.length === 0) {
-          yield* Console.log("[stt-interactive] Ignored empty capture")
+        if (transcript === undefined) {
           continue
         }
-
-        const durationMs = Math.round((pcmBytes.length / 2 / config.sampleRate) * 1000)
-        if (durationMs < config.minDurationMs) {
-          yield* Console.log(
-            `[stt-interactive] Ignored short capture (${durationMs}ms < ${config.minDurationMs}ms)`,
-          )
-          continue
-        }
-
-        const stt = yield* Effect.service(OpenRouterSttService)
-        const transcript = yield* stt
-          .transcribe({
-            model: transcriptionModel,
-            pcmBytes,
-            sampleRate: config.sampleRate,
-            language: transcriptionLanguage,
-            promptTemplate: sttConfig.transcriptionPrompt,
-            ...(config.noType
-              ? {}
-              : {
-                  onDelta: (delta: string) =>
-                    typeTextWithWtype(delta).pipe(
-                      Effect.tapError((cause: WtypeError) =>
-                        Console.log(
-                          `[stt-interactive] wtype typing error for delta: ${cause.message}`,
-                        ),
-                      ),
-                      Effect.ignore,
-                    ),
-                }),
-          })
-          .pipe(
-            Effect.mapError(
-              (cause: OpenRouterSttError) =>
-                new CliError({
-                  message: `Streaming STT failed: ${cause.message}`,
-                  cause,
-                }),
-            ),
-          )
 
         yield* Console.log("")
         yield* Console.log(`[stt-interactive] Transcript: ${transcript}`)
@@ -136,6 +153,6 @@ export const sttInteractiveCommand = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Interactive STT test loop (Enter start/stop, OpenRouter streaming, optional wtype delta typing)",
+    "Interactive STT test loop (Enter start/stop, configured STT provider, optional wtype delta typing)",
   ),
 )

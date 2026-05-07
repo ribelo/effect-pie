@@ -16,19 +16,20 @@ const resolveTranscriptionPromptPath = (configPath: string): string =>
 const resolveTranslationPromptPath = (configPath: string): string =>
   path.join(resolvePromptsDir(configPath), "translation.md")
 
+export type SttProvider = "codex-realtime" | "openrouter"
+
 export type SttRuntimeConfig = {
-  readonly schemaVersion: 1
-  readonly openrouter: {
-    readonly transcriptionModel: string
-    readonly translationModel: string
-    readonly transcriptionLanguage: string
-    readonly translationSourceLanguage: string
-    readonly translationTargetLanguage: string
-    readonly wakewordEnabled: boolean
-    readonly wakewordDictationSilenceSeconds: number
-    readonly wakewordDictationMaxSeconds: number
-    readonly wakewordDictationSpeechRmsThreshold: number
-  }
+  readonly schemaVersion: 2
+  readonly provider: SttProvider
+  readonly transcriptionModel: string
+  readonly translationModel: string
+  readonly transcriptionLanguage: string
+  readonly translationSourceLanguage: string
+  readonly translationTargetLanguage: string
+  readonly wakewordEnabled: boolean
+  readonly wakewordDictationSilenceSeconds: number
+  readonly wakewordDictationMaxSeconds: number
+  readonly wakewordDictationSpeechRmsThreshold: number
   readonly transcriptionPrompt: string
   readonly translationPrompt: string
 }
@@ -41,33 +42,22 @@ export class SttConfigError extends Data.TaggedError("SttConfigError")<{
 const isErrnoException = (cause: unknown): cause is NodeJS.ErrnoException =>
   isRecord(cause) && typeof cause["code"] === "string"
 
+const SttProviderSchema = Schema.Literals(["codex-realtime", "openrouter"])
+
 const SttRuntimeConfigSchema = Schema.Struct({
-  schemaVersion: Schema.Literal(1),
-  openrouter: Schema.Struct({
-    transcriptionModel: Schema.NonEmptyString,
-    translationModel: Schema.NonEmptyString,
-    transcriptionLanguage: Schema.NonEmptyString,
-    translationSourceLanguage: Schema.NonEmptyString,
-    translationTargetLanguage: Schema.NonEmptyString,
-    wakewordEnabled: Schema.Boolean,
-    wakewordDictationSilenceSeconds: Schema.Number.check(Schema.isGreaterThan(0)),
-    wakewordDictationMaxSeconds: Schema.Number.check(Schema.isGreaterThan(0)),
-    wakewordDictationSpeechRmsThreshold: Schema.Number.check(Schema.isGreaterThan(0)),
-  }),
+  schemaVersion: Schema.Literal(2),
+  provider: SttProviderSchema,
+  transcriptionModel: Schema.NonEmptyString,
+  translationModel: Schema.NonEmptyString,
+  transcriptionLanguage: Schema.NonEmptyString,
+  translationSourceLanguage: Schema.NonEmptyString,
+  translationTargetLanguage: Schema.NonEmptyString,
+  wakewordEnabled: Schema.Boolean,
+  wakewordDictationSilenceSeconds: Schema.Number.check(Schema.isGreaterThan(0)),
+  wakewordDictationMaxSeconds: Schema.Number.check(Schema.isGreaterThan(0)),
+  wakewordDictationSpeechRmsThreshold: Schema.Number.check(Schema.isGreaterThan(0)),
   transcriptionPrompt: Schema.optional(Schema.String),
   translationPrompt: Schema.optional(Schema.String),
-})
-
-const normalizeSttRuntimeConfig = (config: {
-  readonly schemaVersion: 1
-  readonly openrouter: SttRuntimeConfig["openrouter"]
-  readonly transcriptionPrompt?: string | undefined
-  readonly translationPrompt?: string | undefined
-}): SttRuntimeConfig => ({
-  schemaVersion: 1,
-  openrouter: config.openrouter,
-  transcriptionPrompt: config.transcriptionPrompt?.trim() ?? "",
-  translationPrompt: config.translationPrompt?.trim() ?? "",
 })
 
 const readPromptFile = (promptPath: string): Effect.Effect<string, SttConfigError> =>
@@ -135,7 +125,7 @@ export const loadSttRuntimeConfig = Effect.fn("pie/stt/config.loadSttRuntimeConf
 
   if (raw === undefined) {
     return yield* new SttConfigError({
-      message: `STT config file not found at ${configPath}. Create it with explicit configuration.`,
+      message: `STT config file not found at ${configPath}. Create it with explicit configuration (schemaVersion: 2, provider, transcriptionModel, translationModel, transcription/translation language fields, wakeword fields).`,
     })
   }
 
@@ -149,17 +139,21 @@ export const loadSttRuntimeConfig = Effect.fn("pie/stt/config.loadSttRuntimeConf
     ),
   )
 
+  if (isRecord(parsedJson) && parsedJson["schemaVersion"] === 1) {
+    return yield* new SttConfigError({
+      message: `STT config at ${configPath} uses schemaVersion 1 (nested openrouter block). Delete the file or rewrite it as schemaVersion 2 with a top-level provider + flattened fields; effect-pie no longer migrates v1 configs.`,
+    })
+  }
+
   const parsed = yield* Schema.decodeUnknownEffect(SttRuntimeConfigSchema)(parsedJson).pipe(
     Effect.mapError(
       (cause) =>
         new SttConfigError({
-          message: `Unrecognized STT config at ${configPath}.`,
+          message: `Unrecognized STT config at ${configPath}. Expected schemaVersion 2 with fields: provider, transcriptionModel, translationModel, transcriptionLanguage, translationSourceLanguage, translationTargetLanguage, wakewordEnabled, wakewordDictationSilenceSeconds, wakewordDictationMaxSeconds, wakewordDictationSpeechRmsThreshold.`,
           cause,
         }),
     ),
   )
-
-  const config = normalizeSttRuntimeConfig(parsed)
 
   const transcriptionPrompt = yield* readPromptFile(transcriptionPromptPath)
   const translationPrompt = yield* readPromptFile(translationPromptPath)
@@ -179,7 +173,17 @@ export const loadSttRuntimeConfig = Effect.fn("pie/stt/config.loadSttRuntimeConf
   }
 
   return {
-    ...config,
+    schemaVersion: 2,
+    provider: parsed.provider,
+    transcriptionModel: parsed.transcriptionModel,
+    translationModel: parsed.translationModel,
+    transcriptionLanguage: parsed.transcriptionLanguage,
+    translationSourceLanguage: parsed.translationSourceLanguage,
+    translationTargetLanguage: parsed.translationTargetLanguage,
+    wakewordEnabled: parsed.wakewordEnabled,
+    wakewordDictationSilenceSeconds: parsed.wakewordDictationSilenceSeconds,
+    wakewordDictationMaxSeconds: parsed.wakewordDictationMaxSeconds,
+    wakewordDictationSpeechRmsThreshold: parsed.wakewordDictationSpeechRmsThreshold,
     transcriptionPrompt,
     translationPrompt,
   }

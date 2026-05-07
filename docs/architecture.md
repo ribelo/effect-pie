@@ -49,21 +49,22 @@ pie/
 - `pie` (no subcommand) runs combined assistant mode: wakeword (`ok_pie`) transcription + PTT transcription + PTT translation.
 - Combined assistant mode writes runtime recording state to `$XDG_RUNTIME_DIR/pie/recording.json` with `active`, `mode`, `startedAt`, and `updatedAt` for external status widgets (for example Quickshell).
 - `pie ptt-portal` registers a GlobalShortcuts portal binding and prints activation/deactivation monitor events.
-- `pie ptt-transcribe` records push-to-talk audio and transcribes with OpenRouter (model from `$XDG_CONFIG_HOME/pie/stt.json`).
-- `pie ptt-translate` records push-to-talk audio and performs single-pass transcription+translation with OpenRouter (model from `$XDG_CONFIG_HOME/pie/stt.json`).
+- `pie ptt-transcribe` records push-to-talk audio and transcribes with the configured STT provider (Codex realtime by default; model from `$XDG_CONFIG_HOME/pie/stt.json`).
+- `pie ptt-translate` records push-to-talk audio and performs single-pass transcription+translation with the configured STT provider (Codex realtime by default; model from `$XDG_CONFIG_HOME/pie/stt.json`).
 - Default combined assistant mode binds PTT keysyms `F9` (transcribe) and `F10` (translate).
-- `pie stt-interactive` runs an Enter-to-start / Enter-to-stop transcription loop using OpenRouter streaming responses and types streamed deltas with `wtype`.
+- `pie stt-interactive` runs an Enter-to-start / Enter-to-stop transcription loop using the configured STT provider and can type streamed deltas with `wtype`.
 - `pie type` sends text to the focused app and auto-selects backend (`wtype` for Wayland, `xdotool` for X11).
 - `pie wakeword` runs live wakeword scoring/trigger telemetry from PulseAudio.
 - `pie wakeword-train` runs best-effort capture setup (auto source probing, auto noise/speech calibration, adaptive speech threshold retries), collects positive/negative clips from PulseAudio, trains a lightweight wakeword scoring model, saves data under `$XDG_DATA_HOME/pie/openwakeword/`, updates the XDG manifest when requested, and persists calibration snapshots in `$XDG_CONFIG_HOME/pie/wakeword/`.
-- STT model and language routing for `ptt-transcribe` and `ptt-translate` is configured in `$XDG_CONFIG_HOME/pie/stt.json` (auto-created on first run) with defaults:
-  - transcription model: `mistralai/voxtral-small-24b-2507`
-  - translation model: `google/gemini-3-flash-preview`
+- STT model and language routing for assistant, `ptt-transcribe`, `ptt-translate`, and `stt-interactive` is configured in `$XDG_CONFIG_HOME/pie/stt.json` using schema version 2. The default provider is `codex-realtime`, authenticated from `CODEX_HOME/auth.json` when `CODEX_HOME` is set or `~/.codex/auth.json` otherwise. Codex realtime uses authenticated WebSockets; OpenRouter remains available only when `provider` is explicitly set to `openrouter`.
+  - provider: `codex-realtime`
+  - transcription model: `gpt-realtime-whisper`
+  - translation model: `gpt-realtime-translate`
   - transcription language: `English`
   - translation source language: `English`
   - translation target language: `English`
   - wakeword dictation trailing silence: `3` seconds
-  - wakeword dictation max capture: `45` seconds
+  - wakeword dictation max capture: `120` seconds
   - wakeword dictation speech RMS threshold: `0.01`
 - Wakeword feature extraction now requires real ONNX feature models (`melspectrogram.onnx`, `embedding_model.onnx`) and `onnxruntime-web@1.22.0`; placeholder/fallback feature paths are rejected.
 

@@ -54,9 +54,7 @@ const errnoCode = (cause: unknown): string | undefined => {
   return undefined
 }
 
-export const loadCodexAuthFile = (
-  authPath: string,
-): Effect.Effect<CodexAuthJson, CodexAuthError> =>
+export const loadCodexAuthFile = (authPath: string): Effect.Effect<CodexAuthJson, CodexAuthError> =>
   Effect.gen(function* () {
     const raw = yield* Effect.tryPromise({
       try: () => fs.readFile(authPath, "utf8"),
@@ -123,11 +121,7 @@ export const decodeJwtExpSeconds = (token: string): number | undefined => {
   }
 }
 
-export const isAccessTokenExpired = (
-  token: string,
-  nowMs: number,
-  leewaySeconds = 60,
-): boolean => {
+export const isAccessTokenExpired = (token: string, nowMs: number, leewaySeconds = 60): boolean => {
   const exp = decodeJwtExpSeconds(token)
   if (exp === undefined) {
     return false
@@ -157,8 +151,9 @@ const isPermanentRefreshStatus = (status: number): boolean =>
 export const defaultCodexTokenRefresher = (
   env: NodeJS.ProcessEnv = process.env,
 ): CodexTokenRefresher => {
+  const override = env[CODEX_REFRESH_TOKEN_URL_OVERRIDE_ENV]?.trim()
   const endpoint =
-    env[CODEX_REFRESH_TOKEN_URL_OVERRIDE_ENV]?.trim() || CODEX_REFRESH_TOKEN_URL
+    override !== undefined && override.length > 0 ? override : CODEX_REFRESH_TOKEN_URL
   return {
     refresh: (refreshToken) =>
       Effect.gen(function* () {
@@ -198,7 +193,7 @@ export const defaultCodexTokenRefresher = (
         }
 
         const json = yield* Effect.tryPromise({
-          try: () => response.json() as Promise<unknown>,
+          try: () => response.json(),
           catch: (cause) =>
             new CodexAuthError({
               message: "Codex token refresh response was not valid JSON",

@@ -1,6 +1,6 @@
 import { Console, Effect, Option, Ref } from "effect"
 import { loadSttRuntimeConfig, type SttConfigError } from "../stt/config.js"
-import type { OpenRouterSttService } from "../stt/openrouter.js"
+import { SttService } from "../stt/service.js"
 import { PulseAudioClient } from "../pulse/client.js"
 import type { KeyboardMonitorService, PttKeyboardError } from "../keyboard/monitor.js"
 import type { TextInjectionBackendService } from "../input/textInjection.js"
@@ -53,11 +53,7 @@ export const runAssistantDefaultCommand = Effect.fn(
 }): Effect.fn.Return<
   void,
   CliError | SttConfigError | PttKeyboardError | Error,
-  | PulseAudioClient
-  | KeyboardMonitorService
-  | DesktopSession
-  | TextInjectionBackendService
-  | OpenRouterSttService
+  PulseAudioClient | KeyboardMonitorService | DesktopSession | TextInjectionBackendService
 > {
   const sttConfig = yield* loadSttRuntimeConfig().pipe(
     Effect.mapError(
@@ -71,9 +67,9 @@ export const runAssistantDefaultCommand = Effect.fn(
 
   const sourceName = yield* resolveDefaultSourceName()
   yield* Console.log("[assistant] Running default assistant mode")
-  if (sttConfig.openrouter.wakewordEnabled) {
+  if (sttConfig.wakewordEnabled) {
     yield* Console.log(
-      `[assistant] Wakeword model=${DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE} -> transcription (${sttConfig.openrouter.transcriptionLanguage})`,
+      `[assistant] Wakeword model=${DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE} -> transcription (${sttConfig.transcriptionLanguage})`,
     )
   } else {
     yield* Console.log("[assistant] Wakeword disabled (PTT-only mode)")
@@ -81,14 +77,14 @@ export const runAssistantDefaultCommand = Effect.fn(
   yield* Console.log(
     `[assistant] PTT transcribe keysym=${Option.getOrElse(config["ptt-transcribe-keysym"], () => DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM)}, PTT translate keysym=${Option.getOrElse(config["ptt-translate-keysym"], () => DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM)}`,
   )
-  if (sttConfig.openrouter.wakewordEnabled) {
+  if (sttConfig.wakewordEnabled) {
     yield* Console.log(
-      `[assistant] Wakeword dictation: silence=${sttConfig.openrouter.wakewordDictationSilenceSeconds}s max=${sttConfig.openrouter.wakewordDictationMaxSeconds}s speech_start_timeout=${resolveWakewordSpeechStartTimeoutSeconds(
+      `[assistant] Wakeword dictation: silence=${sttConfig.wakewordDictationSilenceSeconds}s max=${sttConfig.wakewordDictationMaxSeconds}s speech_start_timeout=${resolveWakewordSpeechStartTimeoutSeconds(
         {
-          silenceSeconds: sttConfig.openrouter.wakewordDictationSilenceSeconds,
-          maxSeconds: sttConfig.openrouter.wakewordDictationMaxSeconds,
+          silenceSeconds: sttConfig.wakewordDictationSilenceSeconds,
+          maxSeconds: sttConfig.wakewordDictationMaxSeconds,
         },
-      )}s speech_rms=${sttConfig.openrouter.wakewordDictationSpeechRmsThreshold.toFixed(4)}`,
+      )}s speech_rms=${sttConfig.wakewordDictationSpeechRmsThreshold.toFixed(4)}`,
     )
   }
   yield* Console.log("[assistant] Focus the target app (for example Slack) to receive typed text")
@@ -124,7 +120,7 @@ export const runAssistantDefaultCommand = Effect.fn(
         pttTranscribeKeysym: config["ptt-transcribe-keysym"],
         pttTranslateKeysym: config["ptt-translate-keysym"],
       }),
-      ...(sttConfig.openrouter.wakewordEnabled
+      ...(sttConfig.wakewordEnabled
         ? [
             runAssistantWakewordTranscribeLoop({
               sourceName,
@@ -143,6 +139,7 @@ export const runAssistantDefaultCommand = Effect.fn(
   ).pipe(Effect.onExit(() => setRecordingMode(undefined)))
 
   return yield* effect.pipe(
+    Effect.provide(SttService.live(sttConfig)),
     Effect.tapError((cause) =>
       Effect.gen(function* () {
         if (diagnostics !== undefined) {

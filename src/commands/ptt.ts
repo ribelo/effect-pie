@@ -1,4 +1,4 @@
-import { Console, Duration, Effect, Option, Queue, Ref, Stream } from "effect"
+import { Console, Duration, Effect, Fiber, Option, Queue, Ref, Stream, type Cause } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import * as path from "node:path"
 import { KeyboardMonitorService, PttKeyboardError } from "../keyboard/monitor.js"
@@ -7,10 +7,10 @@ import { makePcmRecordOptions } from "../pulse/defs.js"
 import { createRecordStream } from "../pulse/stream.js"
 import { MIN_GAIN_TO_APPLY, normalizePcmForStt, pcmPeak, pcmRms } from "../audio/pcm.js"
 import { loadSttRuntimeConfig, STT_CONFIG_PATH, type SttConfigError } from "../stt/config.js"
-import type { OpenRouterSttService } from "../stt/openrouter.js"
-import type { TextInjectionBackendService } from "../input/textInjection.js"
-import { transcribeAndInject } from "../stt/transcribeAndInject.js"
+import { SttService } from "../stt/service.js"
+import { transcribeStreamAndInject } from "../stt/transcribeAndInject.js"
 import type { DesktopSession } from "../desktop/session.js"
+import type { TextInjectionBackendService } from "../input/textInjection.js"
 import { notifyWarning } from "../desktop/notification.js"
 import {
   pttCaptureIdle,
@@ -50,7 +50,13 @@ type PttCapturedClip = {
   readonly pcmBytes: Uint8Array
 }
 
-type KeyboardMonitorPttConfig = {
+type PttStreamingCapture<R> = {
+  readonly offer: (chunk: Uint8Array) => Effect.Effect<void, PttKeyboardError, R>
+  readonly finish: (clip: PttCapturedClip) => Effect.Effect<void, PttKeyboardError, R>
+  readonly cancel: Effect.Effect<void, PttKeyboardError, R>
+}
+
+type KeyboardMonitorPttConfig<R> = {
   readonly keycode: Option.Option<number>
   readonly keysym: Option.Option<number>
   readonly source: Option.Option<string>
@@ -59,13 +65,8 @@ type KeyboardMonitorPttConfig = {
   readonly fragmentSize: number
   readonly logPrefix: string
   readonly armedMessage: (trigger: PttTriggerBinding) => string
-  readonly onClip: (
-    clip: PttCapturedClip,
-  ) => Effect.Effect<
-    void,
-    PttKeyboardError,
-    DesktopSession | TextInjectionBackendService | OpenRouterSttService
-  >
+  readonly onClip?: (clip: PttCapturedClip) => Effect.Effect<void, PttKeyboardError, R>
+  readonly onCaptureStart?: () => Effect.Effect<PttStreamingCapture<R>, PttKeyboardError, R>
 }
 
 const pttKeycodeFlag = optionalPositiveIntegerFlag(
@@ -84,17 +85,93 @@ export const toPttKeyboardError = (message: string, cause: unknown): PttKeyboard
     cause,
   })
 
-export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMonitorPtt")(function* (
-  config: KeyboardMonitorPttConfig,
-): Effect.fn.Return<
-  never,
+const mapStreamingSttPttError = (
+  prefix: string,
+  cause: { readonly _tag?: string; readonly message: string },
+) => {
+  const message =
+    cause["_tag"] === "OpenRouterSttError" ||
+    cause["_tag"] === "CodexRealtimeSttError" ||
+    cause["_tag"] === "CodexAuthError" ||
+    cause["_tag"] === "SttDispatchError"
+      ? `${prefix}: ${cause.message}`
+      : `Failed to inject streamed text: ${cause.message}`
+
+  return toPttKeyboardError(message, cause)
+}
+
+const makeStreamingSttCapture = (config: {
+  readonly sampleRate: number
+  readonly logPrefix: string
+  readonly failurePrefix: string
+  readonly inject?: boolean | undefined
+  readonly operation:
+    | {
+        readonly kind: "transcribe"
+        readonly model: string
+        readonly language: string
+        readonly promptTemplate: string
+      }
+    | {
+        readonly kind: "translate"
+        readonly model: string
+        readonly sourceLanguage: string
+        readonly targetLanguage: string
+        readonly promptTemplate: string
+      }
+}): Effect.Effect<
+  PttStreamingCapture<never>,
   PttKeyboardError,
-  | PulseAudioClient
-  | KeyboardMonitorService
-  | DesktopSession
-  | TextInjectionBackendService
-  | OpenRouterSttService
-> {
+  SttService | TextInjectionBackendService | DesktopSession
+> =>
+  Effect.gen(function* () {
+    const audioQueue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
+    const stream = Stream.fromQueue(audioQueue)
+    const transcriptEffect =
+      config.operation.kind === "transcribe"
+        ? transcribeStreamAndInject({
+            operation: "transcribe",
+            model: config.operation.model,
+            audio: stream,
+            sampleRate: config.sampleRate,
+            language: config.operation.language,
+            promptTemplate: config.operation.promptTemplate,
+            logPrefix: config.logPrefix,
+            ...(config.inject !== undefined ? { inject: config.inject } : {}),
+          })
+        : transcribeStreamAndInject({
+            operation: "translate",
+            model: config.operation.model,
+            audio: stream,
+            sampleRate: config.sampleRate,
+            sourceLanguage: config.operation.sourceLanguage,
+            targetLanguage: config.operation.targetLanguage,
+            promptTemplate: config.operation.promptTemplate,
+            logPrefix: config.logPrefix,
+            ...(config.inject !== undefined ? { inject: config.inject } : {}),
+          })
+
+    const transcriptFiber = yield* transcriptEffect.pipe(
+      Effect.mapError((cause) => mapStreamingSttPttError(config.failurePrefix, cause)),
+      Effect.asVoid,
+      (effect) => Effect.forkChild(effect, { startImmediately: true }),
+    )
+
+    return {
+      offer: (chunk) => Queue.offer(audioQueue, chunk).pipe(Effect.asVoid),
+      finish: () => Queue.end(audioQueue).pipe(Effect.andThen(Fiber.join(transcriptFiber))),
+      cancel: Queue.end(audioQueue).pipe(
+        Effect.andThen(Fiber.interrupt(transcriptFiber)),
+        Effect.ignore,
+      ),
+    }
+  })
+
+export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMonitorPtt")(function* <
+  R,
+>(
+  config: KeyboardMonitorPttConfig<R>,
+): Effect.fn.Return<never, PttKeyboardError, PulseAudioClient | KeyboardMonitorService | R> {
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const keyboard = yield* KeyboardMonitorService
@@ -147,6 +224,16 @@ export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMoni
       const captureStateRef = yield* Ref.make<PttCaptureState>(pttCaptureIdle)
       const captureChunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([])
       const captureStartedAtRef = yield* Ref.make<number | undefined>(undefined)
+      const streamingCaptureRef = yield* Ref.make<PttStreamingCapture<R> | undefined>(undefined)
+
+      yield* Effect.addFinalizer(() =>
+        Ref.get(streamingCaptureRef).pipe(
+          Effect.flatMap((streamingCapture) =>
+            streamingCapture === undefined ? Effect.void : streamingCapture.cancel,
+          ),
+          Effect.ignore,
+        ),
+      )
 
       const recordOptions = makePcmRecordOptions({
         rate: config.sampleRate,
@@ -175,6 +262,11 @@ export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMoni
               next.push(chunk)
               return next
             })
+
+            const streamingCapture = yield* Ref.get(streamingCaptureRef)
+            if (streamingCapture !== undefined) {
+              yield* streamingCapture.offer(chunk)
+            }
 
             const { detector: nextDetector, warn } = pttDeadInputDetectorProcessChunk(
               yield* Ref.get(deadInputDetectorRef),
@@ -223,6 +315,9 @@ export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMoni
 
           yield* Ref.set(captureChunksRef, [])
           yield* Ref.set(captureStartedAtRef, Date.now())
+          const streamingCapture =
+            config.onCaptureStart === undefined ? undefined : yield* config.onCaptureStart()
+          yield* Ref.set(streamingCaptureRef, streamingCapture)
           yield* Ref.set(captureStateRef, nextState)
           yield* Console.log(`[${config.logPrefix}] Capturing... release key to stop`)
           continue
@@ -276,6 +371,8 @@ export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMoni
         const durationMs = startedAt === undefined ? 0 : Date.now() - startedAt
         const chunks = yield* Ref.get(captureChunksRef)
         yield* Ref.set(captureChunksRef, [])
+        const streamingCapture = yield* Ref.get(streamingCaptureRef)
+        yield* Ref.set(streamingCaptureRef, undefined)
 
         const capturedBytes = chunks.reduce((sum, chunk) => sum + chunk.length, 0)
         yield* Console.log(
@@ -286,13 +383,33 @@ export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMoni
           yield* Console.log(
             `[${config.logPrefix}] Ignored short clip (${durationMs}ms < ${config.minDurationMs}ms)`,
           )
+          if (streamingCapture !== undefined) {
+            yield* streamingCapture.cancel
+          }
           continue
         }
 
         const rawPcmBytes = concatChunks(chunks)
         if (rawPcmBytes.length === 0) {
           yield* Console.log(`[${config.logPrefix}] Ignored empty clip`)
+          if (streamingCapture !== undefined) {
+            yield* streamingCapture.cancel
+          }
           continue
+        }
+
+        if (streamingCapture !== undefined) {
+          yield* streamingCapture.finish({
+            durationMs,
+            pcmBytes: rawPcmBytes,
+          })
+          continue
+        }
+
+        if (config.onClip === undefined) {
+          return yield* new PttKeyboardError({
+            message: `[${config.logPrefix}] PTT capture has no clip handler`,
+          })
         }
 
         const { normalizedBytes, gain } = normalizePcmForStt(rawPcmBytes)
@@ -441,8 +558,8 @@ export const pttTranscribeCommand = Command.make(
         ),
       )
 
-      const transcriptionModel = sttConfig.openrouter.transcriptionModel
-      const transcriptionLanguage = sttConfig.openrouter.transcriptionLanguage
+      const transcriptionModel = sttConfig.transcriptionModel
+      const transcriptionLanguage = sttConfig.transcriptionLanguage
 
       yield* Console.log(
         `[ptt-transcribe] Model: ${transcriptionModel} (config: ${STT_CONFIG_PATH})`,
@@ -459,31 +576,24 @@ export const pttTranscribeCommand = Command.make(
         logPrefix: "ptt-transcribe",
         armedMessage: (trigger) =>
           `PTT transcribe armed. Hold keycode=${trigger.keycode} keysym=${trigger.keysym} to dictate. Press Ctrl+C to stop.`,
-        onClip: (clip) =>
-          transcribeAndInject({
-            operation: "transcribe",
-            model: transcriptionModel,
-            pcmBytes: clip.pcmBytes,
+        onCaptureStart: () =>
+          makeStreamingSttCapture({
             sampleRate: config.sampleRate,
-            language: transcriptionLanguage,
-            promptTemplate: sttConfig.transcriptionPrompt,
             logPrefix: "ptt-transcribe",
+            failurePrefix: "STT request failed",
             inject: config.inject,
-          }).pipe(
-            Effect.mapError((cause) => {
-              const message =
-                cause["_tag"] === "OpenRouterSttError"
-                  ? `STT request failed: ${cause.message}`
-                  : `Failed to inject transcript text: ${cause.message}`
-
-              return toPttKeyboardError(message, cause)
-            }),
-          ),
-      })
+            operation: {
+              kind: "transcribe",
+              model: transcriptionModel,
+              language: transcriptionLanguage,
+              promptTemplate: sttConfig.transcriptionPrompt,
+            },
+          }),
+      }).pipe(Effect.provide(SttService.live(sttConfig)))
     }),
 ).pipe(
   Command.withDescription(
-    "Push-to-talk transcription via OpenRouter (model configured in $XDG_CONFIG_HOME/pie/stt.json)",
+    "Push-to-talk transcription via the configured STT provider (default: Codex realtime)",
   ),
 )
 
@@ -520,11 +630,11 @@ export const pttTranslateCommand = Command.make(
         ),
       )
 
-      const translationModel = sttConfig.openrouter.translationModel
-      const sourceLanguage = sttConfig.openrouter.translationSourceLanguage
+      const translationModel = sttConfig.translationModel
+      const sourceLanguage = sttConfig.translationSourceLanguage
       const targetLanguage = Option.isSome(config.targetLanguage)
         ? config.targetLanguage.value
-        : sttConfig.openrouter.translationTargetLanguage
+        : sttConfig.translationTargetLanguage
 
       yield* Console.log(`[ptt-translate] Model: ${translationModel} (config: ${STT_CONFIG_PATH})`)
       yield* Console.log(`[ptt-translate] Source language: ${sourceLanguage}`)
@@ -540,31 +650,24 @@ export const pttTranslateCommand = Command.make(
         logPrefix: "ptt-translate",
         armedMessage: (trigger) =>
           `PTT translate armed. Hold keycode=${trigger.keycode} keysym=${trigger.keysym} to dictate. ${sourceLanguage} -> ${targetLanguage}. Press Ctrl+C to stop.`,
-        onClip: (clip) =>
-          transcribeAndInject({
-            operation: "translate",
-            model: translationModel,
-            pcmBytes: clip.pcmBytes,
+        onCaptureStart: () =>
+          makeStreamingSttCapture({
             sampleRate: config.sampleRate,
-            sourceLanguage,
-            targetLanguage,
-            promptTemplate: sttConfig.translationPrompt,
             logPrefix: "ptt-translate",
+            failurePrefix: "STT+translation request failed",
             inject: config.inject,
-          }).pipe(
-            Effect.mapError((cause) => {
-              const message =
-                cause["_tag"] === "OpenRouterSttError"
-                  ? `STT+translation request failed: ${cause.message}`
-                  : `Failed to inject translated text: ${cause.message}`
-
-              return toPttKeyboardError(message, cause)
-            }),
-          ),
-      })
+            operation: {
+              kind: "translate",
+              model: translationModel,
+              sourceLanguage,
+              targetLanguage,
+              promptTemplate: sttConfig.translationPrompt,
+            },
+          }),
+      }).pipe(Effect.provide(SttService.live(sttConfig)))
     }),
 ).pipe(
   Command.withDescription(
-    "Push-to-talk transcription + translation via OpenRouter (model configured in $XDG_CONFIG_HOME/pie/stt.json)",
+    "Push-to-talk transcription + translation via the configured STT provider (default: Codex realtime)",
   ),
 )

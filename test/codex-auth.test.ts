@@ -19,10 +19,13 @@ import {
 } from "../src/stt/codexAuth.js"
 
 const base64UrlEncode = (value: string): string =>
-  Buffer.from(value, "utf8").toString("base64").replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_")
+  Buffer.from(value, "utf8")
+    .toString("base64")
+    .replace(/=+$/, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
 
-const makeJwt = (exp: number): string =>
-  `header.${base64UrlEncode(JSON.stringify({ exp }))}.sig`
+const makeJwt = (exp: number): string => `header.${base64UrlEncode(JSON.stringify({ exp }))}.sig`
 
 const validAuth = (accessToken: string, refreshToken = "r-token"): CodexAuthJson => ({
   OPENAI_API_KEY: null,
@@ -136,9 +139,7 @@ test("ensureFreshCodexAuth returns auth unchanged when not expired", async () =>
     refresh: () => Effect.die("should not be called"),
   }
 
-  const auth = await Effect.runPromise(
-    ensureFreshCodexAuth({ authPath: p, refresher }),
-  )
+  const auth = await Effect.runPromise(ensureFreshCodexAuth({ authPath: p, refresher }))
   assert.strictEqual(auth.tokens.access_token, fresh)
 })
 
@@ -207,7 +208,8 @@ test("ensureFreshCodexAuth propagates permanent refresh failures", async () => {
     refresh: () =>
       Effect.fail(
         new CodexAuthError({
-          message: "Codex token refresh failed with HTTP 401. Run 'codex login' to re-authenticate.",
+          message:
+            "Codex token refresh failed with HTTP 401. Run 'codex login' to re-authenticate.",
         }),
       ),
   }
