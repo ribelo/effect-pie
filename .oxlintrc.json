@@ -116,7 +116,7 @@
   },
   "overrides": [
     {
-      "files": ["src/stt/openrouter.ts"],
+      "files": ["src/stt/openrouter.ts", "src/stt/codexRealtimeService.ts"],
       "rules": {
         "typescript/no-unsafe-type-assertion": "off"
       }
