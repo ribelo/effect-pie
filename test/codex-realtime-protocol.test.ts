@@ -62,7 +62,7 @@ test("buildTranscriptionSessionUpdate selects gpt-realtime-whisper and 24 kHz au
   })
 })
 
-test("buildTranslationSessionUpdate selects gpt-realtime-translate session", () => {
+test("buildTranslationSessionUpdate uses GA translation session payload", () => {
   const payload = buildTranslationSessionUpdate({
     model: "gpt-realtime-translate",
     targetLanguage: "en",
@@ -70,27 +70,18 @@ test("buildTranslationSessionUpdate selects gpt-realtime-translate session", () 
   assert.deepEqual(payload, {
     type: "session.update",
     session: {
-      type: "translation",
-      model: "gpt-realtime-translate",
       audio: {
-        input: { format: { type: "audio/pcm", rate: CODEX_REALTIME_SAMPLE_RATE } },
         output: { language: "en" },
       },
     },
   })
 })
 
-test("buildTranslationSessionUpdate omits output block when target language not provided", () => {
+test("buildTranslationSessionUpdate omits unsupported translation session fields", () => {
   const payload = buildTranslationSessionUpdate({ model: "gpt-realtime-translate" })
   assert.deepEqual(payload, {
     type: "session.update",
-    session: {
-      type: "translation",
-      model: "gpt-realtime-translate",
-      audio: {
-        input: { format: { type: "audio/pcm", rate: CODEX_REALTIME_SAMPLE_RATE } },
-      },
-    },
+    session: {},
   })
 })
 

@@ -61,22 +61,16 @@ export const buildTranslationSessionUpdate = (config: {
   readonly session: unknown
 } => ({
   type: "session.update",
-  session: {
-    type: "translation",
-    model: config.model,
-    audio: {
-      input: {
-        format: { type: "audio/pcm", rate: CODEX_REALTIME_SAMPLE_RATE },
-      },
-      ...(config.targetLanguage !== undefined
-        ? {
+  session:
+    config.targetLanguage === undefined
+      ? {}
+      : {
+          audio: {
             output: {
               language: config.targetLanguage,
             },
-          }
-        : {}),
-    },
-  },
+          },
+        },
 })
 
 export const buildAudioAppend = (
