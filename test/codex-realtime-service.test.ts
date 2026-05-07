@@ -154,6 +154,32 @@ test("runCodexRealtimeSession returns accumulated deltas when no done event arri
   assert.strictEqual(result, "bonjour")
 })
 
+test("runCodexRealtimeSession uses translation audio buffer event names in translation mode", async () => {
+  const fake = await makeFakeConnection()
+  const audio = Stream.fromIterable([pcm16bytes([0, 0])])
+
+  const sessionPromise = Effect.runPromise(
+    runCodexRealtimeSession({
+      sessionUpdate: buildTranslationSessionUpdate({ model: "gpt-realtime-translate" }),
+      mode: "translation",
+      audio,
+      inputSampleRate: 24_000,
+      connection: fake.connection,
+    }),
+  )
+
+  await sleep(10)
+  await fake.pushMessage(
+    JSON.stringify({ type: "conversation.output_transcript.delta", delta: "bonjour" }),
+  )
+  await fake.closeMessages()
+
+  await sessionPromise
+  const sentTypes = fake.sent.map((raw) => JSON.parse(raw).type)
+  assert.ok(sentTypes.includes("session.input_audio_buffer.append"))
+  assert.strictEqual(sentTypes[sentTypes.length - 1], "session.input_audio_buffer.commit")
+})
+
 test("runCodexRealtimeSession fails with typed error on server error event", async () => {
   const fake = await makeFakeConnection()
   const audio = Stream.fromIterable([pcm16bytes([0, 0])])

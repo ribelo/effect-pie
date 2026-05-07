@@ -1,8 +1,8 @@
 import { type Cause, Context, Data, Effect, Layer, Queue, Ref, type Scope, Stream } from "effect"
 
 import {
-  AUDIO_BUFFER_COMMIT,
   buildAudioAppend,
+  buildAudioCommit,
   buildCodexRealtimeUrl,
   buildTranscriptionSessionUpdate,
   buildTranslationSessionUpdate,
@@ -11,6 +11,7 @@ import {
   parseCodexRealtimeEvent,
   resampleS16lePcm,
   resolveCodexRealtimeBaseUrl,
+  type CodexRealtimeMode,
 } from "./codexRealtime.js"
 import { CodexAuthService, type CodexAuthError } from "./codexAuth.js"
 
@@ -43,6 +44,7 @@ const APPEND_CHUNK_SIZE = 32_000
 
 export const runCodexRealtimeSession = (config: {
   readonly sessionUpdate: unknown
+  readonly mode?: CodexRealtimeMode | undefined
   readonly audio: Stream.Stream<Uint8Array>
   readonly inputSampleRate: number
   readonly onDelta?: ((delta: string) => Effect.Effect<void>) | undefined
@@ -50,6 +52,7 @@ export const runCodexRealtimeSession = (config: {
 }): Effect.Effect<string, CodexRealtimeSttError> =>
   Effect.gen(function* () {
     const { connection } = config
+    const mode = config.mode ?? "transcription"
 
     yield* connection.send(encodeJson(config.sessionUpdate))
 
@@ -107,11 +110,11 @@ export const runCodexRealtimeSession = (config: {
         Effect.gen(function* () {
           for (let offset = 0; offset < chunk.length; offset += APPEND_CHUNK_SIZE) {
             const slice = chunk.subarray(offset, Math.min(offset + APPEND_CHUNK_SIZE, chunk.length))
-            yield* connection.send(encodeJson(buildAudioAppend(slice)))
+            yield* connection.send(encodeJson(buildAudioAppend(slice, mode)))
           }
         }),
       ),
-      Effect.flatMap(() => connection.send(encodeJson(AUDIO_BUFFER_COMMIT))),
+      Effect.flatMap(() => connection.send(encodeJson(buildAudioCommit(mode)))),
     )
 
     yield* Effect.all([receive, sendAudio], { concurrency: 2 })
@@ -262,6 +265,7 @@ export const transcribeWithCodexRealtime = (
       })
       return yield* runCodexRealtimeSession({
         sessionUpdate: buildTranscriptionSessionUpdate({ model: config.model }),
+        mode: "transcription",
         audio: config.audio,
         inputSampleRate: config.inputSampleRate,
         ...(config.onDelta !== undefined ? { onDelta: config.onDelta } : {}),
@@ -286,6 +290,7 @@ export const translateWithCodexRealtime = (
           model: config.model,
           ...(config.targetLanguage !== undefined ? { targetLanguage: config.targetLanguage } : {}),
         }),
+        mode: "translation",
         audio: config.audio,
         inputSampleRate: config.inputSampleRate,
         ...(config.onDelta !== undefined ? { onDelta: config.onDelta } : {}),

@@ -81,12 +81,24 @@ export const buildTranslationSessionUpdate = (config: {
 
 export const buildAudioAppend = (
   pcmBytes: Uint8Array,
-): { readonly type: "input_audio_buffer.append"; readonly audio: string } => ({
-  type: "input_audio_buffer.append",
+  mode: CodexRealtimeMode = "transcription",
+): {
+  readonly type: "input_audio_buffer.append" | "session.input_audio_buffer.append"
+  readonly audio: string
+} => ({
+  type: mode === "translation" ? "session.input_audio_buffer.append" : "input_audio_buffer.append",
   audio: Buffer.from(pcmBytes).toString("base64"),
 })
 
 export const AUDIO_BUFFER_COMMIT = { type: "input_audio_buffer.commit" } as const
+
+export const buildAudioCommit = (
+  mode: CodexRealtimeMode = "transcription",
+): {
+  readonly type: "input_audio_buffer.commit" | "session.input_audio_buffer.commit"
+} => ({
+  type: mode === "translation" ? "session.input_audio_buffer.commit" : "input_audio_buffer.commit",
+})
 
 export type CodexRealtimeEvent =
   | { readonly kind: "session"; readonly eventType: string }
@@ -113,12 +125,12 @@ const ErrorEventSchema = Schema.Struct({
   type: Schema.Literal("error"),
   error: Schema.optional(
     Schema.Struct({
-      message: Schema.optional(Schema.String),
-      code: Schema.optional(Schema.String),
-      type: Schema.optional(Schema.String),
+      message: Schema.optional(Schema.NullOr(Schema.String)),
+      code: Schema.optional(Schema.NullOr(Schema.String)),
+      type: Schema.optional(Schema.NullOr(Schema.String)),
     }),
   ),
-  message: Schema.optional(Schema.String),
+  message: Schema.optional(Schema.NullOr(Schema.String)),
 })
 
 const TRANSCRIPT_DELTA_TYPES = new Set<string>([
@@ -181,7 +193,9 @@ export const parseCodexRealtimeEvent = (
       return {
         kind: "error" as const,
         message,
-        ...(err.error?.code !== undefined ? { code: err.error.code } : {}),
+        ...(err.error?.code !== undefined && err.error.code !== null
+          ? { code: err.error.code }
+          : {}),
       }
     }
 

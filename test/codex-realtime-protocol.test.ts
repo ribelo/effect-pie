@@ -101,6 +101,13 @@ test("buildAudioAppend emits input_audio_buffer.append with base64 audio", () =>
   assert.strictEqual(payload.audio, Buffer.from(pcm).toString("base64"))
 })
 
+test("buildAudioAppend emits session.input_audio_buffer.append for translation", () => {
+  const pcm = new Uint8Array([0x01, 0x00, 0xff, 0x7f])
+  const payload = buildAudioAppend(pcm, "translation")
+  assert.strictEqual(payload.type, "session.input_audio_buffer.append")
+  assert.strictEqual(payload.audio, Buffer.from(pcm).toString("base64"))
+})
+
 test("parseCodexRealtimeEvent handles input audio transcription delta", async () => {
   const parsed = await Effect.runPromise(
     parseCodexRealtimeEvent(
@@ -147,6 +154,28 @@ test("parseCodexRealtimeEvent parses server error events with message", async ()
     kind: "error",
     message: "invalid audio format",
     code: "invalid_request_error",
+  })
+})
+
+test("parseCodexRealtimeEvent parses server error events with nullable metadata", async () => {
+  const parsed = await Effect.runPromise(
+    parseCodexRealtimeEvent(
+      JSON.stringify({
+        type: "error",
+        event_id: "event_123",
+        error: {
+          type: "invalid_request_error",
+          code: null,
+          message: "Invalid translation session",
+          param: "session.type",
+          event_id: null,
+        },
+      }),
+    ),
+  )
+  assert.deepEqual(parsed, {
+    kind: "error",
+    message: "Invalid translation session",
   })
 })
 
