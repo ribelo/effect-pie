@@ -120,6 +120,15 @@ test("parseCodexRealtimeEvent handles output_transcript.delta for translations",
   assert.deepEqual(parsed, { kind: "transcriptDelta", delta: "bonjour" })
 })
 
+test("parseCodexRealtimeEvent handles session output transcript deltas for translations", async () => {
+  const parsed = await Effect.runPromise(
+    parseCodexRealtimeEvent(
+      JSON.stringify({ type: "session.output_transcript.delta", delta: "bonjour" }),
+    ),
+  )
+  assert.deepEqual(parsed, { kind: "transcriptDelta", delta: "bonjour" })
+})
+
 test("parseCodexRealtimeEvent handles transcription.completed", async () => {
   const parsed = await Effect.runPromise(
     parseCodexRealtimeEvent(

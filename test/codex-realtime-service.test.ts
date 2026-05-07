@@ -171,20 +171,21 @@ test("runCodexRealtimeSession uses translation audio buffer event names in trans
       mode: "translation",
       audio,
       inputSampleRate: 24_000,
+      translationOutputDrainMillis: 50,
       connection: fake.connection,
     }),
   )
 
-  await sleep(10)
+  await sleep(5)
   await fake.pushMessage(
     JSON.stringify({ type: "conversation.output_transcript.delta", delta: "bonjour" }),
   )
-  await fake.closeMessages()
 
   await sessionPromise
   const sentTypes = fake.sent.map((raw) => JSON.parse(raw).type)
   assert.ok(sentTypes.includes("session.input_audio_buffer.append"))
-  assert.strictEqual(sentTypes[sentTypes.length - 1], "session.input_audio_buffer.commit")
+  assert.strictEqual(sentTypes.includes("input_audio_buffer.commit"), false)
+  assert.strictEqual(sentTypes.includes("session.input_audio_buffer.commit"), false)
 })
 
 test("runCodexRealtimeSession fails with typed error on server error event", async () => {

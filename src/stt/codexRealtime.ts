@@ -86,12 +86,10 @@ export const buildAudioAppend = (
 
 export const AUDIO_BUFFER_COMMIT = { type: "input_audio_buffer.commit" } as const
 
-export const buildAudioCommit = (
-  mode: CodexRealtimeMode = "transcription",
-): {
-  readonly type: "input_audio_buffer.commit" | "session.input_audio_buffer.commit"
+export const buildAudioCommit = (): {
+  readonly type: "input_audio_buffer.commit"
 } => ({
-  type: mode === "translation" ? "session.input_audio_buffer.commit" : "input_audio_buffer.commit",
+  type: "input_audio_buffer.commit",
 })
 
 export type CodexRealtimeEvent =
@@ -131,6 +129,8 @@ const TRANSCRIPT_DELTA_TYPES = new Set<string>([
   "conversation.item.input_audio_transcription.delta",
   "conversation.input_transcript.delta",
   "conversation.output_transcript.delta",
+  "session.input_transcript.delta",
+  "session.output_transcript.delta",
   "response.output_text.delta",
   "response.output_audio_transcript.delta",
 ])

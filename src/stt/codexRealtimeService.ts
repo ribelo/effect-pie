@@ -1,4 +1,15 @@
-import { type Cause, Context, Data, Effect, Layer, Queue, Ref, type Scope, Stream } from "effect"
+import {
+  type Cause,
+  Context,
+  Data,
+  Duration,
+  Effect,
+  Layer,
+  Queue,
+  Ref,
+  type Scope,
+  Stream,
+} from "effect"
 
 import {
   buildAudioAppend,
@@ -48,6 +59,7 @@ export const runCodexRealtimeSession = (config: {
   readonly audio: Stream.Stream<Uint8Array>
   readonly inputSampleRate: number
   readonly onDelta?: ((delta: string) => Effect.Effect<void>) | undefined
+  readonly translationOutputDrainMillis?: number | undefined
   readonly connection: CodexRealtimeConnection
 }): Effect.Effect<string, CodexRealtimeSttError> =>
   Effect.gen(function* () {
@@ -101,7 +113,7 @@ export const runCodexRealtimeSession = (config: {
       Stream.runDrain,
     )
 
-    const sendAudio = config.audio.pipe(
+    const sendAudioChunks = config.audio.pipe(
       Stream.map((chunk) =>
         resampleS16lePcm(chunk, config.inputSampleRate, CODEX_REALTIME_SAMPLE_RATE),
       ),
@@ -114,8 +126,19 @@ export const runCodexRealtimeSession = (config: {
           }
         }),
       ),
-      Effect.flatMap(() => connection.send(encodeJson(buildAudioCommit(mode)))),
     )
+
+    const sendAudio =
+      mode === "translation"
+        ? sendAudioChunks.pipe(
+            Effect.flatMap(() =>
+              Effect.sleep(Duration.millis(config.translationOutputDrainMillis ?? 2_000)),
+            ),
+            Effect.flatMap(() => connection.close),
+          )
+        : sendAudioChunks.pipe(
+            Effect.flatMap(() => connection.send(encodeJson(buildAudioCommit()))),
+          )
 
     yield* Effect.all([receive, sendAudio], { concurrency: 2 })
 
