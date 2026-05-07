@@ -165,6 +165,12 @@ const closeWebSocket = (ws: WebSocket): Effect.Effect<void> =>
     }
   })
 
+export const buildCodexRealtimeHeaders = (
+  accessToken: string,
+): Readonly<Record<string, string>> => ({
+  Authorization: `Bearer ${accessToken}`,
+})
+
 export const bunWebSocketFactory: CodexRealtimeSocketFactory = (config) =>
   Effect.gen(function* () {
     const messageQueue = yield* Queue.unbounded<string, Cause.Done>()
@@ -174,10 +180,7 @@ export const bunWebSocketFactory: CodexRealtimeSocketFactory = (config) =>
       Effect.callback<WebSocket, CodexRealtimeSttError>((resume) => {
         let resolved = false
         const socket = createBunWebSocket(config.url, {
-          headers: {
-            Authorization: `Bearer ${config.accessToken}`,
-            "OpenAI-Beta": "realtime=v1",
-          },
+          headers: buildCodexRealtimeHeaders(config.accessToken),
         })
 
         socket.addEventListener("open", () => {

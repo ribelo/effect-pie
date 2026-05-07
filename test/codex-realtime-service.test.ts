@@ -4,6 +4,7 @@ import type { Cause } from "effect"
 import { Effect, Exit, Queue, Stream } from "effect"
 
 import {
+  buildCodexRealtimeHeaders,
   CodexRealtimeSttError,
   runCodexRealtimeSession,
   type CodexRealtimeConnection,
@@ -54,6 +55,12 @@ const pcm16bytes = (samples: ReadonlyArray<number>): Uint8Array => {
   samples.forEach((s, i) => view.setInt16(i * 2, s, true))
   return bytes
 }
+
+test("buildCodexRealtimeHeaders uses the GA realtime API by omitting the beta header", () => {
+  const headers = buildCodexRealtimeHeaders("token")
+  assert.strictEqual(headers["Authorization"], "Bearer token")
+  assert.strictEqual("OpenAI-Beta" in headers, false)
+})
 
 test("runCodexRealtimeSession sends session.update first, appends audio, then commits", async () => {
   const fake = await makeFakeConnection()
