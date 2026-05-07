@@ -62,7 +62,7 @@ pie/
   - translation model: `gpt-realtime-translate`
   - transcription language: `English`
   - translation source language: `English`
-  - translation target language: `English`
+  - translation target language: `en` for Codex realtime (`openrouter` may use display names in prompts)
   - wakeword dictation trailing silence: `3` seconds
   - wakeword dictation max capture: `120` seconds
   - wakeword dictation speech RMS threshold: `0.01`

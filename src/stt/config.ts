@@ -60,6 +60,80 @@ const SttRuntimeConfigSchema = Schema.Struct({
   translationPrompt: Schema.optional(Schema.String),
 })
 
+const CODEX_REALTIME_TRANSLATION_TARGET_LANGUAGES = new Set([
+  "af",
+  "ar",
+  "az",
+  "be",
+  "bg",
+  "bs",
+  "ca",
+  "cs",
+  "cy",
+  "da",
+  "de",
+  "el",
+  "en",
+  "es",
+  "et",
+  "fa",
+  "fi",
+  "fr",
+  "gl",
+  "he",
+  "hi",
+  "hr",
+  "hu",
+  "hy",
+  "id",
+  "is",
+  "it",
+  "iw",
+  "ja",
+  "kk",
+  "kn",
+  "ko",
+  "lt",
+  "lv",
+  "mi",
+  "mk",
+  "mr",
+  "ms",
+  "ne",
+  "nl",
+  "no",
+  "pl",
+  "pt",
+  "ro",
+  "ru",
+  "sk",
+  "sl",
+  "sr",
+  "sv",
+  "sw",
+  "ta",
+  "th",
+  "tl",
+  "tr",
+  "uk",
+  "ur",
+  "vi",
+  "zh",
+])
+
+const validateProviderConfig = (
+  config: Schema.Schema.Type<typeof SttRuntimeConfigSchema>,
+): string | undefined => {
+  if (
+    config.provider === "codex-realtime" &&
+    !CODEX_REALTIME_TRANSLATION_TARGET_LANGUAGES.has(config.translationTargetLanguage)
+  ) {
+    return `Codex realtime translationTargetLanguage must be a supported language code such as "en" or "pl"; got ${JSON.stringify(config.translationTargetLanguage)}`
+  }
+
+  return undefined
+}
+
 const readPromptFile = (promptPath: string): Effect.Effect<string, SttConfigError> =>
   Effect.tryPromise({
     try: async () => {
@@ -154,6 +228,13 @@ export const loadSttRuntimeConfig = Effect.fn("pie/stt/config.loadSttRuntimeConf
         }),
     ),
   )
+
+  const providerConfigError = validateProviderConfig(parsed)
+  if (providerConfigError !== undefined) {
+    return yield* new SttConfigError({
+      message: `Invalid STT config at ${configPath}: ${providerConfigError}`,
+    })
+  }
 
   const transcriptionPrompt = yield* readPromptFile(transcriptionPromptPath)
   const translationPrompt = yield* readPromptFile(translationPromptPath)

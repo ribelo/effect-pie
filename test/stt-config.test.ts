@@ -18,7 +18,7 @@ const writeValidCodexConfig = async (configPath: string): Promise<void> => {
         translationModel: "gpt-realtime-translate",
         transcriptionLanguage: "English",
         translationSourceLanguage: "English",
-        translationTargetLanguage: "English",
+        translationTargetLanguage: "en",
         wakewordEnabled: true,
         wakewordDictationSilenceSeconds: 3,
         wakewordDictationMaxSeconds: 120,
@@ -65,7 +65,7 @@ test("loadSttRuntimeConfig loads Codex realtime config with gpt-realtime-* model
   assert.strictEqual(config.translationModel, "gpt-realtime-translate")
   assert.strictEqual(config.transcriptionLanguage, "English")
   assert.strictEqual(config.translationSourceLanguage, "English")
-  assert.strictEqual(config.translationTargetLanguage, "English")
+  assert.strictEqual(config.translationTargetLanguage, "en")
   assert.strictEqual(config.wakewordEnabled, true)
   assert.strictEqual(config.wakewordDictationSilenceSeconds, 3)
   assert.strictEqual(config.wakewordDictationMaxSeconds, 120)
@@ -103,6 +103,37 @@ test("loadSttRuntimeConfig preserves provider=openrouter for future use", async 
   assert.strictEqual(config.transcriptionModel, "mistralai/voxtral-small-24b-2507")
   assert.strictEqual(config.translationModel, "google/gemini-2.5-flash")
   assert.strictEqual(config.wakewordEnabled, false)
+})
+
+test("loadSttRuntimeConfig rejects Codex realtime translation target display names", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "pie-stt-"))
+  const configPath = path.join(tempDir, "stt.json")
+
+  await writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        schemaVersion: 2,
+        provider: "codex-realtime",
+        transcriptionModel: "gpt-realtime-whisper",
+        translationModel: "gpt-realtime-translate",
+        transcriptionLanguage: "Polish",
+        translationSourceLanguage: "Polish",
+        translationTargetLanguage: "English",
+        wakewordEnabled: false,
+        wakewordDictationSilenceSeconds: 3,
+        wakewordDictationMaxSeconds: 120,
+        wakewordDictationSpeechRmsThreshold: 0.01,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  )
+  await writeValidPrompts(configPath)
+
+  const exit = await Effect.runPromiseExit(loadSttRuntimeConfig(configPath))
+  assert.strictEqual(Exit.isFailure(exit), true)
 })
 
 test("loadSttRuntimeConfig rejects schemaVersion 1 nested openrouter block", async () => {
@@ -150,7 +181,7 @@ test("loadSttRuntimeConfig rejects config missing provider field", async () => {
         translationModel: "gpt-realtime-translate",
         transcriptionLanguage: "English",
         translationSourceLanguage: "English",
-        translationTargetLanguage: "English",
+        translationTargetLanguage: "en",
         wakewordEnabled: true,
         wakewordDictationSilenceSeconds: 3,
         wakewordDictationMaxSeconds: 120,
@@ -235,7 +266,7 @@ test("loadSttRuntimeConfig preserves wakewordEnabled false", async () => {
         translationModel: "gpt-realtime-translate",
         transcriptionLanguage: "English",
         translationSourceLanguage: "English",
-        translationTargetLanguage: "English",
+        translationTargetLanguage: "en",
         wakewordEnabled: false,
         wakewordDictationSilenceSeconds: 3,
         wakewordDictationMaxSeconds: 120,
@@ -266,7 +297,7 @@ test("loadSttRuntimeConfig rejects invalid wakewordEnabled", async () => {
         translationModel: "gpt-realtime-translate",
         transcriptionLanguage: "English",
         translationSourceLanguage: "English",
-        translationTargetLanguage: "English",
+        translationTargetLanguage: "en",
         wakewordEnabled: "yes",
         wakewordDictationSilenceSeconds: 3,
         wakewordDictationMaxSeconds: 120,
