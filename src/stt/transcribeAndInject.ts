@@ -3,6 +3,7 @@ import { Console, Effect, Ref, type Stream } from "effect"
 import type { DesktopSession, SessionDetectionError } from "../desktop/session.js"
 import {
   injectTranscript,
+  normalizeTextDeltaForInjection,
   type InjectionDiagnostics,
   TextInjectionBackendService,
   type TextInjectionError,
@@ -142,7 +143,8 @@ export const transcribeStreamAndInject = Effect.fn(
       ? undefined
       : (delta: string) =>
           Effect.gen(function* () {
-            if (delta.length === 0) {
+            const normalizedDelta = normalizeTextDeltaForInjection(delta)
+            if (normalizedDelta.length === 0) {
               return
             }
             const injectionError = yield* Ref.get(injectionErrorRef)
@@ -153,13 +155,14 @@ export const transcribeStreamAndInject = Effect.fn(
             const streamedChars = yield* Ref.get(streamedCharsRef)
             if (streamedChars === 0) {
               config.diagnostics?.setState("injection")
-              config.diagnostics?.injectionStart(delta.length)
+              config.diagnostics?.injectionStart(normalizedDelta.length)
             }
 
-            yield* backend.typeText(delta).pipe(
+            yield* backend.typeText(normalizedDelta).pipe(
               Effect.matchEffect({
                 onFailure: (cause) => Ref.set(injectionErrorRef, cause),
-                onSuccess: () => Ref.update(streamedCharsRef, (current) => current + delta.length),
+                onSuccess: () =>
+                  Ref.update(streamedCharsRef, (current) => current + normalizedDelta.length),
               }),
             )
           })
@@ -205,7 +208,7 @@ export const transcribeStreamAndInject = Effect.fn(
 
   const streamedChars = yield* Ref.get(streamedCharsRef)
   if (streamedChars > 0) {
-    const trimmedText = text.trim()
+    const trimmedText = normalizeTextDeltaForInjection(text).trim()
     if (trimmedText.length > 0) {
       yield* Console.log(`[${config.logPrefix}] ${trimmedText}`)
     }

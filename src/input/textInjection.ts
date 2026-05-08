@@ -44,10 +44,10 @@ export const chooseTextInjectionBackend = (
 }
 
 export const normalizeTextForInjection = (text: string): string =>
-  text
-    .replace(/\r\n/g, "\n")
-    .replace(/[\r\u2028\u2029]/g, "\n")
-    .trim()
+  normalizeTextDeltaForInjection(text).trim()
+
+export const normalizeTextDeltaForInjection = (text: string): string =>
+  text.replace(/\r\n/g, "\n").replace(/[ \t]*[\r\n\u2028\u2029]+[ \t]*/g, " ")
 
 export class TextInjectionBackendService extends Context.Service<
   TextInjectionBackendService,
@@ -122,27 +122,27 @@ export const injectTranscript = Effect.fn("pie/input/textInjection.injectTranscr
     TextInjectionError | SessionDetectionError,
     DesktopSession | TextInjectionBackendService
   > {
-    const trimmedText = config.text.trim()
-    if (trimmedText.length === 0) {
+    const normalizedText = normalizeTextForInjection(config.text)
+    if (normalizedText.length === 0) {
       yield* Console.log(`[${config.logPrefix}] Ignored empty transcript`)
       config.diagnostics?.setState("idle")
       return undefined
     }
 
-    yield* Console.log(`[${config.logPrefix}] ${trimmedText}`)
+    yield* Console.log(`[${config.logPrefix}] ${normalizedText}`)
 
     if (config.inject === false) {
       return undefined
     }
 
     yield* Console.log(`[${config.logPrefix}] Will type (start)`)
-    yield* Console.log(trimmedText)
+    yield* Console.log(normalizedText)
     yield* Console.log(`[${config.logPrefix}] Will type (end)`)
 
     config.diagnostics?.setState("injection")
-    config.diagnostics?.injectionStart(trimmedText.length)
+    config.diagnostics?.injectionStart(normalizedText.length)
 
-    const result = yield* typeTextInFocusedApp(trimmedText).pipe(
+    const result = yield* typeTextInFocusedApp(normalizedText).pipe(
       Effect.tapError((cause) =>
         Effect.sync(() => {
           config.diagnostics?.injectionFailure(
