@@ -188,6 +188,37 @@ test("runCodexRealtimeSession uses translation audio buffer event names in trans
   assert.strictEqual(sentTypes.includes("session.input_audio_buffer.commit"), false)
 })
 
+test("runCodexRealtimeSession commits conversation audio before creating text response", async () => {
+  const fake = await makeFakeConnection()
+  const audio = Stream.fromIterable([pcm16bytes([0, 0])])
+
+  const sessionPromise = Effect.runPromise(
+    runCodexRealtimeSession({
+      sessionUpdate: { type: "session.update", session: {} },
+      responseCreate: { type: "response.create", response: { output_modalities: ["text"] } },
+      mode: "conversation",
+      audio,
+      inputSampleRate: 24_000,
+      connection: fake.connection,
+    }),
+  )
+
+  await sleep(10)
+  await fake.pushMessage(JSON.stringify({ type: "response.output_text.delta", delta: "hello" }))
+  await fake.pushMessage(JSON.stringify({ type: "response.done" }))
+
+  const result = await sessionPromise
+  assert.strictEqual(result, "hello")
+
+  const sentTypes = fake.sent.map((raw) => JSON.parse(raw).type)
+  assert.deepEqual(sentTypes, [
+    "session.update",
+    "input_audio_buffer.append",
+    "input_audio_buffer.commit",
+    "response.create",
+  ])
+})
+
 test("runCodexRealtimeSession fails with typed error on server error event", async () => {
   const fake = await makeFakeConnection()
   const audio = Stream.fromIterable([pcm16bytes([0, 0])])

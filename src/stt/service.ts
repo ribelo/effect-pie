@@ -2,6 +2,7 @@ import { Context, Data, Effect, Layer, Stream } from "effect"
 
 import { CodexRealtimeSttService, type CodexRealtimeSttError } from "./codexRealtimeService.js"
 import { CodexAuthService, type CodexAuthError } from "./codexAuth.js"
+import { CODEX_CONVERSATION_TRANSLATION_MODEL } from "./codexRealtime.js"
 import { OpenRouterSttService, type OpenRouterSttError } from "./openrouter.js"
 import type { SttProvider, SttRuntimeConfig } from "./config.js"
 
@@ -94,7 +95,9 @@ export class SttService extends Context.Service<
                 model: config.model,
                 inputSampleRate: config.sampleRate,
                 audio: Stream.succeed(config.pcmBytes),
+                sourceLanguage: config.sourceLanguage,
                 targetLanguage: config.targetLanguage,
+                promptTemplate: config.promptTemplate,
                 ...(config.onDelta !== undefined ? { onDelta: config.onDelta } : {}),
               }),
             transcribeStream: (config) =>
@@ -105,13 +108,30 @@ export class SttService extends Context.Service<
                 ...(config.onDelta !== undefined ? { onDelta: config.onDelta } : {}),
               }),
             translateStream: (config) =>
-              codex.translate({
-                model: config.model,
-                inputSampleRate: config.sampleRate,
-                audio: config.audio,
-                targetLanguage: config.targetLanguage,
-                ...(config.onDelta !== undefined ? { onDelta: config.onDelta } : {}),
-              }),
+              config.model === CODEX_CONVERSATION_TRANSLATION_MODEL
+                ? config.audio.pipe(
+                    Stream.runCollect,
+                    Effect.map(concatAudioChunks),
+                    Effect.flatMap((pcmBytes) =>
+                      codex.translate({
+                        model: config.model,
+                        inputSampleRate: config.sampleRate,
+                        audio: Stream.succeed(pcmBytes),
+                        sourceLanguage: config.sourceLanguage,
+                        targetLanguage: config.targetLanguage,
+                        promptTemplate: config.promptTemplate,
+                      }),
+                    ),
+                  )
+                : codex.translate({
+                    model: config.model,
+                    inputSampleRate: config.sampleRate,
+                    audio: config.audio,
+                    sourceLanguage: config.sourceLanguage,
+                    targetLanguage: config.targetLanguage,
+                    promptTemplate: config.promptTemplate,
+                    ...(config.onDelta !== undefined ? { onDelta: config.onDelta } : {}),
+                  }),
           })
         }
 

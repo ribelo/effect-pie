@@ -5,6 +5,8 @@ import { Effect, Exit } from "effect"
 import {
   buildAudioAppend,
   buildCodexRealtimeUrl,
+  buildConversationTranslationResponseCreate,
+  buildConversationTranslationSessionUpdate,
   buildTranscriptionSessionUpdate,
   buildTranslationSessionUpdate,
   CODEX_REALTIME_SAMPLE_RATE,
@@ -24,6 +26,11 @@ test("buildCodexRealtimeUrl targets /v1/realtime/translations for translation", 
     url,
     "wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate",
   )
+})
+
+test("buildCodexRealtimeUrl targets /v1/realtime for conversation", () => {
+  const url = buildCodexRealtimeUrl({ mode: "conversation", model: "gpt-realtime-2" })
+  assert.strictEqual(url, "wss://api.openai.com/v1/realtime?model=gpt-realtime-2")
 })
 
 test("buildCodexRealtimeUrl supports custom base url override", () => {
@@ -85,6 +92,41 @@ test("buildTranslationSessionUpdate omits unsupported translation session fields
   })
 })
 
+test("buildConversationTranslationSessionUpdate configures text-only realtime session", () => {
+  const payload = buildConversationTranslationSessionUpdate({
+    model: "gpt-realtime-2",
+    prompt: "Translate Polish to English.",
+  })
+  assert.deepEqual(payload, {
+    type: "session.update",
+    session: {
+      type: "realtime",
+      model: "gpt-realtime-2",
+      output_modalities: ["text"],
+      instructions: "Translate Polish to English.",
+      audio: {
+        input: {
+          format: { type: "audio/pcm", rate: CODEX_REALTIME_SAMPLE_RATE },
+          turn_detection: null,
+        },
+      },
+    },
+  })
+})
+
+test("buildConversationTranslationResponseCreate requests text output", () => {
+  const payload = buildConversationTranslationResponseCreate({
+    prompt: "Translate Polish to English.",
+  })
+  assert.deepEqual(payload, {
+    type: "response.create",
+    response: {
+      output_modalities: ["text"],
+      instructions: "Translate Polish to English.",
+    },
+  })
+})
+
 test("buildAudioAppend emits input_audio_buffer.append with base64 audio", () => {
   const pcm = new Uint8Array([0x01, 0x00, 0xff, 0x7f])
   const payload = buildAudioAppend(pcm)
@@ -139,6 +181,25 @@ test("parseCodexRealtimeEvent handles transcription.completed", async () => {
     ),
   )
   assert.deepEqual(parsed, { kind: "transcriptDone", transcript: "hello world" })
+})
+
+test("parseCodexRealtimeEvent handles response output text done", async () => {
+  const parsed = await Effect.runPromise(
+    parseCodexRealtimeEvent(
+      JSON.stringify({
+        type: "response.output_text.done",
+        text: "hello world",
+      }),
+    ),
+  )
+  assert.deepEqual(parsed, { kind: "transcriptDone", transcript: "hello world" })
+})
+
+test("parseCodexRealtimeEvent handles response.done", async () => {
+  const parsed = await Effect.runPromise(
+    parseCodexRealtimeEvent(JSON.stringify({ type: "response.done" })),
+  )
+  assert.deepEqual(parsed, { kind: "responseDone" })
 })
 
 test("parseCodexRealtimeEvent parses server error events with message", async () => {

@@ -7,8 +7,9 @@ export const CODEX_REALTIME_BASE_URL_OVERRIDE_ENV = "CODEX_REALTIME_BASE_URL_OVE
 
 export const DEFAULT_CODEX_TRANSCRIPTION_MODEL = "gpt-realtime-whisper"
 export const DEFAULT_CODEX_TRANSLATION_MODEL = "gpt-realtime-translate"
+export const CODEX_CONVERSATION_TRANSLATION_MODEL = "gpt-realtime-2"
 
-export type CodexRealtimeMode = "transcription" | "translation"
+export type CodexRealtimeMode = "transcription" | "translation" | "conversation"
 
 export class CodexRealtimeProtocolError extends Data.TaggedError("CodexRealtimeProtocolError")<{
   readonly message: string
@@ -30,10 +31,45 @@ export const buildCodexRealtimeUrl = (config: {
   readonly baseUrl?: string | undefined
 }): string => {
   const base = (config.baseUrl ?? CODEX_REALTIME_BASE_URL).replace(/\/+$/, "")
-  const pathPart = config.mode === "transcription" ? "/v1/realtime" : "/v1/realtime/translations"
+  const pathPart = config.mode === "translation" ? "/v1/realtime/translations" : "/v1/realtime"
   const query = new URLSearchParams({ model: config.model })
   return `${base}${pathPart}?${query.toString()}`
 }
+
+export const buildConversationTranslationSessionUpdate = (config: {
+  readonly model: string
+  readonly prompt: string
+}): {
+  readonly type: "session.update"
+  readonly session: unknown
+} => ({
+  type: "session.update",
+  session: {
+    type: "realtime",
+    model: config.model,
+    output_modalities: ["text"],
+    instructions: config.prompt,
+    audio: {
+      input: {
+        format: { type: "audio/pcm", rate: CODEX_REALTIME_SAMPLE_RATE },
+        turn_detection: null,
+      },
+    },
+  },
+})
+
+export const buildConversationTranslationResponseCreate = (config: {
+  readonly prompt: string
+}): {
+  readonly type: "response.create"
+  readonly response: unknown
+} => ({
+  type: "response.create",
+  response: {
+    output_modalities: ["text"],
+    instructions: config.prompt,
+  },
+})
 
 export const buildTranscriptionSessionUpdate = (config: {
   readonly model: string
@@ -96,6 +132,7 @@ export type CodexRealtimeEvent =
   | { readonly kind: "session"; readonly eventType: string }
   | { readonly kind: "transcriptDelta"; readonly delta: string }
   | { readonly kind: "transcriptDone"; readonly transcript: string }
+  | { readonly kind: "responseDone" }
   | { readonly kind: "error"; readonly message: string; readonly code?: string | undefined }
   | { readonly kind: "other"; readonly eventType: string }
 
@@ -110,7 +147,8 @@ const DeltaEventSchema = Schema.Struct({
 
 const TranscriptDoneSchema = Schema.Struct({
   type: Schema.String,
-  transcript: Schema.String,
+  transcript: Schema.optional(Schema.String),
+  text: Schema.optional(Schema.String),
 })
 
 const ErrorEventSchema = Schema.Struct({
@@ -138,6 +176,7 @@ const TRANSCRIPT_DELTA_TYPES = new Set<string>([
 const TRANSCRIPT_DONE_TYPES = new Set<string>([
   "conversation.item.input_audio_transcription.completed",
   "response.output_audio_transcript.done",
+  "response.output_text.done",
   "conversation.output_transcript.done",
 ])
 
@@ -216,7 +255,18 @@ export const parseCodexRealtimeEvent = (
             }),
         ),
       )
-      return { kind: "transcriptDone" as const, transcript: done.transcript }
+      const transcript = done.transcript ?? done.text
+      if (transcript === undefined) {
+        return yield* new CodexRealtimeProtocolError({
+          message: "Codex realtime done event missing transcript text",
+          eventType,
+        })
+      }
+      return { kind: "transcriptDone" as const, transcript }
+    }
+
+    if (eventType === "response.done") {
+      return { kind: "responseDone" as const }
     }
 
     if (SESSION_EVENT_TYPES.has(eventType)) {

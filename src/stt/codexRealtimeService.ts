@@ -15,8 +15,11 @@ import {
   buildAudioAppend,
   buildAudioCommit,
   buildCodexRealtimeUrl,
+  buildConversationTranslationResponseCreate,
+  buildConversationTranslationSessionUpdate,
   buildTranscriptionSessionUpdate,
   buildTranslationSessionUpdate,
+  CODEX_CONVERSATION_TRANSLATION_MODEL,
   CODEX_REALTIME_SAMPLE_RATE,
   type CodexRealtimeEvent,
   parseCodexRealtimeEvent,
@@ -46,10 +49,15 @@ export type CodexRealtimeTranscribeConfig = {
 }
 
 export type CodexRealtimeTranslateConfig = CodexRealtimeTranscribeConfig & {
+  readonly sourceLanguage: string
   readonly targetLanguage?: string | undefined
+  readonly promptTemplate: string
 }
 
 const encodeJson = (value: unknown): string => JSON.stringify(value)
+
+const renderTemplate = (template: string, variables: Readonly<Record<string, string>>): string =>
+  template.replace(/\{\{(\w+)\}\}/g, (_, key: string) => variables[key] ?? "")
 
 const APPEND_CHUNK_SIZE = 32_000
 
@@ -60,6 +68,7 @@ export const runCodexRealtimeSession = (config: {
   readonly inputSampleRate: number
   readonly onDelta?: ((delta: string) => Effect.Effect<void>) | undefined
   readonly translationOutputDrainMillis?: number | undefined
+  readonly responseCreate?: unknown
   readonly connection: CodexRealtimeConnection
 }): Effect.Effect<string, CodexRealtimeSttError> =>
   Effect.gen(function* () {
@@ -107,6 +116,9 @@ export const runCodexRealtimeSession = (config: {
             yield* Ref.set(finalRef, event.transcript)
             return true
           }
+          if (event.kind === "responseDone") {
+            return true
+          }
           return false
         }),
       ),
@@ -138,6 +150,11 @@ export const runCodexRealtimeSession = (config: {
           )
         : sendAudioChunks.pipe(
             Effect.flatMap(() => connection.send(encodeJson(buildAudioCommit()))),
+            Effect.flatMap(() =>
+              config.responseCreate === undefined
+                ? Effect.void
+                : connection.send(encodeJson(config.responseCreate)),
+            ),
           )
 
     yield* Effect.all([receive, sendAudio], { concurrency: 2 })
@@ -269,7 +286,7 @@ export const bunWebSocketFactory: CodexRealtimeSocketFactory = (config) =>
   })
 
 const makeRealUrl = (config: {
-  readonly mode: "transcription" | "translation"
+  readonly mode: "transcription" | "translation" | "conversation"
   readonly model: string
 }): string =>
   buildCodexRealtimeUrl({
@@ -307,6 +324,29 @@ export const translateWithCodexRealtime = (
 ): Effect.Effect<string, CodexRealtimeSttError> =>
   Effect.scoped(
     Effect.gen(function* () {
+      const prompt = renderTemplate(config.promptTemplate, {
+        source_language: config.sourceLanguage,
+        target_language: config.targetLanguage ?? "English",
+      })
+
+      if (config.model === CODEX_CONVERSATION_TRANSLATION_MODEL) {
+        const connection = yield* factory({
+          url: makeRealUrl({ mode: "conversation", model: config.model }),
+          accessToken,
+        })
+        return yield* runCodexRealtimeSession({
+          sessionUpdate: buildConversationTranslationSessionUpdate({
+            model: config.model,
+            prompt,
+          }),
+          responseCreate: buildConversationTranslationResponseCreate({ prompt }),
+          mode: "conversation",
+          audio: config.audio,
+          inputSampleRate: config.inputSampleRate,
+          connection,
+        })
+      }
+
       const connection = yield* factory({
         url: makeRealUrl({ mode: "translation", model: config.model }),
         accessToken,

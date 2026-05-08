@@ -59,10 +59,10 @@ pie/
 - STT model and language routing for assistant, `ptt-transcribe`, `ptt-translate`, and `stt-interactive` is configured in `$XDG_CONFIG_HOME/pie/stt.json` using schema version 2. The default provider is `codex-realtime`, authenticated from `CODEX_HOME/auth.json` when `CODEX_HOME` is set or `~/.codex/auth.json` otherwise. Codex realtime uses authenticated WebSockets; OpenRouter remains available only when `provider` is explicitly set to `openrouter`.
   - provider: `codex-realtime`
   - transcription model: `gpt-realtime-whisper`
-  - translation model: `gpt-realtime-translate`
+  - translation model: `gpt-realtime-2` for whole-clip PTT translation, or `gpt-realtime-translate` for continuous interpreter mode
   - transcription language: `English`
   - translation source language: `English`
-  - translation target language: `en` for Codex realtime (`openrouter` may use display names in prompts)
+  - translation target language: `English` for `gpt-realtime-2` prompt-based translation, or `en` for `gpt-realtime-translate`
   - wakeword dictation trailing silence: `3` seconds
   - wakeword dictation max capture: `120` seconds
   - wakeword dictation speech RMS threshold: `0.01`

@@ -136,6 +136,38 @@ test("loadSttRuntimeConfig rejects Codex realtime translation target display nam
   assert.strictEqual(Exit.isFailure(exit), true)
 })
 
+test("loadSttRuntimeConfig allows display-name targets for Codex conversation translation", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "pie-stt-"))
+  const configPath = path.join(tempDir, "stt.json")
+
+  await writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        schemaVersion: 2,
+        provider: "codex-realtime",
+        transcriptionModel: "gpt-realtime-whisper",
+        translationModel: "gpt-realtime-2",
+        transcriptionLanguage: "Polish",
+        translationSourceLanguage: "Polish",
+        translationTargetLanguage: "English",
+        wakewordEnabled: false,
+        wakewordDictationSilenceSeconds: 3,
+        wakewordDictationMaxSeconds: 120,
+        wakewordDictationSpeechRmsThreshold: 0.01,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  )
+  await writeValidPrompts(configPath)
+
+  const config = await Effect.runPromise(loadSttRuntimeConfig(configPath))
+  assert.strictEqual(config.translationModel, "gpt-realtime-2")
+  assert.strictEqual(config.translationTargetLanguage, "English")
+})
+
 test("loadSttRuntimeConfig rejects schemaVersion 1 nested openrouter block", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "pie-stt-"))
   const configPath = path.join(tempDir, "stt.json")

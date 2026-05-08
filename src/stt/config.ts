@@ -4,6 +4,7 @@ import * as path from "node:path"
 
 import { EFFECT_PI_CONFIG_DIR } from "../paths.js"
 import { isRecord } from "../utils/isRecord.js"
+import { DEFAULT_CODEX_TRANSLATION_MODEL } from "./codexRealtime.js"
 
 export const STT_CONFIG_PATH = path.join(EFFECT_PI_CONFIG_DIR, "stt.json")
 
@@ -126,6 +127,7 @@ const validateProviderConfig = (
 ): string | undefined => {
   if (
     config.provider === "codex-realtime" &&
+    config.translationModel === DEFAULT_CODEX_TRANSLATION_MODEL &&
     !CODEX_REALTIME_TRANSLATION_TARGET_LANGUAGES.has(config.translationTargetLanguage)
   ) {
     return `Codex realtime translationTargetLanguage must be a supported language code such as "en" or "pl"; got ${JSON.stringify(config.translationTargetLanguage)}`

@@ -7,7 +7,7 @@
  * prints transcript deltas as they arrive. Does NOT run as part of `bun run gate`.
  *
  * Usage:
- *   bun run scripts/codex-realtime-smoke.ts --file path/to/audio.wav [--mode transcription|translation] [--target-language en]
+ *   bun run scripts/codex-realtime-smoke.ts --file path/to/audio.wav [--mode transcription|translation] [--target-language English]
  */
 import { Effect, Stream } from "effect"
 import * as fs from "node:fs/promises"
@@ -28,6 +28,7 @@ type Args = {
   readonly file: string
   readonly mode: "transcription" | "translation"
   readonly sampleRate: number
+  readonly sourceLanguage: string
   readonly targetLanguage: string | undefined
   readonly model: string | undefined
 }
@@ -58,6 +59,7 @@ const parseArgs = (argv: ReadonlyArray<string>): Args => {
     file,
     mode,
     sampleRate: Number.parseInt(args.get("sample-rate") ?? "24000", 10),
+    sourceLanguage: args.get("source-language") ?? "source language",
     targetLanguage: args.get("target-language"),
     model: args.get("model"),
   }
@@ -115,6 +117,9 @@ const main = async (): Promise<void> => {
       inputSampleRate: args.sampleRate,
       audio,
       onDelta,
+      sourceLanguage: args.sourceLanguage,
+      promptTemplate:
+        "Translate the spoken audio from {{source_language}} to {{target_language}}. Return only the translation.",
       ...(args.targetLanguage !== undefined ? { targetLanguage: args.targetLanguage } : {}),
     }),
   )
