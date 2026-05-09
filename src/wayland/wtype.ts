@@ -1,5 +1,6 @@
 import { Data, Effect } from "effect"
 
+import { normalizeTextForTypingBackend } from "../input/textNormalization.js"
 import { findExecutable, runExternalTool } from "../utils/subprocess.js"
 
 export class WtypeError extends Data.TaggedError("WtypeError")<{
@@ -207,6 +208,11 @@ export const typeTextWithWtype = Effect.fn("pie/wayland/wtype.typeTextWithWtype"
     readonly delayMs?: number
   },
 ): Effect.fn.Return<void, WtypeError> {
+  const normalizedText = normalizeTextForTypingBackend(text)
+  if (normalizedText.length === 0) {
+    return
+  }
+
   const wtypeExecutable = yield* findWtypeExecutable
   const mode = options?.mode ?? (yield* resolveWtypeInjectionMode())
   const directCommandTimeoutMs = yield* resolveCommandTimeoutMs(
@@ -218,10 +224,10 @@ export const typeTextWithWtype = Effect.fn("pie/wayland/wtype.typeTextWithWtype"
     DEFAULT_CLIPBOARD_COMMAND_TIMEOUT_MS,
   )
 
-  if (!shouldAttemptClipboardPaste(mode, text)) {
+  if (!shouldAttemptClipboardPaste(mode, normalizedText)) {
     return yield* typeTextWithWtypeDirect(
       wtypeExecutable,
-      text,
+      normalizedText,
       directCommandTimeoutMs,
       options?.delayMs,
     )
@@ -231,7 +237,7 @@ export const typeTextWithWtype = Effect.fn("pie/wayland/wtype.typeTextWithWtype"
   if (wlCopyExecutable === undefined) {
     return yield* typeTextWithWtypeDirect(
       wtypeExecutable,
-      text,
+      normalizedText,
       directCommandTimeoutMs,
       options?.delayMs,
     )
@@ -254,11 +260,16 @@ export const typeTextWithWtype = Effect.fn("pie/wayland/wtype.typeTextWithWtype"
     wtypeExecutable,
     wlCopyExecutable,
     previousClipboard,
-    text,
+    text: normalizedText,
     commandTimeoutMs: clipboardCommandTimeoutMs,
   }).pipe(
     Effect.catch(() =>
-      typeTextWithWtypeDirect(wtypeExecutable, text, directCommandTimeoutMs, options?.delayMs),
+      typeTextWithWtypeDirect(
+        wtypeExecutable,
+        normalizedText,
+        directCommandTimeoutMs,
+        options?.delayMs,
+      ),
     ),
   )
 })

@@ -136,6 +136,66 @@ test("typeTextWithWtype falls back to direct typing when clipboard copy hangs", 
   }
 })
 
+test("typeTextWithWtype collapses trailing translation newlines before direct typing", async () => {
+  const originalWhich = Bun.which
+  const originalSpawn = Bun.spawn
+  const spawned: Array<ReadonlyArray<string>> = []
+
+  Bun.which = ((name: string) => (name === "wtype" ? "/bin/wtype" : null)) as typeof Bun.which
+  Bun.spawn = ((command: Array<string> | { readonly cmd: Array<string> }) => {
+    const commandArgs = Array.isArray(command) ? command : command.cmd
+    spawned.push(commandArgs)
+
+    return {
+      exited: Promise.resolve(0),
+      stdout: null,
+      stderr: null,
+      kill: () => undefined,
+    }
+  }) as unknown as typeof Bun.spawn
+
+  try {
+    await Effect.runPromise(typeTextWithWtype("Translated response\n", { mode: "direct" }))
+
+    assert.deepStrictEqual(spawned.at(-1), ["/bin/wtype", "--", "Translated response"])
+  } finally {
+    Bun.which = originalWhich
+    Bun.spawn = originalSpawn
+  }
+})
+
+test("typeTextWithWtype preserves streamed delta boundary spaces", async () => {
+  const originalWhich = Bun.which
+  const originalSpawn = Bun.spawn
+  const spawned: Array<ReadonlyArray<string>> = []
+
+  Bun.which = ((name: string) => (name === "wtype" ? "/bin/wtype" : null)) as typeof Bun.which
+  Bun.spawn = ((command: Array<string> | { readonly cmd: Array<string> }) => {
+    const commandArgs = Array.isArray(command) ? command : command.cmd
+    spawned.push(commandArgs)
+
+    return {
+      exited: Promise.resolve(0),
+      stdout: null,
+      stderr: null,
+      kill: () => undefined,
+    }
+  }) as unknown as typeof Bun.spawn
+
+  try {
+    await Effect.runPromise(typeTextWithWtype("hello ", { mode: "direct" }))
+    await Effect.runPromise(typeTextWithWtype(" world", { mode: "direct" }))
+
+    assert.deepStrictEqual(
+      spawned.map((args) => args.at(-1)),
+      ["hello ", " world"],
+    )
+  } finally {
+    Bun.which = originalWhich
+    Bun.spawn = originalSpawn
+  }
+})
+
 test("typeTextWithWtype rejects command timeout values above the timer limit", async () => {
   const originalWhich = Bun.which
   const originalSpawn = Bun.spawn

@@ -20,3 +20,69 @@ test("typeTextWithXdotool reports missing xdotool as a typed failure", async () 
     Bun.which = originalWhich
   }
 })
+
+test("typeTextWithXdotool collapses trailing translation newlines before typing", async () => {
+  const originalWhich = Bun.which
+  const originalSpawn = Bun.spawn
+  const spawned: Array<ReadonlyArray<string>> = []
+
+  Bun.which = ((name: string) => (name === "xdotool" ? "/bin/xdotool" : null)) as typeof Bun.which
+  Bun.spawn = ((command: Array<string> | { readonly cmd: Array<string> }) => {
+    const commandArgs = Array.isArray(command) ? command : command.cmd
+    spawned.push(commandArgs)
+
+    return {
+      exited: Promise.resolve(0),
+      stdout: null,
+      stderr: null,
+      kill: () => undefined,
+    }
+  }) as unknown as typeof Bun.spawn
+
+  try {
+    await Effect.runPromise(typeTextWithXdotool("Translated response\n"))
+
+    assert.deepStrictEqual(spawned.at(-1), [
+      "/bin/xdotool",
+      "type",
+      "--clearmodifiers",
+      "--",
+      "Translated response",
+    ])
+  } finally {
+    Bun.which = originalWhich
+    Bun.spawn = originalSpawn
+  }
+})
+
+test("typeTextWithXdotool preserves streamed delta boundary spaces", async () => {
+  const originalWhich = Bun.which
+  const originalSpawn = Bun.spawn
+  const spawned: Array<ReadonlyArray<string>> = []
+
+  Bun.which = ((name: string) => (name === "xdotool" ? "/bin/xdotool" : null)) as typeof Bun.which
+  Bun.spawn = ((command: Array<string> | { readonly cmd: Array<string> }) => {
+    const commandArgs = Array.isArray(command) ? command : command.cmd
+    spawned.push(commandArgs)
+
+    return {
+      exited: Promise.resolve(0),
+      stdout: null,
+      stderr: null,
+      kill: () => undefined,
+    }
+  }) as unknown as typeof Bun.spawn
+
+  try {
+    await Effect.runPromise(typeTextWithXdotool("hello "))
+    await Effect.runPromise(typeTextWithXdotool(" world"))
+
+    assert.deepStrictEqual(
+      spawned.map((args) => args.at(-1)),
+      ["hello ", " world"],
+    )
+  } finally {
+    Bun.which = originalWhich
+    Bun.spawn = originalSpawn
+  }
+})

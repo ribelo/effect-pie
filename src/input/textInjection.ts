@@ -10,6 +10,8 @@ import {
 import type { AssistantState } from "../assistant/diagnostics.js"
 import { typeTextWithWtype } from "../wayland/wtype.js"
 import { typeTextWithXdotool } from "../x11/xdotool.js"
+import { normalizeTextForInjection } from "./textNormalization.js"
+export { normalizeTextDeltaForInjection, normalizeTextForInjection } from "./textNormalization.js"
 
 export type TextInjectionBackend = "wtype" | "xdotool"
 
@@ -42,12 +44,6 @@ export const chooseTextInjectionBackend = (
     }),
   )
 }
-
-export const normalizeTextForInjection = (text: string): string =>
-  normalizeTextDeltaForInjection(text).trim()
-
-export const normalizeTextDeltaForInjection = (text: string): string =>
-  text.replace(/\r\n/g, "\n").replace(/[ \t]*[\r\n\u2028\u2029]+[ \t]*/g, " ")
 
 export class TextInjectionBackendService extends Context.Service<
   TextInjectionBackendService,

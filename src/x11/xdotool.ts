@@ -1,5 +1,6 @@
 import { Data, Effect } from "effect"
 
+import { normalizeTextForTypingBackend } from "../input/textNormalization.js"
 import { findExecutable, runExternalTool } from "../utils/subprocess.js"
 
 export class XdotoolError extends Data.TaggedError("XdotoolError")<{
@@ -32,9 +33,14 @@ const findXdotoolExecutable = findExecutable({
 export const typeTextWithXdotool = Effect.fn("pie/x11/xdotool.typeTextWithXdotool")(function* (
   text: string,
 ): Effect.fn.Return<void, XdotoolError> {
+  const normalizedText = normalizeTextForTypingBackend(text)
+  if (normalizedText.length === 0) {
+    return
+  }
+
   const xdotoolExecutable = yield* findXdotoolExecutable
 
-  const commandArgs = buildXdotoolCommandArgs(xdotoolExecutable, text)
+  const commandArgs = buildXdotoolCommandArgs(xdotoolExecutable, normalizedText)
 
   yield* runExternalTool({ command: commandArgs, timeoutMs: 30_000 }).pipe(
     Effect.mapError(
