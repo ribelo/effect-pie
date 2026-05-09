@@ -21,6 +21,15 @@ export type NiriReadRequest =
   | "pick-color"
   | "overview-state"
 
+export const NIRI_DEFAULT_TIMEOUT_MS = 5_000
+export const NIRI_INTERACTIVE_TIMEOUT_MS = 60_000
+
+export const readRequestTimeoutMs = (request: NiriReadRequest, overrideMs?: number): number =>
+  overrideMs ??
+  (request === "pick-window" || request === "pick-color"
+    ? NIRI_INTERACTIVE_TIMEOUT_MS
+    : NIRI_DEFAULT_TIMEOUT_MS)
+
 export type WorkspaceReference =
   | { readonly type: "id"; readonly id: number }
   | { readonly type: "index"; readonly index: number }
@@ -51,7 +60,6 @@ export type NiriAction =
       readonly type: "screenshot-window"
       readonly id?: number
       readonly writeToDisk?: boolean
-      readonly showPointer?: boolean
       readonly path?: string
     }
   | { readonly type: "close-window"; readonly id?: number }
@@ -110,7 +118,7 @@ export type NiriAction =
   | { readonly type: "toggle-window-urgent"; readonly id: number }
   | { readonly type: "set-window-urgent"; readonly id: number }
   | { readonly type: "unset-window-urgent"; readonly id: number }
-  | { readonly type: "load-config-file"; readonly path?: string }
+  | { readonly type: "load-config-file" }
   | { readonly type: SimpleAction }
 
 export type SimpleAction =
@@ -519,7 +527,6 @@ export const buildNiriActionCommand = (
         "screenshot-window",
         ...maybeIdArgs("--id", action.id),
         ...maybeBooleanArg("--write-to-disk", action.writeToDisk),
-        ...maybeBooleanArg("--show-pointer", action.showPointer),
         ...maybeStringArg("--path", action.path),
       ]
     case "close-window":
@@ -642,7 +649,12 @@ export const buildNiriActionCommand = (
         ...(action.output === undefined ? [] : [action.output]),
       ]
     case "load-config-file":
-      return [...base, "load-config-file", ...maybeStringArg("--path", action.path)]
+      if ("path" in action) {
+        throw new NiriValidationError({
+          message: "load-config-file does not accept a path on the local Niri CLI",
+        })
+      }
+      return [...base, "load-config-file"]
   }
 }
 
@@ -870,18 +882,37 @@ export class NiriTransport extends Context.Service<
     readonly eventStreamLines: Stream.Stream<string, NiriError>
   }
 >()("pie/niri/NiriTransport") {
-  static readonly layer = (config?: { readonly timeoutMs?: number }) =>
+  static readonly layer = (config?: { readonly timeoutMs?: number; readonly niriPath?: string }) =>
     Layer.effect(
       NiriTransport,
       Effect.gen(function* () {
-        const niriPath = yield* findNiriExecutable()
-        const timeoutMs = config?.timeoutMs ?? 5_000
+        const niriPath = config?.niriPath ?? (yield* findNiriExecutable())
+        const command = (
+          build: () => ReadonlyArray<string>,
+        ): Effect.Effect<ReadonlyArray<string>, NiriValidationError | NiriIpcError> =>
+          Effect.try({
+            try: build,
+            catch: (cause) =>
+              cause instanceof NiriValidationError
+                ? cause
+                : new NiriIpcError({ message: "Failed to build Niri command", cause }),
+          })
+        const actionTimeoutMs = config?.timeoutMs ?? NIRI_DEFAULT_TIMEOUT_MS
         return NiriTransport.of({
-          read: (request) => runNiriCommand(buildNiriReadCommand(niriPath, request), timeoutMs),
+          read: (request) =>
+            runNiriCommand(
+              buildNiriReadCommand(niriPath, request),
+              readRequestTimeoutMs(request, config?.timeoutMs),
+            ),
           runAction: (action) =>
-            runNiriCommand(buildNiriActionCommand(niriPath, action), timeoutMs).pipe(Effect.asVoid),
+            command(() => buildNiriActionCommand(niriPath, action)).pipe(
+              Effect.flatMap((argv) => runNiriCommand(argv, actionTimeoutMs)),
+              Effect.asVoid,
+            ),
           runOutput: (output, action) =>
-            runNiriCommand(buildNiriOutputCommand(niriPath, output, action), timeoutMs),
+            command(() => buildNiriOutputCommand(niriPath, output, action)).pipe(
+              Effect.flatMap((argv) => runNiriCommand(argv, actionTimeoutMs)),
+            ),
           eventStreamLines: streamNiriCommandLines(buildNiriEventStreamCommand(niriPath)),
         })
       }),

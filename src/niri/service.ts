@@ -65,7 +65,6 @@ export class Niri extends Context.Service<
       readonly screenshotWindow: (options?: {
         readonly id?: number
         readonly writeToDisk?: boolean
-        readonly showPointer?: boolean
         readonly path?: string
       }) => Effect.Effect<void, NiriError>
       readonly setWindowWidth: (
@@ -73,7 +72,7 @@ export class Niri extends Context.Service<
         id?: number,
       ) => Effect.Effect<void, NiriError>
       readonly setDynamicCastMonitor: (output?: string) => Effect.Effect<void, NiriError>
-      readonly loadConfigFile: (path?: string) => Effect.Effect<void, NiriError>
+      readonly loadConfigFile: Effect.Effect<void, NiriError>
     }
     readonly outputsConfig: {
       readonly setScale: (
@@ -156,11 +155,6 @@ export class Niri extends Context.Service<
         output === undefined
           ? transport.runAction({ type: "set-dynamic-cast-monitor" })
           : transport.runAction({ type: "set-dynamic-cast-monitor", output })
-      const loadConfigFile = (path?: string) =>
-        path === undefined
-          ? transport.runAction({ type: "load-config-file" })
-          : transport.runAction({ type: "load-config-file", path })
-
       return Niri.of({
         version: read("version", VersionSchema, "version"),
         outputs: read("outputs", OutputsSchema, "outputs"),
@@ -184,7 +178,7 @@ export class Niri extends Context.Service<
             transport.runAction({ type: "screenshot-window", ...options }),
           setWindowWidth,
           setDynamicCastMonitor,
-          loadConfigFile,
+          loadConfigFile: transport.runAction({ type: "load-config-file" }),
         },
         outputsConfig: {
           setScale: (output, scale) => configureOutput(output, { type: "scale", scale }),

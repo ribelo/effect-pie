@@ -4,10 +4,12 @@ import { promises as fs } from "node:fs"
 
 test("src/index.ts is export-only and has no runtime side effect", async () => {
   const source = await fs.readFile("src/index.ts", "utf8")
+  const cliSource = await fs.readFile("src/cli.ts", "utf8")
 
   assert.match(source, /export \{ rootCommand \} from "\.\/cli\.js"/)
   assert.doesNotMatch(source, /BunRuntime\.runMain/)
   assert.doesNotMatch(source, /Effect\.log\("pie"\)/)
+  assert.match(cliSource, /import\.meta\.main/)
 })
 
 test("wakeword live finalizer does not use orElseSucceed to swallow shutdown errors", async () => {

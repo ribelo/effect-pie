@@ -7,6 +7,8 @@ import {
   buildNiriOutputCommand,
   buildNiriReadCommand,
   findNiriExecutable,
+  NiriTransport,
+  readRequestTimeoutMs,
   runNiriCommand,
   sizeChangeArg,
   streamNiriCommandLines,
@@ -64,7 +66,6 @@ test("buildNiriActionCommand builds representative typed action argv", () => {
       type: "screenshot-window",
       id: 12,
       writeToDisk: false,
-      showPointer: true,
       path: "/tmp/window.png",
     }),
     [
@@ -76,8 +77,6 @@ test("buildNiriActionCommand builds representative typed action argv", () => {
       "12",
       "--write-to-disk",
       "false",
-      "--show-pointer",
-      "true",
       "--path",
       "/tmp/window.png",
     ],
@@ -188,10 +187,34 @@ test("buildNiriOutputCommand builds every output action family", () => {
 })
 
 test("command helpers reject invalid ids, indexes, names, and change values before spawning", () => {
+  const invalidLoadConfigFileAction = { type: "load-config-file", path: "/tmp/niri.kdl" } as const
+
   assert.throws(() => buildNiriActionCommand("niri", { type: "focus-window", id: 0 }), /positive/)
+  assert.throws(
+    () => buildNiriActionCommand("niri", invalidLoadConfigFileAction),
+    /does not accept a path/,
+  )
   assert.throws(() => buildNiriOutputCommand("niri", " ", { type: "on" }), /output name/)
   assert.throws(() => workspaceReferenceArg({ type: "name", name: "" }), /workspace name/)
   assert.throws(() => sizeChangeArg({ type: "set-proportion", value: 0 }), /proportion/)
+})
+
+test("NiriTransport.layer returns validation errors through the Effect error channel", async () => {
+  const config = { timeoutMs: 100, niriPath: process.execPath }
+  const error = await Effect.runPromise(
+    Effect.gen(function* () {
+      const transport = yield* NiriTransport
+      return yield* Effect.flip(transport.runAction({ type: "focus-window", id: 0 }))
+    }).pipe(Effect.provide(NiriTransport.layer(config))),
+  )
+
+  assert.strictEqual(Reflect.get(error, "_tag"), "NiriValidationError")
+})
+
+test("interactive Niri read requests use an interactive timeout by default", () => {
+  assert.ok(readRequestTimeoutMs("pick-window") > readRequestTimeoutMs("version"))
+  assert.ok(readRequestTimeoutMs("pick-color") > readRequestTimeoutMs("version"))
+  assert.strictEqual(readRequestTimeoutMs("pick-window", 123), 123)
 })
 
 test("findNiriExecutable maps missing binary to NiriUnavailableError", async () => {

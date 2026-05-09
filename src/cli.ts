@@ -68,4 +68,10 @@ const runtimeLayer = Layer.mergeAll(
 
 const main = Command.run(rootCommand, { version: "0.1.0" }).pipe(Effect.provide(runtimeLayer))
 
-BunRuntime.runMain(main)
+export const runCli = (): void => {
+  BunRuntime.runMain(main)
+}
+
+if (import.meta.main) {
+  runCli()
+}

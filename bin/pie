@@ -1,2 +1,4 @@
 #!/usr/bin/env -S bun run
-import "../src/cli.ts";
+import { runCli } from "../src/cli.ts";
+
+runCli();
