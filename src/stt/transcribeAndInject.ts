@@ -9,6 +9,9 @@ import {
   type TextInjectionError,
   type TextInjectionResult,
 } from "../input/textInjection.js"
+import type { NiriError } from "../niri/errors.js"
+import type { Niri } from "../niri/service.js"
+import { promptTemplateWithFocusedWindowContext } from "./focusedWindowPrompt.js"
 import { SttService, type SttServiceError } from "./service.js"
 
 type SttInjectionDiagnostics = InjectionDiagnostics & {
@@ -61,20 +64,22 @@ const isSttServiceFailure = (cause: { readonly _tag?: string }): boolean =>
   cause["_tag"] === "OpenRouterSttError" ||
   cause["_tag"] === "CodexRealtimeSttError" ||
   cause["_tag"] === "CodexAuthError" ||
-  cause["_tag"] === "SttDispatchError"
+  cause["_tag"] === "SttDispatchError" ||
+  (cause["_tag"]?.startsWith("Niri") ?? false)
 
 export const transcribeAndInject = Effect.fn("pie/stt/transcribeAndInject.transcribeAndInject")(
   function* (
     config: TranscribeAndInjectConfig,
   ): Effect.fn.Return<
     TextInjectionResult | undefined,
-    SttServiceError | TextInjectionError | SessionDetectionError,
-    SttService | DesktopSession | TextInjectionBackendService
+    SttServiceError | NiriError | TextInjectionError | SessionDetectionError,
+    SttService | Niri | DesktopSession | TextInjectionBackendService
   > {
     config.diagnostics?.setState("stt")
     config.diagnostics?.sttStart(config.model)
 
     const stt = yield* SttService
+    const promptTemplate = yield* promptTemplateWithFocusedWindowContext(config.promptTemplate)
     const text = yield* (
       config.operation === "transcribe"
         ? stt.transcribe({
@@ -82,7 +87,7 @@ export const transcribeAndInject = Effect.fn("pie/stt/transcribeAndInject.transc
             pcmBytes: config.pcmBytes,
             sampleRate: config.sampleRate,
             language: config.language,
-            promptTemplate: config.promptTemplate,
+            promptTemplate,
           })
         : stt.translate({
             model: config.model,
@@ -90,7 +95,7 @@ export const transcribeAndInject = Effect.fn("pie/stt/transcribeAndInject.transc
             sampleRate: config.sampleRate,
             sourceLanguage: config.sourceLanguage,
             targetLanguage: config.targetLanguage,
-            promptTemplate: config.promptTemplate,
+            promptTemplate,
           })
     ).pipe(
       Effect.tapError((cause) =>
@@ -127,13 +132,14 @@ export const transcribeStreamAndInject = Effect.fn(
   config: TranscribeStreamAndInjectConfig,
 ): Effect.fn.Return<
   TextInjectionResult | undefined,
-  SttServiceError | TextInjectionError | SessionDetectionError,
-  SttService | DesktopSession | TextInjectionBackendService
+  SttServiceError | NiriError | TextInjectionError | SessionDetectionError,
+  SttService | Niri | DesktopSession | TextInjectionBackendService
 > {
   config.diagnostics?.setState("stt")
   config.diagnostics?.sttStart(config.model)
 
   const stt = yield* SttService
+  const promptTemplate = yield* promptTemplateWithFocusedWindowContext(config.promptTemplate)
   const streamedCharsRef = yield* Ref.make(0)
   const injectionErrorRef = yield* Ref.make<TextInjectionError | undefined>(undefined)
   const backend = config.inject === false ? undefined : yield* TextInjectionBackendService
@@ -174,7 +180,7 @@ export const transcribeStreamAndInject = Effect.fn(
           audio: config.audio,
           sampleRate: config.sampleRate,
           language: config.language,
-          promptTemplate: config.promptTemplate,
+          promptTemplate,
           ...(onDelta !== undefined ? { onDelta } : {}),
         })
       : stt.translateStream({
@@ -183,7 +189,7 @@ export const transcribeStreamAndInject = Effect.fn(
           sampleRate: config.sampleRate,
           sourceLanguage: config.sourceLanguage,
           targetLanguage: config.targetLanguage,
-          promptTemplate: config.promptTemplate,
+          promptTemplate,
           ...(onDelta !== undefined ? { onDelta } : {}),
         })
   ).pipe(

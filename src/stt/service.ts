@@ -88,6 +88,8 @@ export class SttService extends Context.Service<
                 model: config.model,
                 inputSampleRate: config.sampleRate,
                 audio: Stream.succeed(config.pcmBytes),
+                language: config.language,
+                promptTemplate: config.promptTemplate,
                 ...(config.onDelta !== undefined ? { onDelta: config.onDelta } : {}),
               }),
             translate: (config) =>
@@ -105,6 +107,8 @@ export class SttService extends Context.Service<
                 model: config.model,
                 inputSampleRate: config.sampleRate,
                 audio: config.audio,
+                language: config.language,
+                promptTemplate: config.promptTemplate,
                 ...(config.onDelta !== undefined ? { onDelta: config.onDelta } : {}),
               }),
             translateStream: (config) =>

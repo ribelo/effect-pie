@@ -54,7 +54,10 @@ test("resolveCodexRealtimeBaseUrl honors CODEX_REALTIME_BASE_URL_OVERRIDE", () =
 })
 
 test("buildTranscriptionSessionUpdate selects gpt-realtime-whisper and 24 kHz audio/pcm", () => {
-  const payload = buildTranscriptionSessionUpdate({ model: "gpt-realtime-whisper" })
+  const payload = buildTranscriptionSessionUpdate({
+    model: "gpt-realtime-whisper",
+    prompt: "Transcribe in English.\n\nFocused window context:\n- app_id: com.slack.Slack",
+  })
   assert.deepEqual(payload, {
     type: "session.update",
     session: {
@@ -62,7 +65,10 @@ test("buildTranscriptionSessionUpdate selects gpt-realtime-whisper and 24 kHz au
       audio: {
         input: {
           format: { type: "audio/pcm", rate: CODEX_REALTIME_SAMPLE_RATE },
-          transcription: { model: "gpt-realtime-whisper" },
+          transcription: {
+            model: "gpt-realtime-whisper",
+            prompt: "Transcribe in English.\n\nFocused window context:\n- app_id: com.slack.Slack",
+          },
         },
       },
     },

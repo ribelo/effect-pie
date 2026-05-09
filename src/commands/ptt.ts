@@ -1,4 +1,15 @@
-import { Console, Duration, Effect, Fiber, Option, Queue, Ref, Stream, type Cause } from "effect"
+import {
+  Console,
+  Duration,
+  Effect,
+  Fiber,
+  Layer,
+  Option,
+  Queue,
+  Ref,
+  Stream,
+  type Cause,
+} from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import * as path from "node:path"
 import { KeyboardMonitorService, PttKeyboardError } from "../keyboard/monitor.js"
@@ -9,6 +20,7 @@ import { MIN_GAIN_TO_APPLY, normalizePcmForStt, pcmPeak, pcmRms } from "../audio
 import { loadSttRuntimeConfig, STT_CONFIG_PATH, type SttConfigError } from "../stt/config.js"
 import { SttService } from "../stt/service.js"
 import { transcribeStreamAndInject } from "../stt/transcribeAndInject.js"
+import { Niri } from "../niri/service.js"
 import type { DesktopSession } from "../desktop/session.js"
 import type { TextInjectionBackendService } from "../input/textInjection.js"
 import { notifyWarning } from "../desktop/notification.js"
@@ -93,7 +105,8 @@ const mapStreamingSttPttError = (
     cause["_tag"] === "OpenRouterSttError" ||
     cause["_tag"] === "CodexRealtimeSttError" ||
     cause["_tag"] === "CodexAuthError" ||
-    cause["_tag"] === "SttDispatchError"
+    cause["_tag"] === "SttDispatchError" ||
+    (cause["_tag"]?.startsWith("Niri") ?? false)
       ? `${prefix}: ${cause.message}`
       : `Failed to inject streamed text: ${cause.message}`
 
@@ -122,7 +135,7 @@ const makeStreamingSttCapture = (config: {
 }): Effect.Effect<
   PttStreamingCapture<never>,
   PttKeyboardError,
-  SttService | TextInjectionBackendService | DesktopSession
+  SttService | Niri | TextInjectionBackendService | DesktopSession
 > =>
   Effect.gen(function* () {
     const audioQueue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
@@ -589,7 +602,7 @@ export const pttTranscribeCommand = Command.make(
               promptTemplate: sttConfig.transcriptionPrompt,
             },
           }),
-      }).pipe(Effect.provide(SttService.live(sttConfig)))
+      }).pipe(Effect.provide(Layer.mergeAll(SttService.live(sttConfig), Niri.live)))
     }),
 ).pipe(
   Command.withDescription(
@@ -664,7 +677,7 @@ export const pttTranslateCommand = Command.make(
               promptTemplate: sttConfig.translationPrompt,
             },
           }),
-      }).pipe(Effect.provide(SttService.live(sttConfig)))
+      }).pipe(Effect.provide(Layer.mergeAll(SttService.live(sttConfig), Niri.live)))
     }),
 ).pipe(
   Command.withDescription(

@@ -73,6 +73,7 @@ export const buildConversationTranslationResponseCreate = (config: {
 
 export const buildTranscriptionSessionUpdate = (config: {
   readonly model: string
+  readonly prompt?: string | undefined
 }): {
   readonly type: "session.update"
   readonly session: unknown
@@ -83,7 +84,10 @@ export const buildTranscriptionSessionUpdate = (config: {
     audio: {
       input: {
         format: { type: "audio/pcm", rate: CODEX_REALTIME_SAMPLE_RATE },
-        transcription: { model: config.model },
+        transcription: {
+          model: config.model,
+          ...(config.prompt === undefined ? {} : { prompt: config.prompt }),
+        },
       },
     },
   },

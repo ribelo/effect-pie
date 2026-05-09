@@ -101,6 +101,8 @@ const main = async (): Promise<void> => {
         model,
         inputSampleRate: args.sampleRate,
         audio,
+        language: args.sourceLanguage,
+        promptTemplate: "Transcribe the spoken audio in {{language}}. Return only the transcript.",
         onDelta,
       }),
     )

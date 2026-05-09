@@ -1,6 +1,7 @@
-import { Console, Effect, Option, Ref } from "effect"
+import { Console, Effect, Layer, Option, Ref } from "effect"
 import { loadSttRuntimeConfig, type SttConfigError } from "../stt/config.js"
 import { SttService } from "../stt/service.js"
+import { Niri } from "../niri/service.js"
 import { PulseAudioClient } from "../pulse/client.js"
 import type { KeyboardMonitorService, PttKeyboardError } from "../keyboard/monitor.js"
 import type { TextInjectionBackendService } from "../input/textInjection.js"
@@ -139,7 +140,7 @@ export const runAssistantDefaultCommand = Effect.fn(
   ).pipe(Effect.onExit(() => setRecordingMode(undefined)))
 
   return yield* effect.pipe(
-    Effect.provide(SttService.live(sttConfig)),
+    Effect.provide(Layer.mergeAll(SttService.live(sttConfig), Niri.live)),
     Effect.tapError((cause) =>
       Effect.gen(function* () {
         if (diagnostics !== undefined) {

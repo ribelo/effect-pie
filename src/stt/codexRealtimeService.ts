@@ -41,14 +41,19 @@ export type CodexRealtimeConnection = {
   readonly messages: Stream.Stream<string, CodexRealtimeSttError>
 }
 
-export type CodexRealtimeTranscribeConfig = {
+type CodexRealtimeAudioConfig = {
   readonly model: string
   readonly inputSampleRate: number
   readonly audio: Stream.Stream<Uint8Array>
   readonly onDelta?: ((delta: string) => Effect.Effect<void>) | undefined
 }
 
-export type CodexRealtimeTranslateConfig = CodexRealtimeTranscribeConfig & {
+export type CodexRealtimeTranscribeConfig = CodexRealtimeAudioConfig & {
+  readonly language: string
+  readonly promptTemplate: string
+}
+
+export type CodexRealtimeTranslateConfig = CodexRealtimeAudioConfig & {
   readonly sourceLanguage: string
   readonly targetLanguage?: string | undefined
   readonly promptTemplate: string
@@ -302,12 +307,15 @@ export const transcribeWithCodexRealtime = (
 ): Effect.Effect<string, CodexRealtimeSttError> =>
   Effect.scoped(
     Effect.gen(function* () {
+      const prompt = renderTemplate(config.promptTemplate, {
+        language: config.language,
+      })
       const connection = yield* factory({
         url: makeRealUrl({ mode: "transcription", model: config.model }),
         accessToken,
       })
       return yield* runCodexRealtimeSession({
-        sessionUpdate: buildTranscriptionSessionUpdate({ model: config.model }),
+        sessionUpdate: buildTranscriptionSessionUpdate({ model: config.model, prompt }),
         mode: "transcription",
         audio: config.audio,
         inputSampleRate: config.inputSampleRate,

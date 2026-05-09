@@ -9,6 +9,7 @@ import { makeWakewordPipeline, type WakewordPipelineError } from "../../wakeword
 import { createWakewordTriggerMachine } from "../../wakeword/trigger.js"
 import type { TextInjectionBackendService } from "../../input/textInjection.js"
 import type { DesktopSession } from "../../desktop/session.js"
+import type { Niri } from "../../niri/service.js"
 import type { AssistantDiagnostics } from "../../assistant/diagnostics.js"
 import { recordPcmUntilTrailingSilence } from "../audioCapture.js"
 import {
@@ -44,7 +45,7 @@ export const runAssistantWakewordTranscribeLoop = (config: {
 }): Effect.Effect<
   void,
   CliError,
-  PulseAudioClient | DesktopSession | TextInjectionBackendService | SttService
+  PulseAudioClient | DesktopSession | Niri | TextInjectionBackendService | SttService
 > =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -196,7 +197,8 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                     cause["_tag"] === "OpenRouterSttError" ||
                     cause["_tag"] === "CodexRealtimeSttError" ||
                     cause["_tag"] === "CodexAuthError" ||
-                    cause["_tag"] === "SttDispatchError"
+                    cause["_tag"] === "SttDispatchError" ||
+                    (cause["_tag"]?.startsWith("Niri") ?? false)
                       ? `Wakeword transcription failed: ${cause.message}`
                       : `Failed to type wakeword transcript: ${cause.message}`
 

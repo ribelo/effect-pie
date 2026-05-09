@@ -6,6 +6,7 @@ import { createRecordStream } from "../../pulse/stream.js"
 import { KeyboardMonitorService, type PttKeyboardError } from "../../keyboard/monitor.js"
 import type { TextInjectionBackendService } from "../../input/textInjection.js"
 import type { DesktopSession } from "../../desktop/session.js"
+import type { Niri } from "../../niri/service.js"
 import type { AssistantDiagnostics } from "../../assistant/diagnostics.js"
 import { notifyWarning } from "../../desktop/notification.js"
 import {
@@ -60,6 +61,7 @@ export const runAssistantPttCombinedLoop = (config: {
   | PulseAudioClient
   | KeyboardMonitorService
   | DesktopSession
+  | Niri
   | TextInjectionBackendService
   | SttService
 > =>
@@ -82,7 +84,7 @@ export const runAssistantPttCombinedLoop = (config: {
       ): Effect.Effect<
         AssistantPttStreamingCapture,
         PttKeyboardError,
-        SttService | DesktopSession | TextInjectionBackendService
+        SttService | Niri | DesktopSession | TextInjectionBackendService
       > =>
         Effect.gen(function* () {
           const audioQueue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
@@ -117,7 +119,8 @@ export const runAssistantPttCombinedLoop = (config: {
                 cause["_tag"] === "OpenRouterSttError" ||
                 cause["_tag"] === "CodexRealtimeSttError" ||
                 cause["_tag"] === "CodexAuthError" ||
-                cause["_tag"] === "SttDispatchError"
+                cause["_tag"] === "SttDispatchError" ||
+                (cause["_tag"]?.startsWith("Niri") ?? false)
                   ? `${mode === "transcribe" ? "PTT transcription" : "PTT translation"} failed: ${cause.message}`
                   : `Failed to type streamed ${mode} text: ${cause.message}`
 

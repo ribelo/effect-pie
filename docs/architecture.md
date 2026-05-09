@@ -71,6 +71,7 @@ pie/
   - wakeword dictation trailing silence: `3` seconds
   - wakeword dictation max capture: `120` seconds
   - wakeword dictation speech RMS threshold: `0.01`
+- Assistant, wakeword, and PTT prompt-based STT requests include focused Niri window context before the audio is sent. The injected context is intentionally small: `app_id` and `title` only, with no process IDs, workspace data, or full window lists. Native `gpt-realtime-translate` keeps the GA translation session payload and does not add unsupported prompt fields. If Niri IPC fails, the STT operation fails instead of silently sending an uncontextualized prompt.
 - Wakeword feature extraction now requires real ONNX feature models (`melspectrogram.onnx`, `embedding_model.onnx`) and `onnxruntime-web@1.22.0`; placeholder/fallback feature paths are rejected.
 
 ## Data Flow
