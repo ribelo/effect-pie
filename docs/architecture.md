@@ -13,6 +13,7 @@ pie/
 │   ├── cli.ts                 # CLI entrypoint (record + wakeword commands)
 │   ├── desktop/               # Desktop session detection helpers
 │   ├── input/                 # Text injection orchestration
+│   ├── niri/                  # Niri IPC Effect service, schemas, transport
 │   ├── pulse/                 # PulseAudio native protocol client and stream wrappers
 │   ├── wakeword/              # openWakeWord asset validation, ONNX runtime, pipeline, trigger
 │   ├── wayland/               # Wayland typing/portal integration
@@ -33,6 +34,10 @@ pie/
 - PulseAudio transport:
 - `src/pulse/client.ts` manages the native protocol socket, command/reply tags, and record stream lifecycle.
 - `src/pulse/stream.ts` exposes Effect `Stream<Uint8Array>` chunks for live PCM audio.
+- Niri compositor boundary:
+- `src/niri/service.ts` exposes the `Niri` Effect service and `Niri.live` layer.
+- `src/niri/schema.ts` validates `niri msg --json` payloads and event-stream lines with Effect Schema.
+- `src/niri/transport.ts` owns command construction, `niri` process execution, event-stream process lifetime, and typed IPC failures.
 - openWakeWord assets and runtime:
 - `src/wakeword/assets.ts` validates manifest/runtime pins and required model files at startup.
 - `src/wakeword/onnx.ts` loads ONNX sessions through a Bun-compatible JS runtime; wakeword detection/training requires real ONNX feature models and the pinned runtime (no fallback execution path).
@@ -76,3 +81,41 @@ PulseAudio PCM stream
   -> trigger state machine (threshold + smoothing + cooldown)
   -> trigger events / score telemetry
 ```
+
+## Niri IPC service
+
+`Niri` is the first-class application boundary for the Niri window manager.
+Use it when code needs compositor state, actions, temporary output configuration, or live compositor events.
+
+```ts
+import { Effect } from "effect"
+import { Niri } from "pie"
+
+const program = Effect.gen(function* () {
+  const niri = yield* Niri
+  const focused = yield* niri.focusedWindow
+
+  if (focused !== null) {
+    yield* niri.actions.focusWindow(focused.id)
+  }
+}).pipe(Effect.provide(Niri.live))
+```
+
+### Contract
+
+- Reads use `niri msg --json` for `version`, `outputs`, `workspaces`, `windows`, `layers`, `keyboard-layouts`, `focused-output`, `focused-window`, `pick-window`, `pick-color`, and `overview-state`.
+- `focusedWindow`, `focusedOutput`, `pickWindow`, and `pickColor` return `null` when Niri reports absence.
+- Window metadata preserves documented fields used by callers: title, app id, pid, workspace id, focus state, floating state, urgency, layout, and focus timestamp.
+- Actions use typed `NiriAction` values plus `niri.actions` helpers for common calls. `niri.actions.raw(args)` exists for newly added Niri actions.
+- Temporary output configuration uses `niri.outputsConfig`; changes are not persisted to Niri config.
+- Event streaming uses `niri.events`, an Effect `Stream` of typed events. `niri msg --json event-stream` sends full state first, so consumers do not need a separate initial polling request.
+
+### Failure model
+
+- Missing `niri` binary fails with `NiriUnavailableError`.
+- Non-zero exits, socket errors, and stderr failures fail with `NiriIpcError`.
+- Timeouts fail with `NiriTimeoutError`.
+- Malformed JSON and invalid documented fields fail with `NiriDecodeError`.
+- Invalid typed command inputs fail before spawning with `NiriValidationError`.
+
+Human-readable `niri msg` output is not a stable scripting surface. The service intentionally validates JSON at the boundary and fails loudly instead of silently skipping malformed state.
