@@ -87,56 +87,84 @@ export const runAssistantPttCombinedLoop = (config: {
         SttService | Niri | DesktopSession | TextInjectionBackendService
       > =>
         Effect.gen(function* () {
-          const audioQueue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
-          const audio = Stream.fromQueue(audioQueue)
-          const transcript =
-            mode === "transcribe"
-              ? transcribeStreamAndInject({
-                  operation: "transcribe",
-                  model: config.sttConfig.transcriptionModel,
-                  audio,
-                  sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-                  language: config.sttConfig.transcriptionLanguage,
-                  promptTemplate: config.sttConfig.transcriptionPrompt,
-                  logPrefix: "assistant-ptt-transcribe",
-                  diagnostics: config.diagnostics,
-                })
-              : transcribeStreamAndInject({
-                  operation: "translate",
-                  model: config.sttConfig.translationModel,
-                  audio,
-                  sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-                  sourceLanguage,
-                  targetLanguage,
-                  promptTemplate: config.sttConfig.translationPrompt,
-                  logPrefix: "assistant-ptt-translate",
-                  diagnostics: config.diagnostics,
-                })
+          const services = yield* Effect.context<
+            SttService | Niri | DesktopSession | TextInjectionBackendService
+          >()
+          let audioQueue: Queue.Queue<Uint8Array, Cause.Done> | undefined
+          let fiber: Fiber.Fiber<void, PttKeyboardError> | undefined
 
-          const fiber = yield* transcript.pipe(
-            Effect.mapError((cause) => {
-              const message =
-                cause["_tag"] === "OpenRouterSttError" ||
-                cause["_tag"] === "CodexRealtimeSttError" ||
-                cause["_tag"] === "CodexAuthError" ||
-                cause["_tag"] === "SttDispatchError" ||
-                (cause["_tag"]?.startsWith("Niri") ?? false)
-                  ? `${mode === "transcribe" ? "PTT transcription" : "PTT translation"} failed: ${cause.message}`
-                  : `Failed to type streamed ${mode} text: ${cause.message}`
+          const start = Effect.gen(function* () {
+            if (audioQueue !== undefined) {
+              return audioQueue
+            }
 
-              return toPttKeyboardError(message, cause)
-            }),
-            Effect.asVoid,
-            (effect) => Effect.forkChild(effect, { startImmediately: true }),
-          )
+            const queue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
+            const audio = Stream.fromQueue(queue)
+            const transcript =
+              mode === "transcribe"
+                ? transcribeStreamAndInject({
+                    operation: "transcribe",
+                    model: config.sttConfig.transcriptionModel,
+                    audio,
+                    sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+                    language: config.sttConfig.transcriptionLanguage,
+                    promptTemplate: config.sttConfig.transcriptionPrompt,
+                    logPrefix: "assistant-ptt-transcribe",
+                    diagnostics: config.diagnostics,
+                  })
+                : transcribeStreamAndInject({
+                    operation: "translate",
+                    model: config.sttConfig.translationModel,
+                    audio,
+                    sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+                    sourceLanguage,
+                    targetLanguage,
+                    promptTemplate: config.sttConfig.translationPrompt,
+                    logPrefix: "assistant-ptt-translate",
+                    diagnostics: config.diagnostics,
+                  })
+
+            fiber = yield* transcript.pipe(
+              Effect.mapError((cause) => {
+                const message =
+                  cause["_tag"] === "OpenRouterSttError" ||
+                  cause["_tag"] === "CodexRealtimeSttError" ||
+                  cause["_tag"] === "CodexAuthError" ||
+                  cause["_tag"] === "SttDispatchError" ||
+                  (cause["_tag"]?.startsWith("Niri") ?? false)
+                    ? `${mode === "transcribe" ? "PTT transcription" : "PTT translation"} failed: ${cause.message}`
+                    : `Failed to type streamed ${mode} text: ${cause.message}`
+
+                return toPttKeyboardError(message, cause)
+              }),
+              Effect.asVoid,
+              (effect) => Effect.forkChild(effect, { startImmediately: true }),
+            )
+            audioQueue = queue
+            return queue
+          })
+          const startProvided = start.pipe(Effect.provideContext(services))
 
           return {
-            offer: (chunk) => Queue.offer(audioQueue, chunk).pipe(Effect.asVoid),
-            finish: Queue.end(audioQueue).pipe(Effect.andThen(Fiber.join(fiber))),
-            cancel: Queue.end(audioQueue).pipe(
-              Effect.andThen(Fiber.interrupt(fiber)),
-              Effect.ignore,
-            ),
+            offer: (chunk) =>
+              startProvided.pipe(
+                Effect.flatMap((queue) => Queue.offer(queue, chunk)),
+                Effect.asVoid,
+              ),
+            finish: Effect.gen(function* () {
+              if (audioQueue === undefined || fiber === undefined) {
+                return
+              }
+              yield* Queue.end(audioQueue)
+              yield* Fiber.join(fiber)
+            }),
+            cancel: Effect.gen(function* () {
+              if (audioQueue === undefined || fiber === undefined) {
+                return
+              }
+              yield* Queue.end(audioQueue)
+              yield* Fiber.interrupt(fiber)
+            }).pipe(Effect.ignore),
           }
         })
 
@@ -202,21 +230,12 @@ export const runAssistantPttCombinedLoop = (config: {
               return
             }
 
-            yield* Ref.update(captureChunksRef, (chunks) => {
-              const next = chunks.slice()
-              next.push(chunk)
-              return next
-            })
-
-            const streamingCapture = yield* Ref.get(streamingCaptureRef)
-            if (streamingCapture !== undefined) {
-              yield* streamingCapture.offer(chunk)
-            }
-
-            const { detector: nextDetector, warn } = pttDeadInputDetectorProcessChunk(
-              yield* Ref.get(deadInputDetectorRef),
-              chunk,
-            )
+            const {
+              detector: nextDetector,
+              warn,
+              dead,
+              hasInput,
+            } = pttDeadInputDetectorProcessChunk(yield* Ref.get(deadInputDetectorRef), chunk)
             yield* Ref.set(deadInputDetectorRef, nextDetector)
 
             if (warn) {
@@ -225,6 +244,36 @@ export const runAssistantPttCombinedLoop = (config: {
                 "pie: no microphone input",
                 "No input detected during push-to-talk. Your microphone may be muted.",
               )
+            }
+
+            if (dead) {
+              const streamingCapture = yield* Ref.get(streamingCaptureRef)
+              yield* Ref.set(streamingCaptureRef, undefined)
+              if (streamingCapture !== undefined) {
+                yield* streamingCapture.cancel
+              }
+              yield* Ref.set(captureChunksRef, [])
+              yield* Ref.set(captureStartedAtRef, undefined)
+              yield* Ref.set(captureModeRef, undefined)
+              yield* Ref.set(captureStateRef, pttCaptureIdle)
+              yield* Ref.set(deadInputDetectorRef, pttDeadInputDetectorInitial())
+              yield* Ref.set(config.pttActiveRef, false)
+              yield* config.setRecordingMode(undefined)
+              config.diagnostics?.setState("idle")
+              return
+            }
+
+            yield* Ref.update(captureChunksRef, (chunks) => {
+              const next = chunks.slice()
+              next.push(chunk)
+              return next
+            })
+
+            if (hasInput) {
+              const streamingCapture = yield* Ref.get(streamingCaptureRef)
+              if (streamingCapture !== undefined) {
+                yield* streamingCapture.offer(chunk)
+              }
             }
           }),
         ),
@@ -264,6 +313,7 @@ export const runAssistantPttCombinedLoop = (config: {
           }
 
           yield* Ref.set(captureChunksRef, [])
+          yield* Ref.set(deadInputDetectorRef, pttDeadInputDetectorInitial())
           yield* Ref.set(captureStartedAtRef, Date.now())
           yield* Ref.set(captureModeRef, mode)
           const streamingCapture = yield* makeStreamingCapture(mode)
@@ -304,7 +354,7 @@ export const runAssistantPttCombinedLoop = (config: {
             return Queue.take(eventQueue).pipe(
               Effect.timeoutOrElse({
                 duration: Duration.millis(timeoutMs),
-                orElse: () => Effect.succeed(undefined),
+                orElse: () => Effect.void,
               }),
             )
           }).pipe(Effect.flatten)

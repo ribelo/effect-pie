@@ -20,22 +20,28 @@ test("pttDeadInputDetector warns after four zero chunks", () => {
 
   let result = pttDeadInputDetectorProcessChunk(detector, zeroChunk())
   assert.strictEqual(result.warn, false)
+  assert.strictEqual(result.dead, false)
+  assert.strictEqual(result.hasInput, false)
   detector = result.detector
 
   result = pttDeadInputDetectorProcessChunk(detector, zeroChunk())
   assert.strictEqual(result.warn, false)
+  assert.strictEqual(result.dead, false)
   detector = result.detector
 
   result = pttDeadInputDetectorProcessChunk(detector, zeroChunk())
   assert.strictEqual(result.warn, false)
+  assert.strictEqual(result.dead, false)
   detector = result.detector
 
   result = pttDeadInputDetectorProcessChunk(detector, zeroChunk())
   assert.strictEqual(result.warn, true)
+  assert.strictEqual(result.dead, true)
   detector = result.detector
 
   result = pttDeadInputDetectorProcessChunk(detector, zeroChunk())
   assert.strictEqual(result.warn, false)
+  assert.strictEqual(result.dead, true)
 })
 
 test("pttDeadInputDetector resets on non-zero chunk", () => {
@@ -51,6 +57,8 @@ test("pttDeadInputDetector resets on non-zero chunk", () => {
 
   result = pttDeadInputDetectorProcessChunk(detector, noisyChunk())
   assert.strictEqual(result.warn, false)
+  assert.strictEqual(result.dead, false)
+  assert.strictEqual(result.hasInput, true)
   detector = result.detector
 
   result = pttDeadInputDetectorProcessChunk(detector, zeroChunk())
@@ -67,6 +75,7 @@ test("pttDeadInputDetector resets on non-zero chunk", () => {
 
   result = pttDeadInputDetectorProcessChunk(detector, zeroChunk())
   assert.strictEqual(result.warn, true)
+  assert.strictEqual(result.dead, true)
 })
 
 test("pttDeadInputDetector resets between holds", () => {
@@ -78,9 +87,11 @@ test("pttDeadInputDetector resets between holds", () => {
   }
 
   assert.strictEqual(detector.warnedThisHold, true)
+  assert.strictEqual(detector.deadThisHold, true)
 
   detector = pttDeadInputDetectorSync(detector, false)
   detector = pttDeadInputDetectorSync(detector, true)
+  assert.strictEqual(detector.deadThisHold, false)
 
   let result = pttDeadInputDetectorProcessChunk(detector, zeroChunk())
   assert.strictEqual(result.warn, false)
@@ -102,10 +113,13 @@ test("pttDeadInputDetector stays idle outside PTT", () => {
   let detector = pttDeadInputDetectorSync(pttDeadInputDetectorInitial(), false)
   const result = pttDeadInputDetectorProcessChunk(detector, zeroChunk())
   assert.strictEqual(result.warn, false)
+  assert.strictEqual(result.dead, false)
 })
 
 test("pttDeadInputDetector ignores empty chunk", () => {
   let detector = pttDeadInputDetectorSync(pttDeadInputDetectorInitial(), true)
   const result = pttDeadInputDetectorProcessChunk(detector, new Uint8Array(0))
   assert.strictEqual(result.warn, false)
+  assert.strictEqual(result.dead, false)
+  assert.strictEqual(result.hasInput, false)
 })

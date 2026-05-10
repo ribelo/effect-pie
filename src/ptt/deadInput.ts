@@ -4,12 +4,14 @@ export type PttDeadInputDetector = {
   active: boolean
   consecutiveZeroChunks: number
   warnedThisHold: boolean
+  deadThisHold: boolean
 }
 
 export const pttDeadInputDetectorInitial = (): PttDeadInputDetector => ({
   active: false,
   consecutiveZeroChunks: 0,
   warnedThisHold: false,
+  deadThisHold: false,
 })
 
 export const pttDeadInputDetectorSync = (
@@ -25,6 +27,7 @@ export const pttDeadInputDetectorSync = (
       active: true,
       consecutiveZeroChunks: 0,
       warnedThisHold: false,
+      deadThisHold: false,
     }
   }
 
@@ -40,12 +43,22 @@ const isFlatlinePcmS16le = (pcm: Uint8Array): boolean =>
 export const pttDeadInputDetectorProcessChunk = (
   detector: PttDeadInputDetector,
   chunk: Uint8Array,
-): { readonly detector: PttDeadInputDetector; readonly warn: boolean } => {
-  if (!detector.active || detector.warnedThisHold) {
-    return { detector, warn: false }
+): {
+  readonly detector: PttDeadInputDetector
+  readonly warn: boolean
+  readonly dead: boolean
+  readonly hasInput: boolean
+} => {
+  if (!detector.active) {
+    return { detector, warn: false, dead: false, hasInput: false }
+  }
+
+  if (detector.deadThisHold) {
+    return { detector, warn: false, dead: true, hasInput: false }
   }
 
   const isFlatline = isFlatlinePcmS16le(chunk)
+  const hasInput = chunk.length > 0 && !isFlatline
 
   const nextConsecutive = isFlatline ? detector.consecutiveZeroChunks + 1 : 0
 
@@ -56,6 +69,8 @@ export const pttDeadInputDetectorProcessChunk = (
         consecutiveZeroChunks: nextConsecutive,
       },
       warn: false,
+      dead: false,
+      hasInput,
     }
   }
 
@@ -64,13 +79,20 @@ export const pttDeadInputDetectorProcessChunk = (
       ...detector,
       consecutiveZeroChunks: nextConsecutive,
       warnedThisHold: true,
+      deadThisHold: true,
     },
     warn: true,
+    dead: true,
+    hasInput: false,
   }
 }
 
 export const pttDeadInputDetectorUpdateAndCheck = (
   detector: PttDeadInputDetector,
   chunk: Uint8Array,
-): { readonly detector: PttDeadInputDetector; readonly warn: boolean } =>
-  pttDeadInputDetectorProcessChunk(detector, chunk)
+): {
+  readonly detector: PttDeadInputDetector
+  readonly warn: boolean
+  readonly dead: boolean
+  readonly hasInput: boolean
+} => pttDeadInputDetectorProcessChunk(detector, chunk)

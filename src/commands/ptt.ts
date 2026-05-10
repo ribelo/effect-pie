@@ -138,45 +138,74 @@ const makeStreamingSttCapture = (config: {
   SttService | Niri | TextInjectionBackendService | DesktopSession
 > =>
   Effect.gen(function* () {
-    const audioQueue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
-    const stream = Stream.fromQueue(audioQueue)
-    const transcriptEffect =
-      config.operation.kind === "transcribe"
-        ? transcribeStreamAndInject({
-            operation: "transcribe",
-            model: config.operation.model,
-            audio: stream,
-            sampleRate: config.sampleRate,
-            language: config.operation.language,
-            promptTemplate: config.operation.promptTemplate,
-            logPrefix: config.logPrefix,
-            ...(config.inject !== undefined ? { inject: config.inject } : {}),
-          })
-        : transcribeStreamAndInject({
-            operation: "translate",
-            model: config.operation.model,
-            audio: stream,
-            sampleRate: config.sampleRate,
-            sourceLanguage: config.operation.sourceLanguage,
-            targetLanguage: config.operation.targetLanguage,
-            promptTemplate: config.operation.promptTemplate,
-            logPrefix: config.logPrefix,
-            ...(config.inject !== undefined ? { inject: config.inject } : {}),
-          })
+    const services = yield* Effect.context<
+      SttService | Niri | TextInjectionBackendService | DesktopSession
+    >()
+    let audioQueue: Queue.Queue<Uint8Array, Cause.Done> | undefined
+    let transcriptFiber: Fiber.Fiber<void, PttKeyboardError> | undefined
 
-    const transcriptFiber = yield* transcriptEffect.pipe(
-      Effect.mapError((cause) => mapStreamingSttPttError(config.failurePrefix, cause)),
-      Effect.asVoid,
-      (effect) => Effect.forkChild(effect, { startImmediately: true }),
-    )
+    const start = Effect.gen(function* () {
+      if (audioQueue !== undefined) {
+        return audioQueue
+      }
+
+      const queue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
+      const stream = Stream.fromQueue(queue)
+      const transcriptEffect =
+        config.operation.kind === "transcribe"
+          ? transcribeStreamAndInject({
+              operation: "transcribe",
+              model: config.operation.model,
+              audio: stream,
+              sampleRate: config.sampleRate,
+              language: config.operation.language,
+              promptTemplate: config.operation.promptTemplate,
+              logPrefix: config.logPrefix,
+              ...(config.inject !== undefined ? { inject: config.inject } : {}),
+            })
+          : transcribeStreamAndInject({
+              operation: "translate",
+              model: config.operation.model,
+              audio: stream,
+              sampleRate: config.sampleRate,
+              sourceLanguage: config.operation.sourceLanguage,
+              targetLanguage: config.operation.targetLanguage,
+              promptTemplate: config.operation.promptTemplate,
+              logPrefix: config.logPrefix,
+              ...(config.inject !== undefined ? { inject: config.inject } : {}),
+            })
+
+      transcriptFiber = yield* transcriptEffect.pipe(
+        Effect.mapError((cause) => mapStreamingSttPttError(config.failurePrefix, cause)),
+        Effect.asVoid,
+        (effect) => Effect.forkChild(effect, { startImmediately: true }),
+      )
+      audioQueue = queue
+      return queue
+    })
+    const startProvided = start.pipe(Effect.provideContext(services))
 
     return {
-      offer: (chunk) => Queue.offer(audioQueue, chunk).pipe(Effect.asVoid),
-      finish: () => Queue.end(audioQueue).pipe(Effect.andThen(Fiber.join(transcriptFiber))),
-      cancel: Queue.end(audioQueue).pipe(
-        Effect.andThen(Fiber.interrupt(transcriptFiber)),
-        Effect.ignore,
-      ),
+      offer: (chunk) =>
+        startProvided.pipe(
+          Effect.flatMap((queue) => Queue.offer(queue, chunk)),
+          Effect.asVoid,
+        ),
+      finish: () =>
+        Effect.gen(function* () {
+          if (audioQueue === undefined || transcriptFiber === undefined) {
+            return
+          }
+          yield* Queue.end(audioQueue)
+          yield* Fiber.join(transcriptFiber)
+        }),
+      cancel: Effect.gen(function* () {
+        if (audioQueue === undefined || transcriptFiber === undefined) {
+          return
+        }
+        yield* Queue.end(audioQueue)
+        yield* Fiber.interrupt(transcriptFiber)
+      }).pipe(Effect.ignore),
     }
   })
 
@@ -270,21 +299,12 @@ export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMoni
               return
             }
 
-            yield* Ref.update(captureChunksRef, (chunks) => {
-              const next = chunks.slice()
-              next.push(chunk)
-              return next
-            })
-
-            const streamingCapture = yield* Ref.get(streamingCaptureRef)
-            if (streamingCapture !== undefined) {
-              yield* streamingCapture.offer(chunk)
-            }
-
-            const { detector: nextDetector, warn } = pttDeadInputDetectorProcessChunk(
-              yield* Ref.get(deadInputDetectorRef),
-              chunk,
-            )
+            const {
+              detector: nextDetector,
+              warn,
+              dead,
+              hasInput,
+            } = pttDeadInputDetectorProcessChunk(yield* Ref.get(deadInputDetectorRef), chunk)
             yield* Ref.set(deadInputDetectorRef, nextDetector)
 
             if (warn) {
@@ -295,6 +315,32 @@ export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMoni
                 "pie: no microphone input",
                 "No input detected during push-to-talk. Your microphone may be muted.",
               )
+            }
+
+            if (dead) {
+              const streamingCapture = yield* Ref.get(streamingCaptureRef)
+              yield* Ref.set(streamingCaptureRef, undefined)
+              if (streamingCapture !== undefined) {
+                yield* streamingCapture.cancel
+              }
+              yield* Ref.set(captureChunksRef, [])
+              yield* Ref.set(captureStartedAtRef, undefined)
+              yield* Ref.set(captureStateRef, pttCaptureIdle)
+              yield* Ref.set(deadInputDetectorRef, pttDeadInputDetectorInitial())
+              return
+            }
+
+            yield* Ref.update(captureChunksRef, (chunks) => {
+              const next = chunks.slice()
+              next.push(chunk)
+              return next
+            })
+
+            if (hasInput) {
+              const streamingCapture = yield* Ref.get(streamingCaptureRef)
+              if (streamingCapture !== undefined) {
+                yield* streamingCapture.offer(chunk)
+              }
             }
           }),
         ),
@@ -327,6 +373,7 @@ export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMoni
           }
 
           yield* Ref.set(captureChunksRef, [])
+          yield* Ref.set(deadInputDetectorRef, pttDeadInputDetectorInitial())
           yield* Ref.set(captureStartedAtRef, Date.now())
           const streamingCapture =
             config.onCaptureStart === undefined ? undefined : yield* config.onCaptureStart()
@@ -353,7 +400,7 @@ export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMoni
           const nextEvent = yield* Queue.take(eventQueue).pipe(
             Effect.timeoutOrElse({
               duration: Duration.millis(remaining),
-              orElse: () => Effect.succeed(undefined),
+              orElse: () => Effect.void,
             }),
           )
 
