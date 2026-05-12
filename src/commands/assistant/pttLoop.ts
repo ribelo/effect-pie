@@ -35,7 +35,12 @@ import {
   DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
   DEFAULT_ASSISTANT_MIN_DURATION_MS,
 } from "./constants.js"
-import type { AssistantRecordingMode, AssistantRecordingRuntimeState } from "./recordingState.js"
+import {
+  tryStartRecording,
+  stopRecording,
+  type AssistantRecordingMode,
+  type AssistantRecordingRuntimeState,
+} from "./recordingState.js"
 
 type AssistantPttMode = "transcribe" | "translate"
 
@@ -52,6 +57,7 @@ export const runAssistantPttCombinedLoop = (config: {
   readonly setRecordingMode: (
     mode: AssistantRecordingMode | undefined,
   ) => Effect.Effect<void, CliError>
+  readonly recordingCoordinatorRef: Ref.Ref<AssistantRecordingRuntimeState>
   readonly diagnostics?: AssistantDiagnostics | undefined
   readonly pttTranscribeKeysym: Option.Option<number>
   readonly pttTranslateKeysym: Option.Option<number>
@@ -190,18 +196,36 @@ export const runAssistantPttCombinedLoop = (config: {
       const streamingCaptureRef = yield* Ref.make<AssistantPttStreamingCapture | undefined>(
         undefined,
       )
+      const captureAudioFiberRef = yield* Ref.make<Fiber.Fiber<void> | undefined>(undefined)
+
+      const stopCaptureAudio = Effect.gen(function* () {
+        const fiber = yield* Ref.get(captureAudioFiberRef)
+        yield* Ref.set(captureAudioFiberRef, undefined)
+        if (fiber !== undefined) {
+          yield* Fiber.interrupt(fiber).pipe(Effect.ignore)
+        }
+      })
 
       yield* Effect.addFinalizer(() =>
         Effect.all(
           [
             Ref.set(config.pttActiveRef, false),
+            stopCaptureAudio,
             Ref.get(streamingCaptureRef).pipe(
               Effect.flatMap((streamingCapture) =>
                 streamingCapture === undefined ? Effect.void : streamingCapture.cancel,
               ),
               Effect.ignore,
             ),
-            config.setRecordingMode(undefined).pipe(Effect.orDie),
+            Effect.gen(function* () {
+              const runtime = yield* Ref.get(config.recordingCoordinatorRef)
+              if (runtime.mode !== undefined) {
+                yield* stopRecording({
+                  ref: config.recordingCoordinatorRef,
+                  mode: runtime.mode,
+                }).pipe(Effect.orDie)
+              }
+            }),
           ],
           {
             discard: true,
@@ -211,75 +235,97 @@ export const runAssistantPttCombinedLoop = (config: {
 
       const deadInputDetectorRef = yield* Ref.make(pttDeadInputDetectorInitial())
 
-      yield* createRecordStream(
-        makePcmRecordOptions({
-          rate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-          fragmentSize: DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
-          sourceName: config.sourceName,
-        }),
-      ).pipe(
-        Stream.runForEach((chunk) =>
-          Effect.gen(function* () {
-            const state = yield* Ref.get(captureStateRef)
-            const isActive = pttCaptureIsAcceptingChunks(state)
+      const processCaptureChunk = (chunk: Uint8Array) =>
+        Effect.gen(function* () {
+          const state = yield* Ref.get(captureStateRef)
+          const isActive = pttCaptureIsAcceptingChunks(state)
 
-            yield* Ref.update(deadInputDetectorRef, (detector) =>
-              pttDeadInputDetectorSync(detector, isActive),
+          yield* Ref.update(deadInputDetectorRef, (detector) =>
+            pttDeadInputDetectorSync(detector, isActive),
+          )
+
+          if (!isActive) {
+            return
+          }
+
+          const {
+            detector: nextDetector,
+            warn,
+            dead,
+            hasInput,
+          } = pttDeadInputDetectorProcessChunk(yield* Ref.get(deadInputDetectorRef), chunk)
+          yield* Ref.set(deadInputDetectorRef, nextDetector)
+
+          if (warn) {
+            yield* Console.log("[assistant-ptt] No input detected; microphone probably muted")
+            yield* notifyWarning(
+              "pie: no microphone input",
+              "No input detected during push-to-talk. Your microphone may be muted.",
             )
+          }
 
-            if (!isActive) {
-              return
+          if (dead) {
+            const streamingCapture = yield* Ref.get(streamingCaptureRef)
+            yield* Ref.set(streamingCaptureRef, undefined)
+            if (streamingCapture !== undefined) {
+              yield* streamingCapture.cancel
             }
-
-            const {
-              detector: nextDetector,
-              warn,
-              dead,
-              hasInput,
-            } = pttDeadInputDetectorProcessChunk(yield* Ref.get(deadInputDetectorRef), chunk)
-            yield* Ref.set(deadInputDetectorRef, nextDetector)
-
-            if (warn) {
-              yield* Console.log("[assistant-ptt] No input detected; microphone probably muted")
-              yield* notifyWarning(
-                "pie: no microphone input",
-                "No input detected during push-to-talk. Your microphone may be muted.",
-              )
+            yield* Ref.set(captureChunksRef, [])
+            yield* Ref.set(captureStartedAtRef, undefined)
+            yield* Ref.set(captureModeRef, undefined)
+            yield* Ref.set(captureStateRef, pttCaptureIdle)
+            yield* Ref.set(captureAudioFiberRef, undefined)
+            yield* Ref.set(deadInputDetectorRef, pttDeadInputDetectorInitial())
+            yield* Ref.set(config.pttActiveRef, false)
+            const runtime = yield* Ref.get(config.recordingCoordinatorRef)
+            if (runtime.mode === "ptt-transcribe" || runtime.mode === "ptt-translate") {
+              yield* stopRecording({
+                ref: config.recordingCoordinatorRef,
+                mode: runtime.mode,
+              }).pipe(Effect.orDie)
             }
+            config.diagnostics?.setState("idle")
+            return
+          }
 
-            if (dead) {
-              const streamingCapture = yield* Ref.get(streamingCaptureRef)
-              yield* Ref.set(streamingCaptureRef, undefined)
-              if (streamingCapture !== undefined) {
-                yield* streamingCapture.cancel
-              }
-              yield* Ref.set(captureChunksRef, [])
-              yield* Ref.set(captureStartedAtRef, undefined)
-              yield* Ref.set(captureModeRef, undefined)
-              yield* Ref.set(captureStateRef, pttCaptureIdle)
-              yield* Ref.set(deadInputDetectorRef, pttDeadInputDetectorInitial())
-              yield* Ref.set(config.pttActiveRef, false)
-              yield* config.setRecordingMode(undefined)
-              config.diagnostics?.setState("idle")
-              return
+          yield* Ref.update(captureChunksRef, (chunks) => {
+            const next = chunks.slice()
+            next.push(chunk)
+            return next
+          })
+
+          if (hasInput) {
+            const streamingCapture = yield* Ref.get(streamingCaptureRef)
+            if (streamingCapture !== undefined) {
+              yield* streamingCapture.offer(chunk)
             }
+          }
+        })
 
-            yield* Ref.update(captureChunksRef, (chunks) => {
-              const next = chunks.slice()
-              next.push(chunk)
-              return next
-            })
+      const startCaptureAudio = Effect.gen(function* () {
+        const existing = yield* Ref.get(captureAudioFiberRef)
+        if (existing !== undefined) {
+          return
+        }
 
-            if (hasInput) {
-              const streamingCapture = yield* Ref.get(streamingCaptureRef)
-              if (streamingCapture !== undefined) {
-                yield* streamingCapture.offer(chunk)
-              }
-            }
+        const fiber = yield* createRecordStream(
+          makePcmRecordOptions({
+            rate: DEFAULT_ASSISTANT_SAMPLE_RATE,
+            fragmentSize: DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
+            sourceName: config.sourceName,
           }),
-        ),
-        Effect.forkScoped,
-      )
+        ).pipe(
+          Stream.takeUntilEffect(() =>
+            Ref.get(captureStateRef).pipe(Effect.map((state) => state.tag === "idle")),
+          ),
+          Stream.runForEach(processCaptureChunk),
+          Effect.catch((cause) =>
+            Console.log(`[assistant-ptt] Audio capture failed: ${cause.message}`),
+          ),
+          Effect.forkScoped,
+        )
+        yield* Ref.set(captureAudioFiberRef, fiber)
+      })
 
       mainLoop: while (true) {
         const event = yield* Queue.take(eventQueue)
@@ -293,13 +339,20 @@ export const runAssistantPttCombinedLoop = (config: {
             if (streamingCapture !== undefined) {
               yield* streamingCapture.cancel
             }
+            yield* stopCaptureAudio
             yield* Ref.set(captureChunksRef, [])
             yield* Ref.set(captureStartedAtRef, undefined)
             yield* Ref.set(captureModeRef, undefined)
             yield* Ref.set(captureStateRef, pttCaptureIdle)
             yield* Ref.set(deadInputDetectorRef, pttDeadInputDetectorInitial())
             yield* Ref.set(config.pttActiveRef, false)
-            yield* config.setRecordingMode(undefined)
+            const runtime = yield* Ref.get(config.recordingCoordinatorRef)
+            if (runtime.mode === "ptt-transcribe" || runtime.mode === "ptt-translate") {
+              yield* stopRecording({
+                ref: config.recordingCoordinatorRef,
+                mode: runtime.mode,
+              }).pipe(Effect.orDie)
+            }
             config.diagnostics?.setState("idle")
           }
           continue
@@ -341,8 +394,38 @@ export const runAssistantPttCombinedLoop = (config: {
           const streamingCapture = yield* makeStreamingCapture(mode)
           yield* Ref.set(streamingCaptureRef, streamingCapture)
           yield* Ref.set(captureStateRef, nextState)
+          yield* startCaptureAudio
+          const result = yield* tryStartRecording({
+            ref: config.recordingCoordinatorRef,
+            mode: recordingMode,
+          })
+          if (result["_tag"] === "Busy") {
+            yield* Console.log(`[${modePrefix}] Ignored: ${result.activeMode} is active`)
+            yield* Ref.set(captureChunksRef, [])
+            yield* Ref.set(captureStartedAtRef, undefined)
+            yield* Ref.set(captureModeRef, undefined)
+            yield* Ref.set(captureStateRef, pttCaptureIdle)
+            const streamingCapture = yield* Ref.get(streamingCaptureRef)
+            yield* Ref.set(streamingCaptureRef, undefined)
+            if (streamingCapture !== undefined) {
+              yield* streamingCapture.cancel
+            }
+            continue
+          }
+          if (result["_tag"] === "Disabled") {
+            yield* Console.log(`[${modePrefix}] Ignored: PIE is disabled`)
+            yield* Ref.set(captureChunksRef, [])
+            yield* Ref.set(captureStartedAtRef, undefined)
+            yield* Ref.set(captureModeRef, undefined)
+            yield* Ref.set(captureStateRef, pttCaptureIdle)
+            const streamingCapture = yield* Ref.get(streamingCaptureRef)
+            yield* Ref.set(streamingCaptureRef, undefined)
+            if (streamingCapture !== undefined) {
+              yield* streamingCapture.cancel
+            }
+            continue
+          }
           yield* Ref.set(config.pttActiveRef, true)
-          yield* config.setRecordingMode(recordingMode)
           config.diagnostics?.pttHold(mode)
           config.diagnostics?.setState(mode === "transcribe" ? "ptt-transcribe" : "ptt-translate")
           yield* Console.log(`[${modePrefix}] Capturing... release key to stop`)
@@ -405,8 +488,15 @@ export const runAssistantPttCombinedLoop = (config: {
         }
 
         yield* Ref.set(captureStateRef, pttCaptureIdle)
+        yield* stopCaptureAudio
         yield* Ref.set(captureModeRef, undefined)
-        yield* config.setRecordingMode(undefined)
+        const pttRuntime = yield* Ref.get(config.recordingCoordinatorRef)
+        if (pttRuntime.mode === "ptt-transcribe" || pttRuntime.mode === "ptt-translate") {
+          yield* stopRecording({
+            ref: config.recordingCoordinatorRef,
+            mode: pttRuntime.mode,
+          }).pipe(Effect.orDie)
+        }
 
         const startedAt = yield* Ref.get(captureStartedAtRef)
         yield* Ref.set(captureStartedAtRef, undefined)

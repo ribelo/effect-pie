@@ -29,7 +29,12 @@ import {
   DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
   resolveWakewordSpeechStartTimeoutSeconds,
 } from "./constants.js"
-import type { AssistantRecordingMode, AssistantRecordingRuntimeState } from "./recordingState.js"
+import {
+  tryStartRecording,
+  stopRecording,
+  type AssistantRecordingMode,
+  type AssistantRecordingRuntimeState,
+} from "./recordingState.js"
 
 const normalizeWakewordModelName = (modelName: string): string =>
   modelName.endsWith(".json") ? modelName.slice(0, -".json".length) : modelName
@@ -41,6 +46,7 @@ export const runAssistantWakewordTranscribeLoop = (config: {
   readonly setRecordingMode: (
     mode: AssistantRecordingMode | undefined,
   ) => Effect.Effect<void, CliError>
+  readonly recordingCoordinatorRef: Ref.Ref<AssistantRecordingRuntimeState>
   readonly diagnostics?: AssistantDiagnostics | undefined
   readonly recordingStateRef: Ref.Ref<AssistantRecordingRuntimeState>
 }): Effect.Effect<
@@ -185,7 +191,18 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                 `[wakeword-transcribe] Trigger detected (${selectedModelName}). Dictation capture started (silence=${dictationSilenceSeconds}s, max=${dictationMaxSeconds}s, speech_start_timeout=${dictationSpeechStartTimeoutSeconds}s, speech_rms=${dictationSpeechRmsThreshold.toFixed(4)})...`,
               )
 
-              yield* config.setRecordingMode("wakeword")
+              const result = yield* tryStartRecording({
+                ref: config.recordingCoordinatorRef,
+                mode: "wakeword",
+              })
+              if (result["_tag"] === "Busy") {
+                yield* Console.log(`[wakeword-transcribe] Ignored: ${result.activeMode} is active`)
+                return
+              }
+              if (result["_tag"] === "Disabled") {
+                yield* Console.log(`[wakeword-transcribe] Ignored: PIE is disabled`)
+                return
+              }
 
               const audioQueue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
               const transcriptionFiber = yield* transcribeStreamAndInject({
@@ -241,7 +258,17 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                     Effect.ignore,
                   ),
                 ),
-                Effect.onExit(() => config.setRecordingMode(undefined)),
+                Effect.onExit(() =>
+                  Effect.gen(function* () {
+                    const runtime = yield* Ref.get(config.recordingCoordinatorRef)
+                    if (runtime.mode === "wakeword") {
+                      yield* stopRecording({
+                        ref: config.recordingCoordinatorRef,
+                        mode: "wakeword",
+                      }).pipe(Effect.orDie)
+                    }
+                  }),
+                ),
               )
 
               yield* Queue.end(audioQueue)

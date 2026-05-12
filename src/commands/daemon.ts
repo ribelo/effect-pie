@@ -5,10 +5,14 @@ import { mkdir as mkdirNode, unlink } from "node:fs/promises"
 
 import { EFFECT_PI_RUNTIME_DIR } from "../paths.js"
 import { notifyWarning } from "../desktop/notification.js"
+import { isRecord } from "../utils/isRecord.js"
 import {
-  setAssistantRecordingEnabled,
-  type AssistantRecordingRuntimeState,
-  type AssistantRecordingState,
+  setRecordingEnabled,
+  tryStartRecording,
+  stopRecording,
+  getRecordingState,
+  type RecordingRuntimeState,
+  type RecordingMode,
 } from "./assistant/recordingState.js"
 
 export const DAEMON_SOCKET_PATH = `${EFFECT_PI_RUNTIME_DIR}/control.sock`
@@ -57,7 +61,7 @@ const daemonRequest = (options: {
   }).pipe(Effect.catch(() => Effect.succeed("")))
 
 export const startDaemonServer = (config: {
-  readonly ref: Ref.Ref<AssistantRecordingRuntimeState>
+  readonly ref: Ref.Ref<RecordingRuntimeState>
 }): Effect.Effect<never> =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -77,17 +81,7 @@ export const startDaemonServer = (config: {
           const pathname = url.pathname
 
           if (method === "GET" && pathname === "/state") {
-            const runtime = await Effect.runPromise(Ref.get(config.ref))
-            const state: AssistantRecordingState = {
-              enabled: runtime.enabled,
-              active: runtime.mode !== undefined,
-              mode: runtime.mode ?? "idle",
-              startedAt:
-                runtime.startedAtMs !== undefined
-                  ? new Date(runtime.startedAtMs).toISOString()
-                  : null,
-              updatedAt: new Date().toISOString(),
-            }
+            const state = await Effect.runPromise(getRecordingState({ ref: config.ref }))
             return new Response(JSON.stringify(state), {
               headers: { "Content-Type": "application/json" },
             })
@@ -95,7 +89,7 @@ export const startDaemonServer = (config: {
 
           if (method === "POST" && pathname === "/pause") {
             await Effect.runPromise(
-              setAssistantRecordingEnabled({
+              setRecordingEnabled({
                 ref: config.ref,
                 enabled: false,
               }),
@@ -105,7 +99,7 @@ export const startDaemonServer = (config: {
 
           if (method === "POST" && pathname === "/resume") {
             await Effect.runPromise(
-              setAssistantRecordingEnabled({
+              setRecordingEnabled({
                 ref: config.ref,
                 enabled: true,
               }),
@@ -117,12 +111,55 @@ export const startDaemonServer = (config: {
             const current = await Effect.runPromise(Ref.get(config.ref))
             const next = !current.enabled
             await Effect.runPromise(
-              setAssistantRecordingEnabled({
+              setRecordingEnabled({
                 ref: config.ref,
                 enabled: next,
               }),
             )
             return new Response(JSON.stringify({ enabled: next }))
+          }
+
+          if (method === "POST" && pathname === "/meeting/start") {
+            const result = await Effect.runPromise(
+              tryStartRecording({
+                ref: config.ref,
+                mode: "meeting-transcribe",
+              }),
+            )
+            const state = await Effect.runPromise(getRecordingState({ ref: config.ref }))
+            return new Response(JSON.stringify({ result, state }))
+          }
+
+          if (method === "POST" && pathname === "/meeting/stop") {
+            await Effect.runPromise(
+              stopRecording({
+                ref: config.ref,
+                mode: "meeting-transcribe",
+              }),
+            )
+            const state = await Effect.runPromise(getRecordingState({ ref: config.ref }))
+            return new Response(JSON.stringify({ state }))
+          }
+
+          if (method === "POST" && pathname === "/meeting/toggle") {
+            const current = await Effect.runPromise(Ref.get(config.ref))
+            if (current.mode === "meeting-transcribe") {
+              await Effect.runPromise(
+                stopRecording({
+                  ref: config.ref,
+                  mode: "meeting-transcribe",
+                }),
+              )
+            } else if (current.mode === undefined) {
+              await Effect.runPromise(
+                tryStartRecording({
+                  ref: config.ref,
+                  mode: "meeting-transcribe",
+                }),
+              )
+            }
+            const state = await Effect.runPromise(getRecordingState({ ref: config.ref }))
+            return new Response(JSON.stringify({ state }))
           }
 
           return new Response("Not Found", { status: 404 })
@@ -137,6 +174,13 @@ export const startDaemonServer = (config: {
       return yield* Effect.never
     }),
   )
+
+const isValidMode = (mode: string): mode is RecordingMode | "idle" =>
+  mode === "ptt-transcribe" ||
+  mode === "ptt-translate" ||
+  mode === "wakeword" ||
+  mode === "meeting-transcribe" ||
+  mode === "idle"
 
 export const statusCommand = Command.make("status", {}, () =>
   Effect.gen(function* () {
@@ -156,27 +200,29 @@ export const statusCommand = Command.make("status", {}, () =>
       return
     }
 
+    const pr = isRecord(parsed) ? parsed : null
     if (
-      typeof Reflect.get(parsed, "enabled") !== "boolean" ||
-      typeof Reflect.get(parsed, "active") !== "boolean" ||
-      typeof Reflect.get(parsed, "mode") !== "string"
+      pr === null ||
+      typeof pr["enabled"] !== "boolean" ||
+      typeof pr["active"] !== "boolean" ||
+      typeof pr["mode"] !== "string"
     ) {
       yield* Console.log("stale")
       return
     }
 
-    if (Reflect.get(parsed, "enabled") === false) {
+    if (!pr["enabled"]) {
       yield* Console.log("paused")
       return
     }
 
-    if (Reflect.get(parsed, "active") === false) {
+    if (!pr["active"]) {
       yield* Console.log("armed")
       return
     }
 
-    const mode = String(Reflect.get(parsed, "mode"))
-    if (mode === "wakeword" || mode === "ptt-transcribe" || mode === "ptt-translate") {
+    const mode = pr["mode"]
+    if (isValidMode(mode) && mode !== "idle") {
       yield* Console.log(mode)
       return
     }
@@ -204,23 +250,109 @@ export const toggleCommand = Command.make("toggle", {}, () =>
       return
     }
 
-    if (typeof Reflect.get(parsed2, "enabled") !== "boolean") {
+    const p2 = isRecord(parsed2) ? parsed2 : null
+    if (p2 === null || typeof p2["enabled"] !== "boolean") {
       yield* Console.log("stale")
       return
     }
 
-    yield* Console.log(Reflect.get(parsed2, "enabled") === true ? "armed" : "paused")
+    yield* Console.log(p2["enabled"] ? "armed" : "paused")
   }),
 )
 
 export const pauseCommand = Command.make("pause", {}, () =>
-  Effect.gen(function* () {
-    yield* daemonRequest({ method: "POST", path: "/pause" })
-  }),
+  daemonRequest({ method: "POST", path: "/pause" }),
 )
 
 export const resumeCommand = Command.make("resume", {}, () =>
-  Effect.gen(function* () {
-    yield* daemonRequest({ method: "POST", path: "/resume" })
-  }),
+  daemonRequest({ method: "POST", path: "/resume" }),
 )
+
+export const meetingStartCommand = Command.make("meeting-start", {}, () =>
+  Effect.gen(function* () {
+    const response = yield* daemonRequest({ method: "POST", path: "/meeting/start" })
+    if (response === "") {
+      yield* Console.log("off")
+      return
+    }
+    const parsed: unknown = JSON.parse(response)
+    if (typeof parsed !== "object" || parsed === null) {
+      yield* Console.log("stale")
+      return
+    }
+    const pStart = isRecord(parsed) ? parsed : null
+    if (pStart !== null) {
+      const rawResult = pStart["result"]
+      const result = isRecord(rawResult) ? rawResult : null
+      if (result !== null) {
+        if (result["_tag"] === "Busy") {
+          yield* Console.log(`busy:${String(result["activeMode"])}`)
+          return
+        }
+        if (result["_tag"] === "Disabled") {
+          yield* Console.log("paused")
+          return
+        }
+      }
+      const rawState = pStart["state"]
+      const state = isRecord(rawState) ? rawState : null
+      if (state !== null && typeof state["mode"] === "string") {
+        yield* Console.log(state["mode"])
+        return
+      }
+    }
+    yield* Console.log("stale")
+  }),
+).pipe(Command.withDescription("Start meeting transcription"))
+
+export const meetingStopCommand = Command.make("meeting-stop", {}, () =>
+  Effect.gen(function* () {
+    const response = yield* daemonRequest({ method: "POST", path: "/meeting/stop" })
+    if (response === "") {
+      yield* Console.log("off")
+      return
+    }
+    const parsed: unknown = JSON.parse(response)
+    if (typeof parsed !== "object" || parsed === null) {
+      yield* Console.log("stale")
+      return
+    }
+    const pStop = isRecord(parsed) ? parsed : null
+    if (pStop !== null) {
+      const rawState = pStop["state"]
+      const state = isRecord(rawState) ? rawState : null
+      if (state !== null && typeof state["mode"] === "string") {
+        const mode = state["mode"]
+        yield* Console.log(mode === "idle" ? "armed" : mode)
+        return
+      }
+    }
+    yield* Console.log("stale")
+  }),
+).pipe(Command.withDescription("Stop meeting transcription"))
+
+export const meetingToggleCommand = Command.make("meeting-toggle", {}, () =>
+  Effect.gen(function* () {
+    const response = yield* daemonRequest({ method: "POST", path: "/meeting/toggle" })
+    if (response === "") {
+      yield* Console.log("off")
+      return
+    }
+    const parsed: unknown = JSON.parse(response)
+    if (typeof parsed !== "object" || parsed === null) {
+      yield* Console.log("stale")
+      return
+    }
+    const pToggle = isRecord(parsed) ? parsed : null
+    if (pToggle !== null) {
+      const rawState = pToggle["state"]
+      const state = isRecord(rawState) ? rawState : null
+      if (state !== null && typeof state["mode"] === "string") {
+        const mode = state["mode"]
+        yield* Console.log(mode === "idle" ? "armed" : mode)
+        return
+      }
+    }
+    yield* Console.log("stale")
+  }),
+).pipe(Command.withDescription("Toggle meeting transcription"))

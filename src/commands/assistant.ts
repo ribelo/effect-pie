@@ -12,7 +12,6 @@ import {
   setAssistantRecordingMode,
   setAssistantRecordingEnabled,
   ASSISTANT_RECORDING_STATE_PATH,
-  type AssistantRecordingMode,
   type AssistantRecordingRuntimeState,
 } from "./assistant/recordingState.js"
 import { startDaemonServer } from "./daemon.js"
@@ -98,14 +97,10 @@ export const runAssistantDefaultCommand = Effect.fn(
     enabled: true,
     mode: undefined,
     startedAtMs: undefined,
+    transcriptPath: undefined,
+    lastError: undefined,
   })
-  const setRecordingMode = (mode: AssistantRecordingMode | undefined) =>
-    setAssistantRecordingMode({
-      ref: recordingStateRef,
-      mode,
-    })
-
-  yield* setRecordingMode(undefined)
+  yield* setAssistantRecordingMode({ ref: recordingStateRef, mode: undefined })
   yield* setAssistantRecordingEnabled({ ref: recordingStateRef, enabled: true })
   yield* Console.log(`[assistant] Recording state file: ${ASSISTANT_RECORDING_STATE_PATH}`)
 
@@ -124,7 +119,8 @@ export const runAssistantDefaultCommand = Effect.fn(
             sourceName,
             sttConfig,
             pttActiveRef,
-            setRecordingMode,
+            setRecordingMode: (mode) => setAssistantRecordingMode({ ref: recordingStateRef, mode }),
+            recordingCoordinatorRef: recordingStateRef,
             diagnostics,
             pttTranscribeKeysym: config["ptt-transcribe-keysym"],
             pttTranslateKeysym: config["ptt-translate-keysym"],
@@ -136,7 +132,9 @@ export const runAssistantDefaultCommand = Effect.fn(
                   sourceName,
                   sttConfig,
                   pttActiveRef,
-                  setRecordingMode,
+                  setRecordingMode: (mode) =>
+                    setAssistantRecordingMode({ ref: recordingStateRef, mode }),
+                  recordingCoordinatorRef: recordingStateRef,
                   diagnostics,
                   recordingStateRef,
                 }),
@@ -149,7 +147,9 @@ export const runAssistantDefaultCommand = Effect.fn(
         },
       )
     }),
-  ).pipe(Effect.onExit(() => setRecordingMode(undefined)))
+  ).pipe(
+    Effect.onExit(() => setAssistantRecordingMode({ ref: recordingStateRef, mode: undefined })),
+  )
 
   return yield* effect.pipe(
     Effect.provide(Layer.mergeAll(SttService.live(sttConfig), Niri.live)),
