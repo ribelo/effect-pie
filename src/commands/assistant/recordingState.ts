@@ -10,6 +10,7 @@ export const ASSISTANT_RECORDING_STATE_PATH = path.join(EFFECT_PI_RUNTIME_DIR, "
 export type AssistantRecordingMode = "ptt-transcribe" | "ptt-translate" | "wakeword"
 
 export type AssistantRecordingState = {
+  readonly enabled: boolean
   readonly active: boolean
   readonly mode: AssistantRecordingMode | "idle"
   readonly startedAt: string | null
@@ -17,6 +18,7 @@ export type AssistantRecordingState = {
 }
 
 export type AssistantRecordingRuntimeState = {
+  readonly enabled: boolean
   readonly mode: AssistantRecordingMode | undefined
   readonly startedAtMs: number | undefined
 }
@@ -40,6 +42,38 @@ export const persistAssistantRecordingState = (
       }),
   })
 
+export const setAssistantRecordingEnabled = (config: {
+  readonly ref: Ref.Ref<AssistantRecordingRuntimeState>
+  readonly enabled: boolean
+}): Effect.Effect<void, CliError> =>
+  Effect.gen(function* () {
+    const nowMs = Date.now()
+    const nowIso = new Date(nowMs).toISOString()
+
+    const state = yield* Ref.modify(config.ref, (current) => {
+      const nextState: AssistantRecordingState = {
+        enabled: config.enabled,
+        active: current.mode !== undefined,
+        mode: current.mode ?? "idle",
+        startedAt:
+          current.startedAtMs !== undefined ? new Date(current.startedAtMs).toISOString() : null,
+        updatedAt: nowIso,
+      }
+
+      const nextRuntime: AssistantRecordingRuntimeState = {
+        enabled: config.enabled,
+        mode: current.mode,
+        startedAtMs: current.startedAtMs,
+      }
+
+      return [nextState, nextRuntime] as const
+    })
+
+    yield* persistAssistantRecordingState(state).pipe(
+      Effect.tapError((cause: CliError) => Console.log(`[assistant] ${cause.message}`)),
+    )
+  })
+
 export const setAssistantRecordingMode = (config: {
   readonly ref: Ref.Ref<AssistantRecordingRuntimeState>
   readonly mode: AssistantRecordingMode | undefined
@@ -51,6 +85,7 @@ export const setAssistantRecordingMode = (config: {
     const state = yield* Ref.modify(config.ref, (current) => {
       if (config.mode === undefined) {
         const nextState: AssistantRecordingState = {
+          enabled: current.enabled,
           active: false,
           mode: "idle",
           startedAt: null,
@@ -58,6 +93,7 @@ export const setAssistantRecordingMode = (config: {
         }
 
         const nextRuntime: AssistantRecordingRuntimeState = {
+          enabled: current.enabled,
           mode: undefined,
           startedAtMs: undefined,
         }
@@ -71,6 +107,7 @@ export const setAssistantRecordingMode = (config: {
           : nowMs
 
       const nextState: AssistantRecordingState = {
+        enabled: current.enabled,
         active: true,
         mode: config.mode,
         startedAt: new Date(startedAtMs).toISOString(),
@@ -78,6 +115,7 @@ export const setAssistantRecordingMode = (config: {
       }
 
       const nextRuntime: AssistantRecordingRuntimeState = {
+        enabled: current.enabled,
         mode: config.mode,
         startedAtMs,
       }

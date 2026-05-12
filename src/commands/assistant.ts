@@ -10,10 +10,12 @@ import { AssistantDiagnostics, isShellTraceEnabled } from "../assistant/diagnost
 import { CliError } from "./shared.js"
 import {
   setAssistantRecordingMode,
+  setAssistantRecordingEnabled,
   ASSISTANT_RECORDING_STATE_PATH,
   type AssistantRecordingMode,
   type AssistantRecordingRuntimeState,
 } from "./assistant/recordingState.js"
+import { startDaemonServer } from "./daemon.js"
 import {
   DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE,
   DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM,
@@ -93,6 +95,7 @@ export const runAssistantDefaultCommand = Effect.fn(
 
   const pttActiveRef = yield* Ref.make(false)
   const recordingStateRef = yield* Ref.make<AssistantRecordingRuntimeState>({
+    enabled: true,
     mode: undefined,
     startedAtMs: undefined,
   })
@@ -103,6 +106,7 @@ export const runAssistantDefaultCommand = Effect.fn(
     })
 
   yield* setRecordingMode(undefined)
+  yield* setAssistantRecordingEnabled({ ref: recordingStateRef, enabled: true })
   yield* Console.log(`[assistant] Recording state file: ${ASSISTANT_RECORDING_STATE_PATH}`)
 
   const shellTraceEnabled = yield* Effect.sync(() =>
@@ -110,33 +114,41 @@ export const runAssistantDefaultCommand = Effect.fn(
   )
   const diagnostics = shellTraceEnabled ? new AssistantDiagnostics() : undefined
 
-  const effect = Effect.all(
-    [
-      runAssistantPttCombinedLoop({
-        sourceName,
-        sttConfig,
-        pttActiveRef,
-        setRecordingMode,
-        diagnostics,
-        pttTranscribeKeysym: config["ptt-transcribe-keysym"],
-        pttTranslateKeysym: config["ptt-translate-keysym"],
-      }),
-      ...(sttConfig.wakewordEnabled
-        ? [
-            runAssistantWakewordTranscribeLoop({
-              sourceName,
-              sttConfig,
-              pttActiveRef,
-              setRecordingMode,
-              diagnostics,
-            }),
-          ]
-        : []),
-    ],
-    {
-      concurrency: "unbounded",
-      discard: true,
-    },
+  const effect = Effect.scoped(
+    Effect.gen(function* () {
+      yield* startDaemonServer({ ref: recordingStateRef }).pipe(Effect.forkScoped)
+
+      yield* Effect.all(
+        [
+          runAssistantPttCombinedLoop({
+            sourceName,
+            sttConfig,
+            pttActiveRef,
+            setRecordingMode,
+            diagnostics,
+            pttTranscribeKeysym: config["ptt-transcribe-keysym"],
+            pttTranslateKeysym: config["ptt-translate-keysym"],
+            recordingStateRef,
+          }),
+          ...(sttConfig.wakewordEnabled
+            ? [
+                runAssistantWakewordTranscribeLoop({
+                  sourceName,
+                  sttConfig,
+                  pttActiveRef,
+                  setRecordingMode,
+                  diagnostics,
+                  recordingStateRef,
+                }),
+              ]
+            : []),
+        ],
+        {
+          concurrency: "unbounded",
+          discard: true,
+        },
+      )
+    }),
   ).pipe(Effect.onExit(() => setRecordingMode(undefined)))
 
   return yield* effect.pipe(

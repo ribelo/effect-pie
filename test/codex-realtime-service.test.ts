@@ -249,11 +249,11 @@ test("runCodexRealtimeSession fails with typed error on server error event", asy
   }
 })
 
-test("runCodexRealtimeSession fails when session ends with no transcript text", async () => {
+test("runCodexRealtimeSession returns an empty transcript when the session ends with no transcript text", async () => {
   const fake = await makeFakeConnection()
   const audio = Stream.fromIterable([pcm16bytes([0, 0])])
 
-  const sessionPromise = Effect.runPromiseExit(
+  const sessionPromise = Effect.runPromise(
     runCodexRealtimeSession({
       sessionUpdate: buildTranscriptionSessionUpdate({ model: "gpt-realtime-whisper" }),
       audio,
@@ -265,8 +265,8 @@ test("runCodexRealtimeSession fails when session ends with no transcript text", 
   await sleep(10)
   await fake.closeMessages()
 
-  const exit = await sessionPromise
-  assert.strictEqual(Exit.isFailure(exit), true)
+  const transcript = await sessionPromise
+  assert.strictEqual(transcript, "")
 })
 
 test("CodexRealtimeSttError keeps message concise and doesn't embed tokens", () => {

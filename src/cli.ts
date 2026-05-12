@@ -22,6 +22,7 @@ import { wakewordCommand } from "./commands/wakeword.js"
 import { wakewordTuneCommand } from "./commands/wakewordTune.js"
 import { wakewordTrainCommand } from "./commands/wakewordTrain.js"
 import { runAssistantDefaultCommand } from "./commands/assistant.js"
+import { statusCommand, toggleCommand, pauseCommand, resumeCommand } from "./commands/daemon.js"
 
 export const rootCommand = Command.make(
   "pie",
@@ -53,6 +54,10 @@ export const rootCommand = Command.make(
     wakewordCommand,
     wakewordTuneCommand,
     wakewordTrainCommand,
+    statusCommand,
+    toggleCommand,
+    pauseCommand,
+    resumeCommand,
   ]),
 )
 

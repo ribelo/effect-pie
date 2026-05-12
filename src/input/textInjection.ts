@@ -10,6 +10,7 @@ import {
 import type { AssistantState } from "../assistant/diagnostics.js"
 import { typeTextWithWtype } from "../wayland/wtype.js"
 import { typeTextWithXdotool } from "../x11/xdotool.js"
+import { notifyWarning } from "../desktop/notification.js"
 import { normalizeTextForInjection } from "./textNormalization.js"
 export { normalizeTextDeltaForInjection, normalizeTextForInjection } from "./textNormalization.js"
 
@@ -113,6 +114,9 @@ export const injectTranscript = Effect.fn("pie/input/textInjection.injectTranscr
     readonly logPrefix: string
     readonly inject?: boolean
     readonly diagnostics?: InjectionDiagnostics | undefined
+    readonly notifyEmptyTranscript?:
+      | ((title: string, message: string) => Effect.Effect<void, unknown>)
+      | undefined
   }): Effect.fn.Return<
     TextInjectionResult | undefined,
     TextInjectionError | SessionDetectionError,
@@ -121,6 +125,11 @@ export const injectTranscript = Effect.fn("pie/input/textInjection.injectTranscr
     const normalizedText = normalizeTextForInjection(config.text)
     if (normalizedText.length === 0) {
       yield* Console.log(`[${config.logPrefix}] Ignored empty transcript`)
+      const notify = config.notifyEmptyTranscript ?? notifyWarning
+      yield* notify(
+        "pie: no transcript",
+        "Speech-to-text produced no transcript text. Try speaking louder or checking microphone input.",
+      ).pipe(Effect.ignore)
       config.diagnostics?.setState("idle")
       return undefined
     }

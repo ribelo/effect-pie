@@ -35,7 +35,7 @@ import {
   DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
   DEFAULT_ASSISTANT_MIN_DURATION_MS,
 } from "./constants.js"
-import type { AssistantRecordingMode } from "./recordingState.js"
+import type { AssistantRecordingMode, AssistantRecordingRuntimeState } from "./recordingState.js"
 
 type AssistantPttMode = "transcribe" | "translate"
 
@@ -55,6 +55,7 @@ export const runAssistantPttCombinedLoop = (config: {
   readonly diagnostics?: AssistantDiagnostics | undefined
   readonly pttTranscribeKeysym: Option.Option<number>
   readonly pttTranslateKeysym: Option.Option<number>
+  readonly recordingStateRef: Ref.Ref<AssistantRecordingRuntimeState>
 }): Effect.Effect<
   never,
   CliError | PttKeyboardError,
@@ -282,6 +283,27 @@ export const runAssistantPttCombinedLoop = (config: {
 
       mainLoop: while (true) {
         const event = yield* Queue.take(eventQueue)
+
+        const daemonState = yield* Ref.get(config.recordingStateRef)
+        if (!daemonState.enabled) {
+          const state = yield* Ref.get(captureStateRef)
+          if (state.tag !== "idle") {
+            const streamingCapture = yield* Ref.get(streamingCaptureRef)
+            yield* Ref.set(streamingCaptureRef, undefined)
+            if (streamingCapture !== undefined) {
+              yield* streamingCapture.cancel
+            }
+            yield* Ref.set(captureChunksRef, [])
+            yield* Ref.set(captureStartedAtRef, undefined)
+            yield* Ref.set(captureModeRef, undefined)
+            yield* Ref.set(captureStateRef, pttCaptureIdle)
+            yield* Ref.set(deadInputDetectorRef, pttDeadInputDetectorInitial())
+            yield* Ref.set(config.pttActiveRef, false)
+            yield* config.setRecordingMode(undefined)
+            config.diagnostics?.setState("idle")
+          }
+          continue
+        }
 
         const mode: AssistantPttMode | undefined =
           event.keysym === transcribeKeysym

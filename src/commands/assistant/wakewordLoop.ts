@@ -29,7 +29,7 @@ import {
   DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
   resolveWakewordSpeechStartTimeoutSeconds,
 } from "./constants.js"
-import type { AssistantRecordingMode } from "./recordingState.js"
+import type { AssistantRecordingMode, AssistantRecordingRuntimeState } from "./recordingState.js"
 
 const normalizeWakewordModelName = (modelName: string): string =>
   modelName.endsWith(".json") ? modelName.slice(0, -".json".length) : modelName
@@ -42,6 +42,7 @@ export const runAssistantWakewordTranscribeLoop = (config: {
     mode: AssistantRecordingMode | undefined,
   ) => Effect.Effect<void, CliError>
   readonly diagnostics?: AssistantDiagnostics | undefined
+  readonly recordingStateRef: Ref.Ref<AssistantRecordingRuntimeState>
 }): Effect.Effect<
   void,
   CliError,
@@ -146,6 +147,11 @@ export const runAssistantWakewordTranscribeLoop = (config: {
       }).pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {
+            const daemonState = yield* Ref.get(config.recordingStateRef)
+            if (!daemonState.enabled) {
+              return
+            }
+
             if (event.type !== "trigger" || event.event.model !== selectedModelName) {
               return
             }

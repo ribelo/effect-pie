@@ -175,11 +175,7 @@ export const runCodexRealtimeSession = (config: {
     }
     const accumulated = (yield* Ref.get(accumulatedDeltasRef)).trim()
     if (accumulated.length === 0) {
-      return yield* Effect.fail(
-        new CodexRealtimeSttError({
-          message: "Codex realtime session produced no transcript text",
-        }),
-      )
+      return ""
     }
     return accumulated
   })

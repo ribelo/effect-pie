@@ -29,28 +29,30 @@ test("connects to PulseAudio and records audio", { timeout: 30_000 }, async () =
     return
   }
 
-  const program = Effect.gen(function* () {
-    const client = yield* PulseAudioClient
+  const program = Effect.scoped(
+    Effect.gen(function* () {
+      const client = yield* PulseAudioClient
 
-    const serverInfo = yield* client.getServerInfo
-    assert.ok(serverInfo.name !== null && serverInfo.name.length > 0)
+      const serverInfo = yield* client.getServerInfo
+      assert.ok(serverInfo.name !== null && serverInfo.name.length > 0)
 
-    const sources = yield* client.listSources
-    assert.ok(sources.length > 0)
+      const sources = yield* client.listSources
+      assert.ok(sources.length > 0)
 
-    const byteCountRef = yield* Ref.make(0)
+      const byteCountRef = yield* Ref.make(0)
 
-    const recorderFiber = yield* createRecordStream({ fragmentSize: 1024 }).pipe(
-      Stream.runForEach((chunk) => Ref.update(byteCountRef, (current) => current + chunk.length)),
-      Effect.forkDetach,
-    )
+      const recorderFiber = yield* createRecordStream({ fragmentSize: 1024 }).pipe(
+        Stream.runForEach((chunk) => Ref.update(byteCountRef, (current) => current + chunk.length)),
+        Effect.forkScoped,
+      )
 
-    yield* Effect.sleep("1 second")
-    yield* Fiber.interrupt(recorderFiber)
+      yield* Effect.sleep("1 second")
+      yield* Fiber.interrupt(recorderFiber)
 
-    const byteCount = yield* Ref.get(byteCountRef)
-    assert.ok(byteCount > 0)
-  }).pipe(
+      const byteCount = yield* Ref.get(byteCountRef)
+      assert.ok(byteCount > 0)
+    }),
+  ).pipe(
     Effect.timeoutOrElse({
       duration: "20 seconds",
       orElse: () =>
