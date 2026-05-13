@@ -1,4 +1,4 @@
-import { Console, Effect, Fiber, Queue, Ref, Stream, type Cause } from "effect"
+import { Console, Effect, Ref, Stream } from "effect"
 
 import type { PulseAudioClient } from "../../pulse/client.js"
 import { makePcmRecordOptions } from "../../pulse/defs.js"
@@ -19,8 +19,10 @@ import {
 } from "../wakewordHelpers.js"
 import { readDetectionTuningSnapshot, type WakewordSnapshotError } from "../../wakeword/tuning.js"
 import type { SttService } from "../../stt/service.js"
-import { isSttServiceFailure } from "../../stt/streamedDispatch.js"
-import { transcribeStreamAndInject } from "../../stt/transcribeAndInject.js"
+import {
+  classifyStreamingError,
+  makeStreamedSttDispatch,
+} from "../../stt/streamedDispatch.js"
 import type { SttRuntimeConfig } from "../../stt/config.js"
 import { CliError } from "../shared.js"
 import {
@@ -198,30 +200,17 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                 return
               }
 
-              const audioQueue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
-              const transcriptionFiber = yield* transcribeStreamAndInject({
-                operation: "transcribe",
-                model: config.sttConfig.transcriptionModel,
-                audio: Stream.fromQueue(audioQueue),
+              const dispatch = yield* makeStreamedSttDispatch({
+                operation: {
+                  kind: "transcribe",
+                  model: config.sttConfig.transcriptionModel,
+                  language: config.sttConfig.transcriptionLanguage,
+                  promptTemplate: config.sttConfig.transcriptionPrompt,
+                },
                 sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
-                language: config.sttConfig.transcriptionLanguage,
-                promptTemplate: config.sttConfig.transcriptionPrompt,
                 logPrefix: "wakeword-transcribe",
                 diagnostics: config.diagnostics,
-              }).pipe(
-                Effect.mapError((cause) => {
-                  const message = isSttServiceFailure(cause)
-                    ? `Wakeword transcription failed: ${cause.message}`
-                    : `Failed to type wakeword transcript: ${cause.message}`
-
-                  return new CliError({
-                    message,
-                    cause,
-                  })
-                }),
-                Effect.asVoid,
-                (effect) => Effect.forkChild(effect, { startImmediately: true }),
-              )
+              })
 
               yield* recordPcmUntilTrailingSilence({
                 silenceSeconds: dictationSilenceSeconds,
@@ -232,7 +221,7 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                 sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
                 channels: 1,
                 sourceName: config.sourceName,
-                onChunk: (chunk) => Queue.offer(audioQueue, chunk).pipe(Effect.asVoid),
+                onChunk: dispatch.offer,
               }).pipe(
                 Effect.mapError(
                   (cause) =>
@@ -241,12 +230,7 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                       cause,
                     }),
                 ),
-                Effect.tapError(() =>
-                  Queue.end(audioQueue).pipe(
-                    Effect.andThen(Fiber.interrupt(transcriptionFiber)),
-                    Effect.ignore,
-                  ),
-                ),
+                Effect.tapError(() => dispatch.cancel),
                 Effect.onExit(() =>
                   Effect.gen(function* () {
                     const snapshot = yield* coordinator.snapshot
@@ -257,8 +241,15 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                 ),
               )
 
-              yield* Queue.end(audioQueue)
-              yield* Fiber.join(transcriptionFiber)
+              yield* dispatch.finish.pipe(
+                Effect.mapError((cause) => {
+                  const classified = classifyStreamingError(cause, "Wakeword transcription failed")
+                  return new CliError({
+                    message: classified.message,
+                    cause,
+                  })
+                }),
+              )
             }).pipe(
               Effect.catch((cause: CliError) => {
                 config.diagnostics?.sttFailure(cause.message)
