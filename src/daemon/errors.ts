@@ -26,7 +26,10 @@ export const classifyRpcClientError = (error: RpcClientError): DaemonClientError
   const reason = error.reason
 
   if (reason instanceof SocketOpenError) {
-    const code: unknown = Reflect.get(reason.cause, "code")
+    const code: unknown =
+      typeof reason.cause === "object" && reason.cause !== null
+        ? Reflect.get(reason.cause, "code")
+        : undefined
     if (code === "ENOENT" || code === "ECONNREFUSED") {
       return new DaemonClientError({
         kind: "NotRunning",

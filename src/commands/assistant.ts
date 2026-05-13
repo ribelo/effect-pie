@@ -144,7 +144,7 @@ export const runAssistantDefaultCommand = Effect.fn(
         SttService.live(sttConfig),
         Niri.live,
         RecordingCoordinator.live(),
-        DaemonRpcServer.layer.pipe(Layer.provide(RecordingCoordinator.live())),
+        DaemonRpcServer.layer().pipe(Layer.provide(RecordingCoordinator.live())),
       ),
     ),
     Effect.tapError((cause) =>

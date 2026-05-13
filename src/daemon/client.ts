@@ -11,6 +11,8 @@ import { DAEMON_SOCKET_PATH } from "../paths.js"
 import { DaemonRpc } from "./contract.js"
 import { DaemonClientError, classifyRpcClientError } from "./errors.js"
 
+export { DaemonClientError } from "./errors.js"
+
 export class DaemonClient extends Context.Service<
   DaemonClient,
   {
@@ -25,32 +27,30 @@ export class DaemonClient extends Context.Service<
     readonly meetingStop: () => Effect.Effect<RecordingSnapshot, DaemonClientError>
     readonly meetingToggle: () => Effect.Effect<RecordingSnapshot, DaemonClientError>
   }
->()("pie/daemon/DaemonClient") {}
-
-const makeFailingClient = (error: DaemonClientError): {
-  readonly status: () => Effect.Effect<RecordingSnapshot, DaemonClientError>
-  readonly pause: () => Effect.Effect<void, DaemonClientError>
-  readonly resume: () => Effect.Effect<void, DaemonClientError>
-  readonly toggle: () => Effect.Effect<boolean, DaemonClientError>
-  readonly meetingStart: () => Effect.Effect<
-    { readonly result: StartResult; readonly snapshot: RecordingSnapshot },
-    DaemonClientError
-  >
-  readonly meetingStop: () => Effect.Effect<RecordingSnapshot, DaemonClientError>
-  readonly meetingToggle: () => Effect.Effect<RecordingSnapshot, DaemonClientError>
-} => ({
-  status: () => Effect.fail(error),
-  pause: () => Effect.fail(error),
-  resume: () => Effect.fail(error),
-  toggle: () => Effect.fail(error),
-  meetingStart: () => Effect.fail(error),
-  meetingStop: () => Effect.fail(error),
-  meetingToggle: () => Effect.fail(error),
-})
-
-export const layer = (options?: {
-  readonly socketPath?: string
-}): Layer.Layer<DaemonClient> => {
+>()("pie/daemon/DaemonClient") {
+  static readonly layer = (options?: {
+    readonly socketPath?: string
+  }): Layer.Layer<DaemonClient> => {
+    const makeFailingClient = (error: DaemonClientError): {
+      readonly status: () => Effect.Effect<RecordingSnapshot, DaemonClientError>
+      readonly pause: () => Effect.Effect<void, DaemonClientError>
+      readonly resume: () => Effect.Effect<void, DaemonClientError>
+      readonly toggle: () => Effect.Effect<boolean, DaemonClientError>
+      readonly meetingStart: () => Effect.Effect<
+        { readonly result: StartResult; readonly snapshot: RecordingSnapshot },
+        DaemonClientError
+      >
+      readonly meetingStop: () => Effect.Effect<RecordingSnapshot, DaemonClientError>
+      readonly meetingToggle: () => Effect.Effect<RecordingSnapshot, DaemonClientError>
+    } => ({
+      status: () => Effect.fail(error),
+      pause: () => Effect.fail(error),
+      resume: () => Effect.fail(error),
+      toggle: () => Effect.fail(error),
+      meetingStart: () => Effect.fail(error),
+      meetingStop: () => Effect.fail(error),
+      meetingToggle: () => Effect.fail(error),
+    })
   const socketPath = options?.socketPath ?? DAEMON_SOCKET_PATH
 
   const workingLayer = Layer.effect(
@@ -95,45 +95,49 @@ export const layer = (options?: {
     }),
   )
 
-  return workingLayer.pipe(
-    Layer.catchTag("SocketError", (socketError: Socket.SocketError) => {
-      const reason = socketError.reason
-      let clientError: DaemonClientError
+    return workingLayer.pipe(
+      Layer.catchTag("SocketError", (socketError: Socket.SocketError) => {
+        const reason = socketError.reason
+        let clientError: DaemonClientError
 
-      if (reason instanceof Socket.SocketOpenError) {
-        const code: unknown = Reflect.get(reason.cause, "code")
-        if (code === "ENOENT" || code === "ECONNREFUSED") {
+        if (reason instanceof Socket.SocketOpenError) {
+          const code: unknown =
+            typeof reason.cause === "object" && reason.cause !== null
+              ? Reflect.get(reason.cause, "code")
+              : undefined
+          if (code === "ENOENT" || code === "ECONNREFUSED") {
+            clientError = new DaemonClientError({
+              kind: "NotRunning",
+              message: "Daemon is not running",
+              cause: socketError,
+            })
+          } else {
+            clientError = new DaemonClientError({
+              kind: "Transport",
+              message: `Socket open failed: ${socketError.message}`,
+              cause: socketError,
+            })
+          }
+        } else if (
+          reason instanceof Socket.SocketReadError ||
+          reason instanceof Socket.SocketWriteError ||
+          reason instanceof Socket.SocketCloseError
+        ) {
           clientError = new DaemonClientError({
-            kind: "NotRunning",
-            message: "Daemon is not running",
+            kind: "Transport",
+            message: `Socket transport error: ${socketError.message}`,
             cause: socketError,
           })
         } else {
           clientError = new DaemonClientError({
-            kind: "Transport",
-            message: `Socket open failed: ${socketError.message}`,
+            kind: "Protocol",
+            message: `Socket protocol error: ${socketError.message}`,
             cause: socketError,
           })
         }
-      } else if (
-        reason instanceof Socket.SocketReadError ||
-        reason instanceof Socket.SocketWriteError ||
-        reason instanceof Socket.SocketCloseError
-      ) {
-        clientError = new DaemonClientError({
-          kind: "Transport",
-          message: `Socket transport error: ${socketError.message}`,
-          cause: socketError,
-        })
-      } else {
-        clientError = new DaemonClientError({
-          kind: "Protocol",
-          message: `Socket protocol error: ${socketError.message}`,
-          cause: socketError,
-        })
-      }
 
-      return Layer.succeed(DaemonClient, makeFailingClient(clientError))
-    }),
-  )
+        return Layer.succeed(DaemonClient, makeFailingClient(clientError))
+      }),
+    )
+  }
 }

@@ -5,57 +5,63 @@ import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization"
 import * as BunSocketServer from "@effect/platform-bun/BunSocketServer"
 import { mkdir as mkdirNode, unlink } from "node:fs/promises"
 
+import * as path from "node:path"
+
 import { RecordingCoordinator } from "../commands/assistant/coordinator.js"
-import { DAEMON_SOCKET_PATH, EFFECT_PI_RUNTIME_DIR } from "../paths.js"
+import { DAEMON_SOCKET_PATH } from "../paths.js"
 import { DaemonRpc } from "./contract.js"
 
 export const DaemonRpcServer = {
-  layer: Layer.effectDiscard(
-    Effect.gen(function* () {
-      const coordinator = yield* RecordingCoordinator
+  layer: (options?: { readonly socketPath?: string }): Layer.Layer<never> => {
+    const socketPath = options?.socketPath ?? DAEMON_SOCKET_PATH
 
-      yield* Effect.tryPromise({
-        try: async () => {
-          await mkdirNode(EFFECT_PI_RUNTIME_DIR, { recursive: true })
-          await unlink(DAEMON_SOCKET_PATH).catch(() => {})
-        },
-        catch: (cause) => new Error(String(cause)),
-      }).pipe(Effect.catch(() => Effect.void))
+    return Layer.effectDiscard(
+      Effect.gen(function* () {
+        const coordinator = yield* RecordingCoordinator
 
-      const handlers = {
-        Status: () => coordinator.snapshot,
-        Pause: () => coordinator.setEnabled(false),
-        Resume: () => coordinator.setEnabled(true),
-        Toggle: () => coordinator.toggleEnabled,
-        MeetingStart: () =>
-          Effect.gen(function* () {
-            const result = yield* coordinator.tryStart("meeting-transcribe")
-            const snapshot = yield* coordinator.snapshot
-            return { result, snapshot }
-          }),
-        MeetingStop: () =>
-          coordinator.stop("meeting-transcribe").pipe(
-            Effect.andThen(coordinator.snapshot),
+        yield* Effect.tryPromise({
+          try: async () => {
+            await mkdirNode(path.dirname(socketPath), { recursive: true })
+            await unlink(socketPath).catch(() => {})
+          },
+          catch: (cause) => new Error(String(cause)),
+        }).pipe(Effect.catch(() => Effect.void))
+
+        const handlers = {
+          Status: () => coordinator.snapshot,
+          Pause: () => coordinator.setEnabled(false),
+          Resume: () => coordinator.setEnabled(true),
+          Toggle: () => coordinator.toggleEnabled,
+          MeetingStart: () =>
+            Effect.gen(function* () {
+              const result = yield* coordinator.tryStart("meeting-transcribe")
+              const snapshot = yield* coordinator.snapshot
+              return { result, snapshot }
+            }),
+          MeetingStop: () =>
+            coordinator.stop("meeting-transcribe").pipe(
+              Effect.andThen(coordinator.snapshot),
+            ),
+          MeetingToggle: () => coordinator.toggleMeeting,
+        }
+
+        const protocolLayer = RpcServer.layerProtocolSocketServer.pipe(
+          Layer.provide(RpcSerialization.layerNdjson),
+          Layer.provide(
+            BunSocketServer.layer({ path: socketPath }).pipe(Layer.orDie),
           ),
-        MeetingToggle: () => coordinator.toggleMeeting,
-      }
+        )
 
-      const protocolLayer = RpcServer.layerProtocolSocketServer.pipe(
-        Layer.provide(RpcSerialization.layerNdjson),
-        Layer.provide(
-          BunSocketServer.layer({ path: DAEMON_SOCKET_PATH }).pipe(Layer.orDie),
-        ),
-      )
+        const serverLayer = DaemonRpc.toLayer(handlers).pipe(
+          Layer.provideMerge(protocolLayer),
+        )
 
-      const serverLayer = DaemonRpc.toLayer(handlers).pipe(
-        Layer.provideMerge(protocolLayer),
-      )
-
-      const ctx = yield* Layer.build(serverLayer)
-      yield* RpcServer.make(DaemonRpc).pipe(
-        Effect.provideContext(ctx),
-        Effect.forkScoped,
-      )
-    }),
-  ),
+        const ctx = yield* Layer.build(serverLayer)
+        yield* RpcServer.make(DaemonRpc).pipe(
+          Effect.provideContext(ctx),
+          Effect.forkScoped,
+        )
+      }),
+    )
+  },
 }
