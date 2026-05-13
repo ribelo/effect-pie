@@ -19,7 +19,8 @@ import {
 } from "../wakewordHelpers.js"
 import { readDetectionTuningSnapshot, type WakewordSnapshotError } from "../../wakeword/tuning.js"
 import type { SttService } from "../../stt/service.js"
-import { isSttServiceFailure, transcribeStreamAndInject } from "../../stt/transcribeAndInject.js"
+import { isSttServiceFailure } from "../../stt/streamedDispatch.js"
+import { transcribeStreamAndInject } from "../../stt/transcribeAndInject.js"
 import type { SttRuntimeConfig } from "../../stt/config.js"
 import { CliError } from "../shared.js"
 import {

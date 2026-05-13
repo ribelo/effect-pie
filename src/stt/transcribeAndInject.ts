@@ -4,7 +4,6 @@ import type { DesktopSession, SessionDetectionError } from "../desktop/session.j
 import {
   injectTranscript,
   normalizeTextDeltaForInjection,
-  type InjectionDiagnostics,
   TextInjectionBackendService,
   type TextInjectionError,
   type TextInjectionResult,
@@ -13,12 +12,7 @@ import type { NiriError } from "../niri/errors.js"
 import type { Niri } from "../niri/service.js"
 import { promptTemplateWithFocusedWindowContext } from "./focusedWindowPrompt.js"
 import { SttService, type SttServiceError } from "./service.js"
-
-type SttInjectionDiagnostics = InjectionDiagnostics & {
-  readonly sttStart: (model: string) => void
-  readonly sttComplete: (length: number) => void
-  readonly sttFailure: (message: string) => void
-}
+import { isSttServiceFailure, type SttInjectionDiagnostics } from "./streamedDispatch.js"
 
 type TranscribeAndInjectConfig = {
   readonly pcmBytes: Uint8Array
@@ -39,13 +33,6 @@ type TranscribeAndInjectConfig = {
       readonly targetLanguage: string
     }
 )
-
-export const isSttServiceFailure = (cause: { readonly _tag?: string }): boolean =>
-  cause["_tag"] === "OpenRouterSttError" ||
-  cause["_tag"] === "CodexRealtimeSttError" ||
-  cause["_tag"] === "CodexAuthError" ||
-  cause["_tag"] === "SttDispatchError" ||
-  (cause["_tag"]?.startsWith("Niri") ?? false)
 
 type TranscribeStreamAndInjectConfig = {
   readonly audio: Stream.Stream<Uint8Array>
