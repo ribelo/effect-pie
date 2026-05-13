@@ -314,7 +314,7 @@ test("transcribeStreamAndInject adds focused window context to translation promp
 
 test("default realtime command paths do not normalize or WAV-wrap STT audio", async () => {
   const files = [
-    "src/commands/assistant/pttLoop.ts",
+    "src/ptt/loop.ts",
     "src/commands/assistant/wakewordLoop.ts",
     "src/commands/sttInteractive.ts",
   ]

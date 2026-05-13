@@ -1,11 +1,11 @@
 import { test } from "node:test"
 import * as assert from "node:assert/strict"
-import { Effect, Fiber, Option, Queue } from "effect"
+import { Effect, Fiber, Queue } from "effect"
 
 import { KeyboardMonitorService, type KeyboardMonitorKeyEvent } from "../src/keyboard/monitor.js"
 import { PulseAudioClient, type OpenRecordStream } from "../src/pulse/client.js"
 import { PA_SAMPLE_FORMAT } from "../src/pulse/defs.js"
-import { runKeyboardMonitorPtt } from "../src/commands/ptt.js"
+import { runPttLoop } from "../src/ptt/loop.js"
 
 const keyDown: KeyboardMonitorKeyEvent = {
   released: false,
@@ -36,10 +36,10 @@ const recordStream = (queue: Queue.Queue<Uint8Array>): OpenRecordStream => ({
   },
 })
 
-test("runKeyboardMonitorPtt aborts muted flatline captures before streaming or clip handling", async () => {
+test("runPttLoop aborts muted flatline captures before streaming or clip handling", async () => {
   let offeredChunks = 0
   let finishedCaptures = 0
-  let handledClips = 0
+  let cancelledCaptures = 0
 
   await Effect.runPromise(
     Effect.scoped(
@@ -58,16 +58,23 @@ test("runKeyboardMonitorPtt aborts muted flatline captures before streaming or c
           acquireRecordStream: () => Effect.succeed(recordStream(audioQueue)),
         })
 
-        const fiber = yield* runKeyboardMonitorPtt({
-          keycode: Option.some(456),
-          keysym: Option.none(),
-          source: Option.none(),
+        const fiber = yield* runPttLoop({
+          recognize: (event) => {
+            if (event.keycode !== 456) return undefined
+            return {
+              mode: "test" as const,
+              phase: event.released ? ("release" as const) : ("press" as const),
+            }
+          },
+          recordOptions: {
+            sampleSpec: { format: PA_SAMPLE_FORMAT.S16LE, channels: 1, rate: 24_000 },
+            fragmentSize: 1024,
+            sourceName: null,
+          },
           minDurationMs: 1,
-          sampleRate: 24_000,
-          fragmentSize: 1024,
-          logPrefix: "test-ptt",
-          armedMessage: () => "armed",
-          onCaptureStart: () =>
+          logPrefix: () => "test-ptt",
+          onReady: Effect.void,
+          onPress: () =>
             Effect.succeed({
               offer: () =>
                 Effect.sync(() => {
@@ -77,11 +84,9 @@ test("runKeyboardMonitorPtt aborts muted flatline captures before streaming or c
                 Effect.sync(() => {
                   finishedCaptures += 1
                 }),
-              cancel: Effect.void,
-            }),
-          onClip: () =>
-            Effect.sync(() => {
-              handledClips += 1
+              cancel: Effect.sync(() => {
+                cancelledCaptures += 1
+              }),
             }),
         }).pipe(
           Effect.provideService(KeyboardMonitorService, fakeKeyboard),
@@ -95,7 +100,7 @@ test("runKeyboardMonitorPtt aborts muted flatline captures before streaming or c
         yield* Queue.offer(audioQueue, new Uint8Array(1024))
         yield* Queue.offer(audioQueue, new Uint8Array(1024))
         yield* Queue.offer(keyQueue, keyUp)
-        yield* Effect.sleep("10 millis")
+        yield* Effect.sleep("50 millis")
         yield* Fiber.interrupt(fiber)
       }),
     ),
@@ -103,5 +108,5 @@ test("runKeyboardMonitorPtt aborts muted flatline captures before streaming or c
 
   assert.strictEqual(offeredChunks, 0)
   assert.strictEqual(finishedCaptures, 0)
-  assert.strictEqual(handledClips, 0)
+  assert.strictEqual(cancelledCaptures, 1)
 })

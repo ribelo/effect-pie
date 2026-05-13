@@ -40,6 +40,13 @@ type TranscribeAndInjectConfig = {
     }
 )
 
+export const isSttServiceFailure = (cause: { readonly _tag?: string }): boolean =>
+  cause["_tag"] === "OpenRouterSttError" ||
+  cause["_tag"] === "CodexRealtimeSttError" ||
+  cause["_tag"] === "CodexAuthError" ||
+  cause["_tag"] === "SttDispatchError" ||
+  (cause["_tag"]?.startsWith("Niri") ?? false)
+
 type TranscribeStreamAndInjectConfig = {
   readonly audio: Stream.Stream<Uint8Array>
   readonly sampleRate: number
@@ -59,13 +66,6 @@ type TranscribeStreamAndInjectConfig = {
       readonly targetLanguage: string
     }
 )
-
-const isSttServiceFailure = (cause: { readonly _tag?: string }): boolean =>
-  cause["_tag"] === "OpenRouterSttError" ||
-  cause["_tag"] === "CodexRealtimeSttError" ||
-  cause["_tag"] === "CodexAuthError" ||
-  cause["_tag"] === "SttDispatchError" ||
-  (cause["_tag"]?.startsWith("Niri") ?? false)
 
 export const transcribeAndInject = Effect.fn("pie/stt/transcribeAndInject.transcribeAndInject")(
   function* (

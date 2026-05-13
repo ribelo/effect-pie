@@ -1,85 +1,23 @@
-import {
-  Console,
-  Duration,
-  Effect,
-  Fiber,
-  Layer,
-  Option,
-  Queue,
-  Ref,
-  Stream,
-  type Cause,
-} from "effect"
+import { Console, Effect, Layer, Option, Queue } from "effect"
 import { Command, Flag } from "effect/unstable/cli"
 import * as path from "node:path"
 import { KeyboardMonitorService, PttKeyboardError } from "../keyboard/monitor.js"
-import type { PulseAudioClient } from "../pulse/client.js"
 import { makePcmRecordOptions } from "../pulse/defs.js"
-import { createRecordStream } from "../pulse/stream.js"
-import { MIN_GAIN_TO_APPLY, normalizePcmForStt, pcmPeak, pcmRms } from "../audio/pcm.js"
+
 import { loadSttRuntimeConfig, STT_CONFIG_PATH, type SttConfigError } from "../stt/config.js"
 import { SttService } from "../stt/service.js"
-import { transcribeStreamAndInject } from "../stt/transcribeAndInject.js"
 import { Niri } from "../niri/service.js"
-import type { DesktopSession } from "../desktop/session.js"
-import type { TextInjectionBackendService } from "../input/textInjection.js"
-import { notifyWarning } from "../desktop/notification.js"
-import {
-  pttCaptureIdle,
-  pttCaptureIsAcceptingChunks,
-  pttCapturePostRollRemainingMs,
-  pttCaptureRelease,
-  pttCaptureStart,
-  type PttCaptureState,
-} from "../ptt/capture.js"
-import {
-  pttDeadInputDetectorInitial,
-  pttDeadInputDetectorProcessChunk,
-  pttDeadInputDetectorSync,
-} from "../ptt/deadInput.js"
+
 import {
   closeGlobalShortcutSession,
   monitorPortalSignals,
   setupGlobalShortcutSession,
 } from "../wayland/globalShortcuts.js"
-import { writePcmWavFile, type WakewordTrainingError } from "../wakeword/training.js"
+
 import { EFFECT_PI_DATA_DIR } from "../paths.js"
-import {
-  concatChunks,
-  makePttClipPath,
-  optionalPositiveIntegerFlag,
-  optionalSourceFlag,
-  positiveIntegerFlag,
-} from "./shared.js"
-
-type PttTriggerBinding = {
-  readonly keycode: number
-  readonly keysym: number
-}
-
-type PttCapturedClip = {
-  readonly durationMs: number
-  readonly pcmBytes: Uint8Array
-}
-
-type PttStreamingCapture<R> = {
-  readonly offer: (chunk: Uint8Array) => Effect.Effect<void, PttKeyboardError, R>
-  readonly finish: (clip: PttCapturedClip) => Effect.Effect<void, PttKeyboardError, R>
-  readonly cancel: Effect.Effect<void, PttKeyboardError, R>
-}
-
-type KeyboardMonitorPttConfig<R> = {
-  readonly keycode: Option.Option<number>
-  readonly keysym: Option.Option<number>
-  readonly source: Option.Option<string>
-  readonly minDurationMs: number
-  readonly sampleRate: number
-  readonly fragmentSize: number
-  readonly logPrefix: string
-  readonly armedMessage: (trigger: PttTriggerBinding) => string
-  readonly onClip?: (clip: PttCapturedClip) => Effect.Effect<void, PttKeyboardError, R>
-  readonly onCaptureStart?: () => Effect.Effect<PttStreamingCapture<R>, PttKeyboardError, R>
-}
+import { optionalPositiveIntegerFlag, optionalSourceFlag, positiveIntegerFlag } from "./shared.js"
+import { runPttLoop } from "../ptt/loop.js"
+import { makeStreamedSttHandle, makeWavClipHandle } from "../ptt/handles.js"
 
 const pttKeycodeFlag = optionalPositiveIntegerFlag(
   "keycode",
@@ -97,396 +35,59 @@ export const toPttKeyboardError = (message: string, cause: unknown): PttKeyboard
     cause,
   })
 
-const mapStreamingSttPttError = (
-  prefix: string,
-  cause: { readonly _tag?: string; readonly message: string },
-) => {
-  const message =
-    cause["_tag"] === "OpenRouterSttError" ||
-    cause["_tag"] === "CodexRealtimeSttError" ||
-    cause["_tag"] === "CodexAuthError" ||
-    cause["_tag"] === "SttDispatchError" ||
-    (cause["_tag"]?.startsWith("Niri") ?? false)
-      ? `${prefix}: ${cause.message}`
-      : `Failed to inject streamed text: ${cause.message}`
-
-  return toPttKeyboardError(message, cause)
+type TriggerBinding = {
+  readonly keycode: number
+  readonly keysym: number
 }
 
-const makeStreamingSttCapture = (config: {
-  readonly sampleRate: number
-  readonly logPrefix: string
-  readonly failurePrefix: string
-  readonly inject?: boolean | undefined
-  readonly operation:
-    | {
-        readonly kind: "transcribe"
-        readonly model: string
-        readonly language: string
-        readonly promptTemplate: string
-      }
-    | {
-        readonly kind: "translate"
-        readonly model: string
-        readonly sourceLanguage: string
-        readonly targetLanguage: string
-        readonly promptTemplate: string
-      }
-}): Effect.Effect<
-  PttStreamingCapture<never>,
-  PttKeyboardError,
-  SttService | Niri | TextInjectionBackendService | DesktopSession
-> =>
-  Effect.gen(function* () {
-    const services = yield* Effect.context<
-      SttService | Niri | TextInjectionBackendService | DesktopSession
-    >()
-    let audioQueue: Queue.Queue<Uint8Array, Cause.Done> | undefined
-    let transcriptFiber: Fiber.Fiber<void, PttKeyboardError> | undefined
-
-    const start = Effect.gen(function* () {
-      if (audioQueue !== undefined) {
-        return audioQueue
-      }
-
-      const queue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
-      const stream = Stream.fromQueue(queue)
-      const transcriptEffect =
-        config.operation.kind === "transcribe"
-          ? transcribeStreamAndInject({
-              operation: "transcribe",
-              model: config.operation.model,
-              audio: stream,
-              sampleRate: config.sampleRate,
-              language: config.operation.language,
-              promptTemplate: config.operation.promptTemplate,
-              logPrefix: config.logPrefix,
-              ...(config.inject !== undefined ? { inject: config.inject } : {}),
-            })
-          : transcribeStreamAndInject({
-              operation: "translate",
-              model: config.operation.model,
-              audio: stream,
-              sampleRate: config.sampleRate,
-              sourceLanguage: config.operation.sourceLanguage,
-              targetLanguage: config.operation.targetLanguage,
-              promptTemplate: config.operation.promptTemplate,
-              logPrefix: config.logPrefix,
-              ...(config.inject !== undefined ? { inject: config.inject } : {}),
-            })
-
-      transcriptFiber = yield* transcriptEffect.pipe(
-        Effect.mapError((cause) => mapStreamingSttPttError(config.failurePrefix, cause)),
-        Effect.asVoid,
-        (effect) => Effect.forkChild(effect, { startImmediately: true }),
-      )
-      audioQueue = queue
-      return queue
-    })
-    const startProvided = start.pipe(Effect.provideContext(services))
-
-    return {
-      offer: (chunk) =>
-        startProvided.pipe(
-          Effect.flatMap((queue) => Queue.offer(queue, chunk)),
-          Effect.asVoid,
-        ),
-      finish: () =>
-        Effect.gen(function* () {
-          if (audioQueue === undefined || transcriptFiber === undefined) {
-            return
-          }
-          yield* Queue.end(audioQueue)
-          yield* Fiber.join(transcriptFiber)
-        }),
-      cancel: Effect.gen(function* () {
-        if (audioQueue === undefined || transcriptFiber === undefined) {
-          return
-        }
-        yield* Queue.end(audioQueue)
-        yield* Fiber.interrupt(transcriptFiber)
-      }).pipe(Effect.ignore),
-    }
-  })
-
-export const runKeyboardMonitorPtt = Effect.fn("pie/commands/ptt.runKeyboardMonitorPtt")(function* <
-  R,
->(
-  config: KeyboardMonitorPttConfig<R>,
-): Effect.fn.Return<never, PttKeyboardError, PulseAudioClient | KeyboardMonitorService | R> {
-  return yield* Effect.scoped(
+const resolveTriggerBinding = (config: {
+  readonly keycode: Option.Option<number>
+  readonly keysym: Option.Option<number>
+}): Effect.Effect<TriggerBinding, PttKeyboardError, KeyboardMonitorService> =>
+  Effect.scoped(
     Effect.gen(function* () {
+      if (Option.isSome(config.keycode) || Option.isSome(config.keysym)) {
+        return {
+          keycode: Option.getOrElse(config.keycode, () => 0),
+          keysym: Option.getOrElse(config.keysym, () => 0),
+        }
+      }
+
+      yield* Console.log(
+        "PTT key not configured. Press the key you want to use for push-to-talk to learn it now.",
+      )
+
       const keyboard = yield* KeyboardMonitorService
       const eventQueue = yield* keyboard.subscribe
 
-      const triggerRef = yield* Ref.make<PttTriggerBinding | undefined>(
-        Option.isSome(config.keycode)
-          ? {
-              keycode: config.keycode.value,
-              keysym: Option.isSome(config.keysym) ? config.keysym.value : 0,
-            }
-          : Option.isSome(config.keysym)
-            ? {
-                keycode: 0,
-                keysym: config.keysym.value,
-              }
-            : undefined,
-      )
-
-      if (Option.isNone(config.keycode) && Option.isNone(config.keysym)) {
-        yield* Console.log(
-          "PTT key not configured. Press the key you want to use for push-to-talk to learn it now.",
-        )
-
-        while (true) {
-          const event = yield* Queue.take(eventQueue)
-          if (event.released) {
-            continue
-          }
-
-          yield* Ref.set(triggerRef, {
-            keycode: event.keycode,
-            keysym: event.keysym,
-          })
-
-          yield* Console.log(
-            `Learned trigger key: keycode=${event.keycode} keysym=${event.keysym} (use --keycode ${event.keycode} for a stable binding)`,
-          )
-          break
-        }
-      }
-
-      const trigger = yield* Ref.get(triggerRef)
-      if (trigger === undefined) {
-        return yield* new PttKeyboardError({
-          message: "No push-to-talk key configured. Use --keycode/--keysym or learn one.",
-        })
-      }
-
-      const captureStateRef = yield* Ref.make<PttCaptureState>(pttCaptureIdle)
-      const captureChunksRef = yield* Ref.make<ReadonlyArray<Uint8Array>>([])
-      const captureStartedAtRef = yield* Ref.make<number | undefined>(undefined)
-      const streamingCaptureRef = yield* Ref.make<PttStreamingCapture<R> | undefined>(undefined)
-
-      yield* Effect.addFinalizer(() =>
-        Ref.get(streamingCaptureRef).pipe(
-          Effect.flatMap((streamingCapture) =>
-            streamingCapture === undefined ? Effect.void : streamingCapture.cancel,
-          ),
-          Effect.ignore,
-        ),
-      )
-
-      const recordOptions = makePcmRecordOptions({
-        rate: config.sampleRate,
-        fragmentSize: config.fragmentSize,
-        sourceName: Option.getOrUndefined(config.source),
-      })
-
-      const deadInputDetectorRef = yield* Ref.make(pttDeadInputDetectorInitial())
-
-      yield* createRecordStream(recordOptions).pipe(
-        Stream.runForEach((chunk) =>
-          Effect.gen(function* () {
-            const state = yield* Ref.get(captureStateRef)
-            const isActive = pttCaptureIsAcceptingChunks(state)
-
-            yield* Ref.update(deadInputDetectorRef, (detector) =>
-              pttDeadInputDetectorSync(detector, isActive),
-            )
-
-            if (!isActive) {
-              return
-            }
-
-            const {
-              detector: nextDetector,
-              warn,
-              dead,
-              hasInput,
-            } = pttDeadInputDetectorProcessChunk(yield* Ref.get(deadInputDetectorRef), chunk)
-            yield* Ref.set(deadInputDetectorRef, nextDetector)
-
-            if (warn) {
-              yield* Console.log(
-                `[${config.logPrefix}] No input detected; microphone probably muted`,
-              )
-              yield* notifyWarning(
-                "pie: no microphone input",
-                "No input detected during push-to-talk. Your microphone may be muted.",
-              )
-            }
-
-            if (dead) {
-              const streamingCapture = yield* Ref.get(streamingCaptureRef)
-              yield* Ref.set(streamingCaptureRef, undefined)
-              if (streamingCapture !== undefined) {
-                yield* streamingCapture.cancel
-              }
-              yield* Ref.set(captureChunksRef, [])
-              yield* Ref.set(captureStartedAtRef, undefined)
-              yield* Ref.set(captureStateRef, pttCaptureIdle)
-              yield* Ref.set(deadInputDetectorRef, pttDeadInputDetectorInitial())
-              return
-            }
-
-            yield* Ref.update(captureChunksRef, (chunks) => {
-              const next = chunks.slice()
-              next.push(chunk)
-              return next
-            })
-
-            if (hasInput) {
-              const streamingCapture = yield* Ref.get(streamingCaptureRef)
-              if (streamingCapture !== undefined) {
-                yield* streamingCapture.offer(chunk)
-              }
-            }
-          }),
-        ),
-        Effect.forkScoped,
-      )
-
-      yield* Console.log(config.armedMessage(trigger))
-
-      mainLoop: while (true) {
+      while (true) {
         const event = yield* Queue.take(eventQueue)
-
-        const keycodeMatches = trigger.keycode > 0 && event.keycode === trigger.keycode
-        const keysymMatches = trigger.keysym > 0 && event.keysym === trigger.keysym
-
-        if (!keycodeMatches && !keysymMatches) {
+        if (event.released) {
           continue
         }
 
-        if (!event.released) {
-          const state = yield* Ref.get(captureStateRef)
-          const nextState = pttCaptureStart(state, Date.now())
-          if (nextState === state) {
-            continue
-          }
-
-          if (state.tag === "postRoll") {
-            yield* Ref.set(captureStateRef, nextState)
-            yield* Console.log(`[${config.logPrefix}] Post-roll cancelled, continuing capture`)
-            continue
-          }
-
-          yield* Ref.set(captureChunksRef, [])
-          yield* Ref.set(deadInputDetectorRef, pttDeadInputDetectorInitial())
-          yield* Ref.set(captureStartedAtRef, Date.now())
-          const streamingCapture =
-            config.onCaptureStart === undefined ? undefined : yield* config.onCaptureStart()
-          yield* Ref.set(streamingCaptureRef, streamingCapture)
-          yield* Ref.set(captureStateRef, nextState)
-          yield* Console.log(`[${config.logPrefix}] Capturing... release key to stop`)
-          continue
-        }
-
-        const state = yield* Ref.get(captureStateRef)
-        if (state.tag !== "capturing") {
-          continue
-        }
-
-        yield* Ref.set(captureStateRef, pttCaptureRelease(state, Date.now()))
-
-        postRollLoop: while (true) {
-          const postRollState = yield* Ref.get(captureStateRef)
-          const remaining = pttCapturePostRollRemainingMs(postRollState, Date.now())
-          if (remaining <= 0) {
-            break postRollLoop
-          }
-
-          const nextEvent = yield* Queue.take(eventQueue).pipe(
-            Effect.timeoutOrElse({
-              duration: Duration.millis(remaining),
-              orElse: () => Effect.void,
-            }),
-          )
-
-          if (nextEvent === undefined) {
-            break postRollLoop
-          }
-
-          const evt = nextEvent
-          const nextKeycodeMatches = trigger.keycode > 0 && evt.keycode === trigger.keycode
-          const nextKeysymMatches = trigger.keysym > 0 && evt.keysym === trigger.keysym
-
-          if (!nextKeycodeMatches && !nextKeysymMatches) {
-            continue postRollLoop
-          }
-
-          if (!evt.released) {
-            yield* Ref.update(captureStateRef, (s) => pttCaptureStart(s, Date.now()))
-            yield* Console.log(`[${config.logPrefix}] Post-roll cancelled, continuing capture`)
-            continue mainLoop
-          }
-        }
-
-        yield* Ref.set(captureStateRef, pttCaptureIdle)
-
-        const startedAt = yield* Ref.get(captureStartedAtRef)
-        yield* Ref.set(captureStartedAtRef, undefined)
-
-        const durationMs = startedAt === undefined ? 0 : Date.now() - startedAt
-        const chunks = yield* Ref.get(captureChunksRef)
-        yield* Ref.set(captureChunksRef, [])
-        const streamingCapture = yield* Ref.get(streamingCaptureRef)
-        yield* Ref.set(streamingCaptureRef, undefined)
-
-        const capturedBytes = chunks.reduce((sum, chunk) => sum + chunk.length, 0)
         yield* Console.log(
-          `[${config.logPrefix}] Capture stopped (${durationMs}ms, ${capturedBytes} bytes)`,
+          `Learned trigger key: keycode=${event.keycode} keysym=${event.keysym} (use --keycode ${event.keycode} for a stable binding)`,
         )
 
-        if (durationMs < config.minDurationMs) {
-          yield* Console.log(
-            `[${config.logPrefix}] Ignored short clip (${durationMs}ms < ${config.minDurationMs}ms)`,
-          )
-          if (streamingCapture !== undefined) {
-            yield* streamingCapture.cancel
-          }
-          continue
-        }
-
-        const rawPcmBytes = concatChunks(chunks)
-        if (rawPcmBytes.length === 0) {
-          yield* Console.log(`[${config.logPrefix}] Ignored empty clip`)
-          if (streamingCapture !== undefined) {
-            yield* streamingCapture.cancel
-          }
-          continue
-        }
-
-        if (streamingCapture !== undefined) {
-          yield* streamingCapture.finish({
-            durationMs,
-            pcmBytes: rawPcmBytes,
-          })
-          continue
-        }
-
-        if (config.onClip === undefined) {
-          return yield* new PttKeyboardError({
-            message: `[${config.logPrefix}] PTT capture has no clip handler`,
-          })
-        }
-
-        const { normalizedBytes, gain } = normalizePcmForStt(rawPcmBytes)
-        if (gain > MIN_GAIN_TO_APPLY) {
-          yield* Console.log(
-            `[${config.logPrefix}] Normalized clip (rms=${pcmRms(rawPcmBytes).toFixed(4)} peak=${pcmPeak(rawPcmBytes).toFixed(4)} gain=${gain.toFixed(2)})`,
-          )
-        }
-
-        yield* config.onClip({
-          durationMs,
-          pcmBytes: normalizedBytes,
-        })
+        return { keycode: event.keycode, keysym: event.keysym }
       }
     }),
   )
-})
+
+const makePttRecognize =
+  (binding: TriggerBinding) =>
+  (event: { readonly released: boolean; readonly keycode: number; readonly keysym: number }) => {
+    const keycodeMatches = binding.keycode > 0 && event.keycode === binding.keycode
+    const keysymMatches = binding.keysym > 0 && event.keysym === binding.keysym
+    if (!keycodeMatches && !keysymMatches) {
+      return undefined
+    }
+    return {
+      mode: "ptt" as const,
+      phase: event.released ? ("release" as const) : ("press" as const),
+    }
+  }
 
 export const pttPortalCommand = Command.make(
   "ptt-portal",
@@ -557,32 +158,36 @@ export const pttCommand = Command.make(
     ),
   },
   (config) =>
-    runKeyboardMonitorPtt({
-      keycode: config.keycode,
-      keysym: config.keysym,
-      source: config.source,
-      minDurationMs: config.minDurationMs,
-      sampleRate: config.sampleRate,
-      fragmentSize: config.fragmentSize,
-      logPrefix: "ptt",
-      armedMessage: (trigger) =>
-        `PTT armed. Hold keycode=${trigger.keycode} keysym=${trigger.keysym} to record. Clips -> ${config.outputDir}. Press Ctrl+C to stop.`,
-      onClip: (clip) =>
-        Effect.gen(function* () {
-          const outputPath = makePttClipPath(config.outputDir)
-          yield* writePcmWavFile(outputPath, clip.pcmBytes, config.sampleRate).pipe(
-            Effect.mapError((cause: WakewordTrainingError) =>
-              toPttKeyboardError(
-                `Failed to write PTT clip at ${outputPath}: ${cause.message}`,
-                cause,
-              ),
-            ),
-          )
+    Effect.scoped(
+      Effect.gen(function* () {
+        const binding = yield* resolveTriggerBinding({
+          keycode: config.keycode,
+          keysym: config.keysym,
+        })
 
-          const seconds = (clip.durationMs / 1000).toFixed(2)
-          yield* Console.log(`[ptt] Saved ${outputPath} (${seconds}s)`)
-        }),
-    }),
+        yield* Effect.sleep("50 millis")
+
+        return yield* runPttLoop({
+          recognize: makePttRecognize(binding),
+          recordOptions: makePcmRecordOptions({
+            rate: config.sampleRate,
+            fragmentSize: config.fragmentSize,
+            sourceName: Option.getOrUndefined(config.source),
+          }),
+          minDurationMs: config.minDurationMs,
+          logPrefix: () => "ptt",
+          onReady: Console.log(
+            `PTT armed. Hold keycode=${binding.keycode} keysym=${binding.keysym} to record. Clips -> ${config.outputDir}. Press Ctrl+C to stop.`,
+          ),
+          onPress: () =>
+            makeWavClipHandle({
+              outputDir: config.outputDir,
+              sampleRate: config.sampleRate,
+              logPrefix: "ptt",
+            }),
+        })
+      }),
+    ),
 ).pipe(
   Command.withDescription(
     "Experimental keyboard-monitor push-to-talk: hold key to capture audio and save clips as WAV",
@@ -626,18 +231,27 @@ export const pttTranscribeCommand = Command.make(
       )
       yield* Console.log(`[ptt-transcribe] Language: ${transcriptionLanguage}`)
 
-      return yield* runKeyboardMonitorPtt({
+      const binding = yield* resolveTriggerBinding({
         keycode: config.keycode,
         keysym: config.keysym,
-        source: config.source,
+      })
+
+      yield* Effect.sleep("50 millis")
+
+      return yield* runPttLoop({
+        recognize: makePttRecognize(binding),
+        recordOptions: makePcmRecordOptions({
+          rate: config.sampleRate,
+          fragmentSize: config.fragmentSize,
+          sourceName: Option.getOrUndefined(config.source),
+        }),
         minDurationMs: config.minDurationMs,
-        sampleRate: config.sampleRate,
-        fragmentSize: config.fragmentSize,
-        logPrefix: "ptt-transcribe",
-        armedMessage: (trigger) =>
-          `PTT transcribe armed. Hold keycode=${trigger.keycode} keysym=${trigger.keysym} to dictate. Press Ctrl+C to stop.`,
-        onCaptureStart: () =>
-          makeStreamingSttCapture({
+        logPrefix: () => "ptt-transcribe",
+        onReady: Console.log(
+          `PTT transcribe armed. Hold keycode=${binding.keycode} keysym=${binding.keysym} to dictate. Press Ctrl+C to stop.`,
+        ),
+        onPress: () =>
+          makeStreamedSttHandle({
             sampleRate: config.sampleRate,
             logPrefix: "ptt-transcribe",
             failurePrefix: "STT request failed",
@@ -700,18 +314,27 @@ export const pttTranslateCommand = Command.make(
       yield* Console.log(`[ptt-translate] Source language: ${sourceLanguage}`)
       yield* Console.log(`[ptt-translate] Target language: ${targetLanguage}`)
 
-      return yield* runKeyboardMonitorPtt({
+      const binding = yield* resolveTriggerBinding({
         keycode: config.keycode,
         keysym: config.keysym,
-        source: config.source,
+      })
+
+      yield* Effect.sleep("50 millis")
+
+      return yield* runPttLoop({
+        recognize: makePttRecognize(binding),
+        recordOptions: makePcmRecordOptions({
+          rate: config.sampleRate,
+          fragmentSize: config.fragmentSize,
+          sourceName: Option.getOrUndefined(config.source),
+        }),
         minDurationMs: config.minDurationMs,
-        sampleRate: config.sampleRate,
-        fragmentSize: config.fragmentSize,
-        logPrefix: "ptt-translate",
-        armedMessage: (trigger) =>
-          `PTT translate armed. Hold keycode=${trigger.keycode} keysym=${trigger.keysym} to dictate. ${sourceLanguage} -> ${targetLanguage}. Press Ctrl+C to stop.`,
-        onCaptureStart: () =>
-          makeStreamingSttCapture({
+        logPrefix: () => "ptt-translate",
+        onReady: Console.log(
+          `PTT translate armed. Hold keycode=${binding.keycode} keysym=${binding.keysym} to dictate. ${sourceLanguage} -> ${targetLanguage}. Press Ctrl+C to stop.`,
+        ),
+        onPress: () =>
+          makeStreamedSttHandle({
             sampleRate: config.sampleRate,
             logPrefix: "ptt-translate",
             failurePrefix: "STT+translation request failed",
