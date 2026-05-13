@@ -1,5 +1,6 @@
 import * as Data from "effect/Data"
-import { RpcClientError, RpcClientDefect } from "effect/unstable/rpc/RpcClientError"
+import type { RpcClientError } from "effect/unstable/rpc/RpcClientError"
+import { RpcClientDefect } from "effect/unstable/rpc/RpcClientError"
 import {
   SocketOpenError,
   SocketReadError,
@@ -25,8 +26,8 @@ export const classifyRpcClientError = (error: RpcClientError): DaemonClientError
   const reason = error.reason
 
   if (reason instanceof SocketOpenError) {
-    const socketCause = reason.cause as { readonly code?: string } | undefined
-    if (socketCause?.code === "ENOENT" || socketCause?.code === "ECONNREFUSED") {
+    const code: unknown = Reflect.get(reason.cause, "code")
+    if (code === "ENOENT" || code === "ECONNREFUSED") {
       return new DaemonClientError({
         kind: "NotRunning",
         message: "Daemon is not running",

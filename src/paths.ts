@@ -36,4 +36,6 @@ export const EFFECT_PI_RUNTIME_DIR = path.join(XDG_RUNTIME_DIR, APP_DIR_NAME)
 export const EFFECT_PI_OPENWAKEWORD_DATA_DIR = path.join(EFFECT_PI_DATA_DIR, "openwakeword")
 export const EFFECT_PI_WAKEWORD_CONFIG_DIR = path.join(EFFECT_PI_CONFIG_DIR, "wakeword")
 
+export const DAEMON_SOCKET_PATH = path.join(EFFECT_PI_RUNTIME_DIR, "control.sock")
+
 export const BUNDLED_OPENWAKEWORD_ASSET_DIR = path.join(process.cwd(), "assets", "openwakeword")

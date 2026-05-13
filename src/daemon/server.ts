@@ -6,10 +6,8 @@ import * as BunSocketServer from "@effect/platform-bun/BunSocketServer"
 import { mkdir as mkdirNode, unlink } from "node:fs/promises"
 
 import { RecordingCoordinator } from "../commands/assistant/coordinator.js"
-import { EFFECT_PI_RUNTIME_DIR } from "../paths.js"
+import { DAEMON_SOCKET_PATH, EFFECT_PI_RUNTIME_DIR } from "../paths.js"
 import { DaemonRpc } from "./contract.js"
-
-export const DAEMON_SOCKET_PATH = `${EFFECT_PI_RUNTIME_DIR}/control.sock`
 
 export const DaemonRpcServer = {
   layer: Layer.effectDiscard(
