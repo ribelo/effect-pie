@@ -29,3 +29,7 @@ The `effect/unstable/rpc` group in `src/daemon/contract.ts` that types the CLI-t
 ## Daemon client
 
 The `DaemonClient` Context.Service in `src/daemon/client.ts` exposes one typed method per RPC. All methods collapse transport errors into `DaemonClientError` with one of three kinds: `NotRunning` (socket missing or refused), `Transport` (socket read/write/close failure), `Protocol` (schema decode defect or RPC library defect). The CLI output convention is: `NotRunning` -> print `off` to stdout and exit 0; `Transport`/`Protocol` -> print to stderr and exit 1; `toggle` additionally calls `notifyWarning` on `NotRunning`. `DaemonClient.layer` is provided only on the seven daemon-facing CLI commands in `src/commands/daemon.ts` so that `pie sources`, `pie ptt`, `pie wakeword`, etc. never open the socket.
+
+## Niri IPC
+
+The `Niri` Context.Service in `src/niri/niri.ts` is the single boundary for Niri compositor interaction. `Niri.live({ niriPath?, timeoutMs?, runner? })` builds the service; when `runner` is supplied (test path), niri-path resolution is skipped. Pure command builders and validators live in `src/niri/commands.ts` (`buildNiriReadCommand`, `buildNiriActionCommand`, `buildNiriOutputCommand`, `workspaceReferenceArg`, `sizeChangeArg`). The `CommandRunner` seam (`{ run, streamLines }`) lets tests inject fake subprocess behaviour without a `Context.Service` for the runner. There is no `NiriTransport` service; the old transport/service split was collapsed into one module.

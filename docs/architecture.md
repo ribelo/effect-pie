@@ -35,9 +35,10 @@ pie/
 - `src/pulse/client.ts` manages the native protocol socket, command/reply tags, and record stream lifecycle.
 - `src/pulse/stream.ts` exposes Effect `Stream<Uint8Array>` chunks for live PCM audio.
 - Niri compositor boundary:
-- `src/niri/service.ts` exposes the `Niri` Effect service and `Niri.live` layer.
+- `src/niri/niri.ts` exposes the `Niri` Effect service and `Niri.live({ runner? })` layer.
 - `src/niri/schema.ts` validates `niri msg --json` payloads and event-stream lines with Effect Schema.
-- `src/niri/transport.ts` owns command construction, `niri` process execution, event-stream process lifetime, and typed IPC failures.
+- `src/niri/commands.ts` owns pure command construction, action/output validators, and typed argument helpers.
+- `src/niri/niri.ts` also owns `niri` process execution, event-stream process lifetime, and typed IPC failures.
 - openWakeWord assets and runtime:
 - `src/wakeword/assets.ts` validates manifest/runtime pins and required model files at startup.
 - `src/wakeword/onnx.ts` loads ONNX sessions through a Bun-compatible JS runtime; wakeword detection/training requires real ONNX feature models and the pinned runtime (no fallback execution path).
@@ -99,7 +100,7 @@ const program = Effect.gen(function* () {
   if (focused !== null) {
     yield* niri.actions.focusWindow(focused.id)
   }
-}).pipe(Effect.provide(Niri.live))
+}).pipe(Effect.provide(Niri.live()))
 ```
 
 ### Contract
