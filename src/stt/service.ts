@@ -1,10 +1,9 @@
-import { Context, Effect, Layer, Stream } from "effect"
+import { Context, Effect, Layer } from "effect"
+import type { Stream } from "effect"
 
-import { OpenRouterSttService, type OpenRouterSttError } from "./openrouter.js"
-import { CodexRealtimeSttService, type CodexRealtimeSttError } from "./codexRealtimeService.js"
-import { CodexAuthService, type CodexAuthError } from "./codexAuth.js"
-import { codexSttLayer } from "./codexLayer.js"
-import { openRouterSttLayer } from "./openRouterLayer.js"
+import type { OpenRouterSttError } from "./openrouter.js"
+import type { CodexRealtimeSttError } from "./codexRealtimeService.js"
+import type { CodexAuthError } from "./codexAuth.js"
 import type { SttRuntimeConfig } from "./config.js"
 
 export type SttServiceError = OpenRouterSttError | CodexRealtimeSttError | CodexAuthError
@@ -49,11 +48,28 @@ export class SttService extends Context.Service<
     ) => Effect.Effect<string, SttServiceError>
   }
 >()("pie/stt/SttService") {
-  static readonly live = (sttConfig: SttRuntimeConfig) =>
+  static readonly live = (sttConfig: SttRuntimeConfig): Layer.Layer<SttService> =>
     sttConfig.provider === "codex-realtime"
-      ? codexSttLayer(sttConfig).pipe(
-          Layer.provide(CodexRealtimeSttService.layer),
-          Layer.provide(CodexAuthService.layer),
+      ? Layer.unwrap(
+          Effect.gen(function* () {
+            const { codexSttLayer } = yield* Effect.promise(() => import("./codexLayer.js"))
+            const { CodexRealtimeSttService } = yield* Effect.promise(
+              () => import("./codexRealtimeService.js"),
+            )
+            const { CodexAuthService } = yield* Effect.promise(() => import("./codexAuth.js"))
+            return codexSttLayer(sttConfig).pipe(
+              Layer.provide(CodexRealtimeSttService.layer),
+              Layer.provide(CodexAuthService.layer),
+            )
+          }),
         )
-      : openRouterSttLayer(sttConfig).pipe(Layer.provide(OpenRouterSttService.layer))
+      : Layer.unwrap(
+          Effect.gen(function* () {
+            const { openRouterSttLayer } = yield* Effect.promise(
+              () => import("./openRouterLayer.js"),
+            )
+            const { OpenRouterSttService } = yield* Effect.promise(() => import("./openrouter.js"))
+            return openRouterSttLayer(sttConfig).pipe(Layer.provide(OpenRouterSttService.layer))
+          }),
+        )
 }

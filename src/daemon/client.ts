@@ -5,6 +5,7 @@ import * as RpcClient from "effect/unstable/rpc/RpcClient"
 import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization"
 import * as Socket from "effect/unstable/socket/Socket"
 import * as NodeSocket from "@effect/platform-node-shared/NodeSocket"
+import { access } from "node:fs/promises"
 
 import type { RecordingSnapshot, StartResult } from "../commands/assistant/coordinator.js"
 import { DAEMON_SOCKET_PATH } from "../paths.js"
@@ -58,23 +59,64 @@ export class DaemonClient extends Context.Service<
     const workingLayer = Layer.effect(
       DaemonClient,
       Effect.gen(function* () {
+        const socketAccessible = yield* Effect.promise(() =>
+          access(socketPath)
+            .then(() => true)
+            .catch(() => false),
+        )
+
+        if (!socketAccessible) {
+          return DaemonClient.of(
+            makeFailingClient(
+              new DaemonClientError({
+                kind: "NotRunning",
+                message: "Daemon is not running",
+              }),
+            ),
+          )
+        }
+
         const client = yield* RpcClient.make(DaemonRpc).pipe(
           Effect.provide(RpcClient.layerProtocolSocket()),
           Effect.provide(RpcSerialization.layerNdjson),
           Effect.provide(NodeSocket.layerNet({ path: socketPath })),
         )
 
+        const withTimeout = <A>(effect: Effect.Effect<A, DaemonClientError>) =>
+          effect.pipe(
+            Effect.timeout("2 seconds"),
+            Effect.catchTag("TimeoutError", () =>
+              Effect.fail(
+                new DaemonClientError({
+                  kind: "NotRunning",
+                  message: "Daemon is not running",
+                  cause: undefined,
+                }),
+              ),
+            ),
+          )
+
         return DaemonClient.of({
-          status: () => client.Status(undefined).pipe(Effect.mapError(classifyRpcClientError)),
-          pause: () => client.Pause(undefined).pipe(Effect.mapError(classifyRpcClientError)),
-          resume: () => client.Resume(undefined).pipe(Effect.mapError(classifyRpcClientError)),
-          toggle: () => client.Toggle(undefined).pipe(Effect.mapError(classifyRpcClientError)),
+          status: () =>
+            withTimeout(client.Status(undefined).pipe(Effect.mapError(classifyRpcClientError))),
+          pause: () =>
+            withTimeout(client.Pause(undefined).pipe(Effect.mapError(classifyRpcClientError))),
+          resume: () =>
+            withTimeout(client.Resume(undefined).pipe(Effect.mapError(classifyRpcClientError))),
+          toggle: () =>
+            withTimeout(client.Toggle(undefined).pipe(Effect.mapError(classifyRpcClientError))),
           meetingStart: () =>
-            client.MeetingStart(undefined).pipe(Effect.mapError(classifyRpcClientError)),
+            withTimeout(
+              client.MeetingStart(undefined).pipe(Effect.mapError(classifyRpcClientError)),
+            ),
           meetingStop: () =>
-            client.MeetingStop(undefined).pipe(Effect.mapError(classifyRpcClientError)),
+            withTimeout(
+              client.MeetingStop(undefined).pipe(Effect.mapError(classifyRpcClientError)),
+            ),
           meetingToggle: () =>
-            client.MeetingToggle(undefined).pipe(Effect.mapError(classifyRpcClientError)),
+            withTimeout(
+              client.MeetingToggle(undefined).pipe(Effect.mapError(classifyRpcClientError)),
+            ),
         })
       }),
     )

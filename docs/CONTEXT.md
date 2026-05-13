@@ -20,7 +20,7 @@ The seam between a PCM chunk producer and a streaming STT+injection pipeline. On
 
 ## Streaming error classification
 
-The decision of whether a streamed STT failure is STT-side (provider, auth, context) or injection-side (`wtype`/`xdotool`). Driven by tagged-error `_tag` prefixes: `OpenRouterSttError`, `CodexRealtimeSttError`, `CodexAuthError`, `SttDispatchError`, and any `Niri*` error classify as STT-side; everything else classifies as injection-side. Callers use `classifyStreamingError(cause, prefix)` from `src/stt/streamedDispatch.ts` to turn raw dispatch errors into their own error domain with a single message line.
+The decision of whether a streamed STT failure is STT-side (provider, auth, context) or injection-side (`wtype`/`xdotool`). Driven by tagged-error `_tag` prefixes: `OpenRouterSttError`, `CodexRealtimeSttError`, `CodexAuthError`, and any `Niri*` error classify as STT-side; everything else classifies as injection-side. Callers use `classifyStreamingError(cause, prefix)` from `src/stt/streamedDispatch.ts` to turn raw dispatch errors into their own error domain with a single message line.
 
 ## Daemon RPC contract
 

@@ -10,11 +10,12 @@ import * as path from "node:path"
 import { RecordingCoordinator } from "../commands/assistant/coordinator.js"
 import { DAEMON_SOCKET_PATH } from "../paths.js"
 import { DaemonRpc } from "./contract.js"
+import { SocketPreflightError } from "./errors.js"
 
 export const DaemonRpcServer = {
   layer: (options?: {
     readonly socketPath?: string
-  }): Layer.Layer<never, never, RecordingCoordinator> => {
+  }): Layer.Layer<never, SocketPreflightError, RecordingCoordinator> => {
     const socketPath = options?.socketPath ?? DAEMON_SOCKET_PATH
 
     return Layer.effectDiscard(
@@ -24,10 +25,24 @@ export const DaemonRpcServer = {
         yield* Effect.tryPromise({
           try: async () => {
             await mkdirNode(path.dirname(socketPath), { recursive: true })
-            await unlink(socketPath).catch(() => {})
+            await unlink(socketPath).catch((err: unknown) => {
+              if (
+                typeof err === "object" &&
+                err !== null &&
+                "code" in err &&
+                (err as { code: unknown }).code === "ENOENT"
+              ) {
+                return
+              }
+              throw err
+            })
           },
-          catch: (cause) => new Error(String(cause)),
-        }).pipe(Effect.catch(() => Effect.void))
+          catch: (cause) =>
+            new SocketPreflightError({
+              message: `Daemon socket preflight failed at ${socketPath}`,
+              cause,
+            }),
+        })
 
         const handlers = {
           Status: () => coordinator.snapshot,
@@ -54,6 +69,22 @@ export const DaemonRpcServer = {
 
         const ctx = yield* Layer.build(serverLayer)
         yield* RpcServer.make(DaemonRpc).pipe(Effect.provideContext(ctx), Effect.forkScoped)
+
+        yield* Effect.addFinalizer(() =>
+          Effect.promise(() =>
+            unlink(socketPath).catch((err: unknown) => {
+              if (
+                typeof err === "object" &&
+                err !== null &&
+                "code" in err &&
+                (err as { code: unknown }).code === "ENOENT"
+              ) {
+                return
+              }
+              throw err
+            }),
+          ),
+        )
       }),
     )
   },

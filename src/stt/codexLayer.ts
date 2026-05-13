@@ -1,7 +1,7 @@
 import { Effect, Layer, Stream } from "effect"
 
 import { CodexRealtimeSttService } from "./codexRealtimeService.js"
-import { CodexAuthService } from "./codexAuth.js"
+import type { CodexAuthService } from "./codexAuth.js"
 import { SttService } from "./service.js"
 import type { SttRuntimeConfig } from "./config.js"
 

@@ -1,6 +1,11 @@
 import * as Data from "effect/Data"
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError"
 
+export class SocketPreflightError extends Data.TaggedError("SocketPreflightError")<{
+  readonly message: string
+  readonly cause?: unknown
+}> {}
+
 export class DaemonClientError extends Data.TaggedError("DaemonClientError")<{
   readonly kind: "NotRunning" | "Transport" | "Protocol"
   readonly message: string

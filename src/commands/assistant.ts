@@ -138,13 +138,23 @@ export const runAssistantDefaultCommand = Effect.fn(
     ),
   )
 
+  const coordinatorLayer = RecordingCoordinator.live()
+
   return yield* effect.pipe(
     Effect.provide(
       Layer.mergeAll(
         SttService.live(sttConfig),
         Niri.live(),
-        RecordingCoordinator.live(),
-        DaemonRpcServer.layer().pipe(Layer.provide(RecordingCoordinator.live())),
+        coordinatorLayer,
+        DaemonRpcServer.layer().pipe(Layer.provide(coordinatorLayer)),
+      ),
+    ),
+    Effect.catchTag("SocketPreflightError", (err) =>
+      Effect.fail(
+        new CliError({
+          message: `Daemon socket preflight failed: ${err.message}`,
+          cause: err,
+        }),
       ),
     ),
     Effect.tapError((cause) =>

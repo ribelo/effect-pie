@@ -4,9 +4,11 @@ import * as crypto from "node:crypto"
 import * as net from "node:net"
 import * as os from "node:os"
 import * as path from "node:path"
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
+import * as fs from "node:fs/promises"
 import { RecordingCoordinator } from "../src/commands/assistant/coordinator.js"
-import { classifyRpcClientError } from "../src/daemon/errors.js"
+import { DaemonClient } from "../src/daemon/client.js"
+import { classifyRpcClientError, SocketPreflightError } from "../src/daemon/errors.js"
 import { DaemonRpcServer } from "../src/daemon/server.js"
 
 const makeTmpSocketPath = () =>
@@ -347,6 +349,99 @@ test("MeetingToggle flips between idle and meeting-transcribe", async () => {
   await Effect.runPromise(program)
 })
 
+test("DaemonClient against stale socket returns NotRunning without hanging", async () => {
+  const socketPath = makeTmpSocketPath()
+
+  // Create a unix socket file without a listener (stale socket)
+  const server = net.createServer()
+  await new Promise<void>((resolve) => {
+    server.listen(socketPath, () => resolve())
+  })
+  server.close()
+  await new Promise<void>((resolve) => {
+    server.once("close", () => resolve())
+  })
+
+  const program = Effect.gen(function* () {
+    const client = yield* DaemonClient
+    const error = yield* Effect.flip(client.status())
+    assert.strictEqual(error.kind, "NotRunning")
+  }).pipe(Effect.provide(DaemonClient.layer({ socketPath })))
+
+  await Effect.runPromise(program)
+
+  await fs.unlink(socketPath).catch(() => {})
+})
+
+test("socket is unlinked when server scope closes", async () => {
+  const socketPath = makeTmpSocketPath()
+  const persistPath = makeTmpPersistPath()
+
+  await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const serverLayer = DaemonRpcServer.layer({ socketPath }).pipe(
+          Layer.provide(RecordingCoordinator.live({ persistPath })),
+        )
+        yield* Layer.build(serverLayer)
+        yield* Effect.sleep(200)
+
+        const existsBefore = yield* Effect.promise(() =>
+          fs
+            .access(socketPath)
+            .then(() => true)
+            .catch(() => false),
+        )
+        assert.strictEqual(existsBefore, true)
+      }),
+    ),
+  )
+
+  const existsAfter = await fs
+    .access(socketPath)
+    .then(() => true)
+    .catch(() => false)
+  assert.strictEqual(existsAfter, false)
+})
+
+test("DaemonClient against nonexistent socket returns NotRunning without hanging", async () => {
+  const socketPath = makeTmpSocketPath()
+
+  const program = Effect.gen(function* () {
+    const client = yield* DaemonClient
+    const error = yield* Effect.flip(client.status())
+    assert.strictEqual(error.kind, "NotRunning")
+  }).pipe(Effect.provide(DaemonClient.layer({ socketPath })))
+
+  await Effect.runPromise(program)
+})
+
+test("socket preflight fails loudly on non-ENOENT errors", async () => {
+  const filePath = path.join(os.tmpdir(), `pie-daemon-test-file-${process.pid}`)
+  await fs.writeFile(filePath, "x")
+  const socketPath = path.join(filePath, "test.sock")
+  const persistPath = makeTmpPersistPath()
+
+  const program = Effect.scoped(
+    Effect.gen(function* () {
+      const serverLayer = DaemonRpcServer.layer({ socketPath }).pipe(
+        Layer.provide(RecordingCoordinator.live({ persistPath })),
+      )
+      yield* Layer.build(serverLayer)
+    }),
+  )
+
+  try {
+    await Effect.runPromise(program)
+    assert.fail("expected SocketPreflightError")
+  } catch (err) {
+    assert.ok(err instanceof SocketPreflightError)
+    assert.ok((err as SocketPreflightError).message.includes(socketPath))
+  }
+
+  await fs.unlink(filePath).catch(() => {})
+})
+
 test("classifyRpcClientError maps ENOENT to NotRunning", () => {
   const error = classifyRpcClientError({
     reason: {
@@ -383,6 +478,40 @@ test("classifyRpcClientError maps SocketReadError to Transport", () => {
     message: "SocketReadError: read failed",
   } as any)
   assert.strictEqual(error.kind, "Transport")
+})
+
+test("daemon and direct coordinator share state", async () => {
+  const socketPath = makeTmpSocketPath()
+  const persistPath = makeTmpPersistPath()
+
+  const coordinatorLayer = RecordingCoordinator.live({ persistPath })
+  const merged = Layer.mergeAll(
+    coordinatorLayer,
+    DaemonRpcServer.layer({ socketPath }).pipe(Layer.provide(coordinatorLayer)),
+  )
+
+  const program = Effect.scoped(
+    Effect.gen(function* () {
+      const ctx = yield* Layer.build(merged)
+      yield* Effect.sleep(200)
+
+      yield* Effect.promise(() =>
+        sendRaw(socketPath, {
+          _tag: "Request",
+          tag: "Toggle",
+          id: "1",
+          payload: null,
+          headers: [],
+        }),
+      )
+
+      const direct = Context.get(ctx, RecordingCoordinator)
+      const snapshot = yield* direct.snapshot.pipe(Effect.provideContext(ctx))
+      assert.strictEqual(snapshot.enabled, false)
+    }),
+  )
+
+  await Effect.runPromise(program)
 })
 
 test("classifyRpcClientError maps unknown errors to Protocol", () => {
