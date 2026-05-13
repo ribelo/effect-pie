@@ -19,7 +19,7 @@ import {
 } from "../wakewordHelpers.js"
 import { readDetectionTuningSnapshot, type WakewordSnapshotError } from "../../wakeword/tuning.js"
 import type { SttService } from "../../stt/service.js"
-import { transcribeStreamAndInject } from "../../stt/transcribeAndInject.js"
+import { isSttServiceFailure, transcribeStreamAndInject } from "../../stt/transcribeAndInject.js"
 import type { SttRuntimeConfig } from "../../stt/config.js"
 import { CliError } from "../shared.js"
 import {
@@ -29,12 +29,7 @@ import {
   DEFAULT_ASSISTANT_PTT_FRAGMENT_SIZE,
   resolveWakewordSpeechStartTimeoutSeconds,
 } from "./constants.js"
-import {
-  tryStartRecording,
-  stopRecording,
-  type AssistantRecordingMode,
-  type AssistantRecordingRuntimeState,
-} from "./recordingState.js"
+import { RecordingCoordinator } from "./coordinator.js"
 
 const normalizeWakewordModelName = (modelName: string): string =>
   modelName.endsWith(".json") ? modelName.slice(0, -".json".length) : modelName
@@ -43,19 +38,20 @@ export const runAssistantWakewordTranscribeLoop = (config: {
   readonly sourceName: string
   readonly sttConfig: SttRuntimeConfig
   readonly pttActiveRef: Ref.Ref<boolean>
-  readonly setRecordingMode: (
-    mode: AssistantRecordingMode | undefined,
-  ) => Effect.Effect<void, CliError>
-  readonly recordingCoordinatorRef: Ref.Ref<AssistantRecordingRuntimeState>
   readonly diagnostics?: AssistantDiagnostics | undefined
-  readonly recordingStateRef: Ref.Ref<AssistantRecordingRuntimeState>
 }): Effect.Effect<
   void,
   CliError,
-  PulseAudioClient | DesktopSession | Niri | TextInjectionBackendService | SttService
+  | PulseAudioClient
+  | DesktopSession
+  | Niri
+  | TextInjectionBackendService
+  | SttService
+  | RecordingCoordinator
 > =>
   Effect.scoped(
     Effect.gen(function* () {
+      const coordinator = yield* RecordingCoordinator
       const outerScope = yield* Effect.scope
 
       const assets = yield* validateWakewordAssets({
@@ -153,7 +149,7 @@ export const runAssistantWakewordTranscribeLoop = (config: {
       }).pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {
-            const daemonState = yield* Ref.get(config.recordingStateRef)
+            const daemonState = yield* coordinator.snapshot
             if (!daemonState.enabled) {
               return
             }
@@ -191,10 +187,7 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                 `[wakeword-transcribe] Trigger detected (${selectedModelName}). Dictation capture started (silence=${dictationSilenceSeconds}s, max=${dictationMaxSeconds}s, speech_start_timeout=${dictationSpeechStartTimeoutSeconds}s, speech_rms=${dictationSpeechRmsThreshold.toFixed(4)})...`,
               )
 
-              const result = yield* tryStartRecording({
-                ref: config.recordingCoordinatorRef,
-                mode: "wakeword",
-              })
+              const result = yield* coordinator.tryStart("wakeword")
               if (result["_tag"] === "Busy") {
                 yield* Console.log(`[wakeword-transcribe] Ignored: ${result.activeMode} is active`)
                 return
@@ -216,14 +209,9 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                 diagnostics: config.diagnostics,
               }).pipe(
                 Effect.mapError((cause) => {
-                  const message =
-                    cause["_tag"] === "OpenRouterSttError" ||
-                    cause["_tag"] === "CodexRealtimeSttError" ||
-                    cause["_tag"] === "CodexAuthError" ||
-                    cause["_tag"] === "SttDispatchError" ||
-                    (cause["_tag"]?.startsWith("Niri") ?? false)
-                      ? `Wakeword transcription failed: ${cause.message}`
-                      : `Failed to type wakeword transcript: ${cause.message}`
+                  const message = isSttServiceFailure(cause)
+                    ? `Wakeword transcription failed: ${cause.message}`
+                    : `Failed to type wakeword transcript: ${cause.message}`
 
                   return new CliError({
                     message,
@@ -260,12 +248,9 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                 ),
                 Effect.onExit(() =>
                   Effect.gen(function* () {
-                    const runtime = yield* Ref.get(config.recordingCoordinatorRef)
-                    if (runtime.mode === "wakeword") {
-                      yield* stopRecording({
-                        ref: config.recordingCoordinatorRef,
-                        mode: "wakeword",
-                      }).pipe(Effect.orDie)
+                    const snapshot = yield* coordinator.snapshot
+                    if (snapshot.mode === "wakeword") {
+                      yield* coordinator.stop("wakeword")
                     }
                   }),
                 ),

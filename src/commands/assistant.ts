@@ -8,12 +8,7 @@ import type { TextInjectionBackendService } from "../input/textInjection.js"
 import type { DesktopSession } from "../desktop/session.js"
 import { AssistantDiagnostics, isShellTraceEnabled } from "../assistant/diagnostics.js"
 import { CliError } from "./shared.js"
-import {
-  setAssistantRecordingMode,
-  setAssistantRecordingEnabled,
-  ASSISTANT_RECORDING_STATE_PATH,
-  type AssistantRecordingRuntimeState,
-} from "./assistant/recordingState.js"
+import { ASSISTANT_RECORDING_STATE_PATH, RecordingCoordinator } from "./assistant/coordinator.js"
 import { startDaemonServer } from "./daemon.js"
 import {
   DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE,
@@ -93,17 +88,6 @@ export const runAssistantDefaultCommand = Effect.fn(
   yield* Console.log("[assistant] Press Ctrl+C to stop all listeners")
 
   const pttActiveRef = yield* Ref.make(false)
-  const recordingStateRef = yield* Ref.make<AssistantRecordingRuntimeState>({
-    enabled: true,
-    mode: undefined,
-    startedAtMs: undefined,
-    transcriptPath: undefined,
-    lastError: undefined,
-    updatedAt: new Date().toISOString(),
-  })
-  yield* setAssistantRecordingMode({ ref: recordingStateRef, mode: undefined })
-  yield* setAssistantRecordingEnabled({ ref: recordingStateRef, enabled: true })
-  yield* Console.log(`[assistant] Recording state file: ${ASSISTANT_RECORDING_STATE_PATH}`)
 
   const shellTraceEnabled = yield* Effect.sync(() =>
     isShellTraceEnabled(process.env["PIE_SHELL_TRACE"]),
@@ -112,7 +96,11 @@ export const runAssistantDefaultCommand = Effect.fn(
 
   const effect = Effect.scoped(
     Effect.gen(function* () {
-      yield* startDaemonServer({ ref: recordingStateRef }).pipe(Effect.forkScoped)
+      const coordinator = yield* RecordingCoordinator
+      yield* coordinator.clear
+      yield* Console.log(`[assistant] Recording state file: ${ASSISTANT_RECORDING_STATE_PATH}`)
+
+      yield* startDaemonServer.pipe(Effect.forkScoped)
 
       yield* Effect.all(
         [
@@ -120,12 +108,9 @@ export const runAssistantDefaultCommand = Effect.fn(
             sourceName,
             sttConfig,
             pttActiveRef,
-            setRecordingMode: (mode) => setAssistantRecordingMode({ ref: recordingStateRef, mode }),
-            recordingCoordinatorRef: recordingStateRef,
             diagnostics,
             pttTranscribeKeysym: config["ptt-transcribe-keysym"],
             pttTranslateKeysym: config["ptt-translate-keysym"],
-            recordingStateRef,
           }),
           ...(sttConfig.wakewordEnabled
             ? [
@@ -133,11 +118,7 @@ export const runAssistantDefaultCommand = Effect.fn(
                   sourceName,
                   sttConfig,
                   pttActiveRef,
-                  setRecordingMode: (mode) =>
-                    setAssistantRecordingMode({ ref: recordingStateRef, mode }),
-                  recordingCoordinatorRef: recordingStateRef,
                   diagnostics,
-                  recordingStateRef,
                 }),
               ]
             : []),
@@ -147,13 +128,20 @@ export const runAssistantDefaultCommand = Effect.fn(
           discard: true,
         },
       )
-    }),
-  ).pipe(
-    Effect.onExit(() => setAssistantRecordingMode({ ref: recordingStateRef, mode: undefined })),
+    }).pipe(
+      Effect.onExit(() =>
+        Effect.gen(function* () {
+          const coordinator = yield* RecordingCoordinator
+          yield* coordinator.clear
+        }),
+      ),
+    ),
   )
 
   return yield* effect.pipe(
-    Effect.provide(Layer.mergeAll(SttService.live(sttConfig), Niri.live)),
+    Effect.provide(
+      Layer.mergeAll(SttService.live(sttConfig), Niri.live, RecordingCoordinator.live()),
+    ),
     Effect.tapError((cause) =>
       Effect.gen(function* () {
         if (diagnostics !== undefined) {

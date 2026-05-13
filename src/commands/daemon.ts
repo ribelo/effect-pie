@@ -1,4 +1,4 @@
-import { Console, Data, Effect, Ref } from "effect"
+import { Console, Data, Effect } from "effect"
 import { Command } from "effect/unstable/cli"
 import * as http from "node:http"
 import { mkdir as mkdirNode, unlink } from "node:fs/promises"
@@ -6,14 +6,7 @@ import { mkdir as mkdirNode, unlink } from "node:fs/promises"
 import { EFFECT_PI_RUNTIME_DIR } from "../paths.js"
 import { notifyWarning } from "../desktop/notification.js"
 import { isRecord } from "../utils/isRecord.js"
-import {
-  setRecordingEnabled,
-  tryStartRecording,
-  stopRecording,
-  getRecordingState,
-  type RecordingRuntimeState,
-  type RecordingMode,
-} from "./assistant/recordingState.js"
+import { RecordingCoordinator, type RecordingMode } from "./assistant/coordinator.js"
 
 export const DAEMON_SOCKET_PATH = `${EFFECT_PI_RUNTIME_DIR}/control.sock`
 
@@ -60,120 +53,78 @@ const daemonRequest = (options: {
     catch: (cause) => new DaemonClientError({ message: String(cause) }),
   }).pipe(Effect.catch(() => Effect.succeed("")))
 
-export const startDaemonServer = (config: {
-  readonly ref: Ref.Ref<RecordingRuntimeState>
-}): Effect.Effect<never> =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      yield* Effect.tryPromise({
-        try: async () => {
-          await mkdirNode(EFFECT_PI_RUNTIME_DIR, { recursive: true })
-          await unlink(DAEMON_SOCKET_PATH).catch(() => {})
-        },
-        catch: () => new DaemonClientError({ message: "daemon setup failed" }),
-      }).pipe(Effect.catch(() => Effect.void))
+export const startDaemonServer: Effect.Effect<never, never, RecordingCoordinator> = Effect.scoped(
+  Effect.gen(function* () {
+    const coordinator = yield* RecordingCoordinator
+    const services = yield* Effect.context<RecordingCoordinator>()
+    const runPromise = Effect.runPromiseWith(services)
 
-      const server = Bun.serve({
-        unix: DAEMON_SOCKET_PATH,
-        async fetch(req) {
-          const url = new URL(req.url)
-          const method = req.method
-          const pathname = url.pathname
+    yield* Effect.tryPromise({
+      try: async () => {
+        await mkdirNode(EFFECT_PI_RUNTIME_DIR, { recursive: true })
+        await unlink(DAEMON_SOCKET_PATH).catch(() => {})
+      },
+      catch: () => new DaemonClientError({ message: "daemon setup failed" }),
+    }).pipe(Effect.catch(() => Effect.void))
 
-          if (method === "GET" && pathname === "/state") {
-            const state = await Effect.runPromise(getRecordingState({ ref: config.ref }))
-            return new Response(JSON.stringify(state), {
-              headers: { "Content-Type": "application/json" },
-            })
-          }
+    const server = Bun.serve({
+      unix: DAEMON_SOCKET_PATH,
+      async fetch(req) {
+        const url = new URL(req.url)
+        const method = req.method
+        const pathname = url.pathname
 
-          if (method === "POST" && pathname === "/pause") {
-            await Effect.runPromise(
-              setRecordingEnabled({
-                ref: config.ref,
-                enabled: false,
-              }),
-            )
-            return new Response(JSON.stringify({ enabled: false }))
-          }
+        if (method === "GET" && pathname === "/state") {
+          const state = await runPromise(coordinator.snapshot)
+          return new Response(JSON.stringify(state), {
+            headers: { "Content-Type": "application/json" },
+          })
+        }
 
-          if (method === "POST" && pathname === "/resume") {
-            await Effect.runPromise(
-              setRecordingEnabled({
-                ref: config.ref,
-                enabled: true,
-              }),
-            )
-            return new Response(JSON.stringify({ enabled: true }))
-          }
+        if (method === "POST" && pathname === "/pause") {
+          await runPromise(coordinator.setEnabled(false))
+          return new Response(JSON.stringify({ enabled: false }))
+        }
 
-          if (method === "POST" && pathname === "/toggle") {
-            const current = await Effect.runPromise(Ref.get(config.ref))
-            const next = !current.enabled
-            await Effect.runPromise(
-              setRecordingEnabled({
-                ref: config.ref,
-                enabled: next,
-              }),
-            )
-            return new Response(JSON.stringify({ enabled: next }))
-          }
+        if (method === "POST" && pathname === "/resume") {
+          await runPromise(coordinator.setEnabled(true))
+          return new Response(JSON.stringify({ enabled: true }))
+        }
 
-          if (method === "POST" && pathname === "/meeting/start") {
-            const result = await Effect.runPromise(
-              tryStartRecording({
-                ref: config.ref,
-                mode: "meeting-transcribe",
-              }),
-            )
-            const state = await Effect.runPromise(getRecordingState({ ref: config.ref }))
-            return new Response(JSON.stringify({ result, state }))
-          }
+        if (method === "POST" && pathname === "/toggle") {
+          const nextEnabled = await runPromise(coordinator.toggleEnabled)
+          return new Response(JSON.stringify({ enabled: nextEnabled }))
+        }
 
-          if (method === "POST" && pathname === "/meeting/stop") {
-            await Effect.runPromise(
-              stopRecording({
-                ref: config.ref,
-                mode: "meeting-transcribe",
-              }),
-            )
-            const state = await Effect.runPromise(getRecordingState({ ref: config.ref }))
-            return new Response(JSON.stringify({ state }))
-          }
+        if (method === "POST" && pathname === "/meeting/start") {
+          const result = await runPromise(coordinator.tryStart("meeting-transcribe"))
+          const state = await runPromise(coordinator.snapshot)
+          return new Response(JSON.stringify({ result, state }))
+        }
 
-          if (method === "POST" && pathname === "/meeting/toggle") {
-            const current = await Effect.runPromise(Ref.get(config.ref))
-            if (current.mode === "meeting-transcribe") {
-              await Effect.runPromise(
-                stopRecording({
-                  ref: config.ref,
-                  mode: "meeting-transcribe",
-                }),
-              )
-            } else if (current.mode === undefined) {
-              await Effect.runPromise(
-                tryStartRecording({
-                  ref: config.ref,
-                  mode: "meeting-transcribe",
-                }),
-              )
-            }
-            const state = await Effect.runPromise(getRecordingState({ ref: config.ref }))
-            return new Response(JSON.stringify({ state }))
-          }
+        if (method === "POST" && pathname === "/meeting/stop") {
+          await runPromise(coordinator.stop("meeting-transcribe"))
+          const state = await runPromise(coordinator.snapshot)
+          return new Response(JSON.stringify({ state }))
+        }
 
-          return new Response("Not Found", { status: 404 })
-        },
-      })
+        if (method === "POST" && pathname === "/meeting/toggle") {
+          const state = await runPromise(coordinator.toggleMeeting)
+          return new Response(JSON.stringify({ state }))
+        }
 
-      yield* Effect.addFinalizer(() =>
-        Effect.promise(() => Promise.resolve(server.stop(true))).pipe(Effect.ignore),
-      )
+        return new Response("Not Found", { status: 404 })
+      },
+    })
 
-      yield* Console.log(`[daemon] Listening on ${DAEMON_SOCKET_PATH}`)
-      return yield* Effect.never
-    }),
-  )
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(() => Promise.resolve(server.stop(true))).pipe(Effect.ignore),
+    )
+
+    yield* Console.log(`[daemon] Listening on ${DAEMON_SOCKET_PATH}`)
+    return yield* Effect.never
+  }),
+)
 
 const isValidMode = (mode: string): mode is RecordingMode | "idle" =>
   mode === "ptt-transcribe" ||
