@@ -33,3 +33,7 @@ The `DaemonClient` Context.Service in `src/daemon/client.ts` exposes one typed m
 ## Niri IPC
 
 The `Niri` Context.Service in `src/niri/niri.ts` is the single boundary for Niri compositor interaction. `Niri.live({ niriPath?, timeoutMs?, runner? })` builds the service; when `runner` is supplied (test path), niri-path resolution is skipped. Pure command builders and validators live in `src/niri/commands.ts` (`buildNiriReadCommand`, `buildNiriActionCommand`, `buildNiriOutputCommand`, `workspaceReferenceArg`, `sizeChangeArg`). The `CommandRunner` seam (`{ run, streamLines }`) lets tests inject fake subprocess behaviour without a `Context.Service` for the runner. There is no `NiriTransport` service; the old transport/service split was collapsed into one module.
+
+## STT provider selection
+
+`SttService.live(config)` in `src/stt/service.ts` is the only product-facing entrypoint; it dispatches to `codexSttLayer(config)` or `openRouterSttLayer(config)` based on `config.provider`. The Codex layer (`src/stt/codexLayer.ts`) wraps `CodexRealtimeSttService` and handles stream-to-stream passthrough; the conversation-model collect-first quirk lives inside `CodexRealtimeSttService.translate` (`src/stt/codexRealtimeService.ts`). The OpenRouter layer (`src/stt/openRouterLayer.ts`) owns the stream-to-clip shim (`Stream.runCollect` + `concatAudioChunks`) because `OpenRouterSttService` is clip-only. `SttDispatchError` and the `SttService.provider` field were deleted; there is no provider surface on the service interface.
