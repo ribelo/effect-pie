@@ -21,3 +21,11 @@ The seam between a PCM chunk producer and a streaming STT+injection pipeline. On
 ## Streaming error classification
 
 The decision of whether a streamed STT failure is STT-side (provider, auth, context) or injection-side (`wtype`/`xdotool`). Driven by tagged-error `_tag` prefixes: `OpenRouterSttError`, `CodexRealtimeSttError`, `CodexAuthError`, `SttDispatchError`, and any `Niri*` error classify as STT-side; everything else classifies as injection-side. Callers use `classifyStreamingError(cause, prefix)` from `src/stt/streamedDispatch.ts` to turn raw dispatch errors into their own error domain with a single message line.
+
+## Daemon RPC contract
+
+The `effect/unstable/rpc` group in `src/daemon/contract.ts` that types the CLI-to-daemon conversation. Seven parameterless RPCs mirror the pie CLI verbs: `Status` (returns `RecordingSnapshot`), `Pause` / `Resume` / `Toggle` (return void / void / boolean), `MeetingStart` (returns `{ result: StartResult, snapshot: RecordingSnapshot }`), `MeetingStop` / `MeetingToggle` (return `RecordingSnapshot`). Domain schemas (`RecordingSnapshot`, `StartResult`, `RecordingMode`) live alongside the coordinator in `src/commands/assistant/coordinator.ts`; the contract imports them. Transport is NDJSON over the unix socket at `$XDG_RUNTIME_DIR/pie/control.sock`. Server implementation in `src/daemon/server.ts` (handler layer + `BunSocketServer.layer`); client adapter in `src/daemon/client.ts`.
+
+## Daemon client
+
+The `DaemonClient` Context.Service in `src/daemon/client.ts` exposes one typed method per RPC. All methods collapse transport errors into `DaemonClientError` with one of three kinds: `NotRunning` (socket missing or refused), `Transport` (socket read/write/close failure), `Protocol` (schema decode defect or RPC library defect). The CLI output convention is: `NotRunning` -> print `off` to stdout and exit 0; `Transport`/`Protocol` -> print to stderr and exit 1; `toggle` additionally calls `notifyWarning` on `NotRunning`. `DaemonClient.layer` is provided only on the seven daemon-facing CLI commands in `src/commands/daemon.ts` so that `pie sources`, `pie ptt`, `pie wakeword`, etc. never open the socket.
