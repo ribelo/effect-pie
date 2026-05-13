@@ -1,7 +1,7 @@
 import { Console, Effect, Layer, Option, Ref } from "effect"
 import { loadSttRuntimeConfig, type SttConfigError } from "../stt/config.js"
 import { SttService } from "../stt/service.js"
-import { Niri } from "../niri/service.js"
+import { Niri } from "../niri/niri.js"
 import { PulseAudioClient } from "../pulse/client.js"
 import type { KeyboardMonitorService, PttKeyboardError } from "../keyboard/monitor.js"
 import type { TextInjectionBackendService } from "../input/textInjection.js"
@@ -142,7 +142,7 @@ export const runAssistantDefaultCommand = Effect.fn(
     Effect.provide(
       Layer.mergeAll(
         SttService.live(sttConfig),
-        Niri.live,
+        Niri.live(),
         RecordingCoordinator.live(),
         DaemonRpcServer.layer().pipe(Layer.provide(RecordingCoordinator.live())),
       ),

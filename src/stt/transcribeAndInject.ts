@@ -9,7 +9,7 @@ import {
   type TextInjectionResult,
 } from "../input/textInjection.js"
 import type { NiriError } from "../niri/errors.js"
-import type { Niri } from "../niri/service.js"
+import type { Niri } from "../niri/niri.js"
 import { promptTemplateWithFocusedWindowContext } from "./focusedWindowPrompt.js"
 import { SttService, type SttServiceError } from "./service.js"
 import { isSttServiceFailure } from "./streamingError.js"

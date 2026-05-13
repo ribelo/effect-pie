@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 
 import type { NiriError } from "../niri/errors.js"
-import { Niri } from "../niri/service.js"
+import { Niri } from "../niri/niri.js"
 import type { NiriWindow } from "../niri/schema.js"
 
 const CONTEXT_VALUE_MAX_LENGTH = 200

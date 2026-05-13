@@ -4,7 +4,7 @@ import { Effect, Stream } from "effect"
 
 import { DesktopSession } from "../src/desktop/session.js"
 import { TextInjectionBackendService, TextInjectionError } from "../src/input/textInjection.js"
-import { Niri } from "../src/niri/service.js"
+import { Niri } from "../src/niri/niri.js"
 import { NiriIpcError } from "../src/niri/errors.js"
 import { CodexRealtimeSttError } from "../src/stt/codexRealtimeService.js"
 import { OpenRouterSttError } from "../src/stt/openrouter.js"

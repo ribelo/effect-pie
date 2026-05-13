@@ -5,7 +5,7 @@ import { Effect, Fiber, Queue, Stream, type Cause } from "effect"
 
 import { DesktopSession } from "../src/desktop/session.js"
 import { TextInjectionBackendService } from "../src/input/textInjection.js"
-import { Niri } from "../src/niri/service.js"
+import { Niri } from "../src/niri/niri.js"
 import type { NiriWindow } from "../src/niri/schema.js"
 import { CodexRealtimeSttService } from "../src/stt/codexRealtimeService.js"
 import { OpenRouterSttService } from "../src/stt/openrouter.js"

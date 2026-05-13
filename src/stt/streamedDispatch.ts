@@ -7,7 +7,7 @@ import type {
   TextInjectionError,
 } from "../input/textInjection.js"
 import type { NiriError } from "../niri/errors.js"
-import type { Niri } from "../niri/service.js"
+import type { Niri } from "../niri/niri.js"
 import type { SttService, SttServiceError } from "./service.js"
 import { transcribeStreamAndInject } from "./transcribeAndInject.js"
 import { isSttServiceFailure } from "./streamingError.js"

@@ -1,12 +1,5 @@
 import * as Data from "effect/Data"
 import type { RpcClientError } from "effect/unstable/rpc/RpcClientError"
-import { RpcClientDefect } from "effect/unstable/rpc/RpcClientError"
-import {
-  SocketOpenError,
-  SocketReadError,
-  SocketWriteError,
-  SocketCloseError,
-} from "effect/unstable/socket/Socket"
 
 export class DaemonClientError extends Data.TaggedError("DaemonClientError")<{
   readonly kind: "NotRunning" | "Transport" | "Protocol"
@@ -24,8 +17,10 @@ export class DaemonClientError extends Data.TaggedError("DaemonClientError")<{
  */
 export const classifyRpcClientError = (error: RpcClientError): DaemonClientError => {
   const reason = error.reason
+  const tag: unknown =
+    typeof reason === "object" && reason !== null ? Reflect.get(reason, "_tag") : undefined
 
-  if (reason instanceof SocketOpenError) {
+  if (tag === "SocketOpenError") {
     const code: unknown =
       typeof reason.cause === "object" && reason.cause !== null
         ? Reflect.get(reason.cause, "code")
@@ -43,11 +38,7 @@ export const classifyRpcClientError = (error: RpcClientError): DaemonClientError
     })
   }
 
-  if (
-    reason instanceof SocketReadError ||
-    reason instanceof SocketWriteError ||
-    reason instanceof SocketCloseError
-  ) {
+  if (tag === "SocketReadError" || tag === "SocketWriteError" || tag === "SocketCloseError") {
     return new DaemonClientError({
       kind: "Transport",
       message: `Socket transport error: ${error.message}`,
@@ -55,7 +46,7 @@ export const classifyRpcClientError = (error: RpcClientError): DaemonClientError
     })
   }
 
-  if (reason instanceof RpcClientDefect) {
+  if (tag === "RpcClientDefect") {
     return new DaemonClientError({
       kind: "Protocol",
       message: `RPC protocol defect: ${error.message}`,

@@ -12,7 +12,9 @@ import { DAEMON_SOCKET_PATH } from "../paths.js"
 import { DaemonRpc } from "./contract.js"
 
 export const DaemonRpcServer = {
-  layer: (options?: { readonly socketPath?: string }): Layer.Layer<never> => {
+  layer: (options?: {
+    readonly socketPath?: string
+  }): Layer.Layer<never, never, RecordingCoordinator> => {
     const socketPath = options?.socketPath ?? DAEMON_SOCKET_PATH
 
     return Layer.effectDiscard(
@@ -39,28 +41,19 @@ export const DaemonRpcServer = {
               return { result, snapshot }
             }),
           MeetingStop: () =>
-            coordinator.stop("meeting-transcribe").pipe(
-              Effect.andThen(coordinator.snapshot),
-            ),
+            coordinator.stop("meeting-transcribe").pipe(Effect.andThen(coordinator.snapshot)),
           MeetingToggle: () => coordinator.toggleMeeting,
         }
 
         const protocolLayer = RpcServer.layerProtocolSocketServer.pipe(
           Layer.provide(RpcSerialization.layerNdjson),
-          Layer.provide(
-            BunSocketServer.layer({ path: socketPath }).pipe(Layer.orDie),
-          ),
+          Layer.provide(BunSocketServer.layer({ path: socketPath }).pipe(Layer.orDie)),
         )
 
-        const serverLayer = DaemonRpc.toLayer(handlers).pipe(
-          Layer.provideMerge(protocolLayer),
-        )
+        const serverLayer = DaemonRpc.toLayer(handlers).pipe(Layer.provideMerge(protocolLayer))
 
         const ctx = yield* Layer.build(serverLayer)
-        yield* RpcServer.make(DaemonRpc).pipe(
-          Effect.provideContext(ctx),
-          Effect.forkScoped,
-        )
+        yield* RpcServer.make(DaemonRpc).pipe(Effect.provideContext(ctx), Effect.forkScoped)
       }),
     )
   },

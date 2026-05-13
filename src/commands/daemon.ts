@@ -82,10 +82,11 @@ export const meetingStartCommand = Command.make("meeting-start", {}, () =>
       Effect.matchEffect({
         onFailure: renderClientError,
         onSuccess: ({ result, snapshot }) => {
-          if (Reflect.get(result, "_tag") === "Busy") {
-            return Console.log(`busy:${result.activeMode}`)
+          const tag = Reflect.get(result, "_tag")
+          if (tag === "Busy") {
+            return Console.log(`busy:${Reflect.get(result, "activeMode")}`)
           }
-          if (Reflect.get(result, "_tag") === "Disabled") {
+          if (tag === "Disabled") {
             return Console.log("paused")
           }
           return Console.log(snapshot.mode)
@@ -101,8 +102,7 @@ export const meetingStopCommand = Command.make("meeting-stop", {}, () =>
     yield* client.meetingStop().pipe(
       Effect.matchEffect({
         onFailure: renderClientError,
-        onSuccess: (snapshot) =>
-          Console.log(snapshot.mode === "idle" ? "armed" : snapshot.mode),
+        onSuccess: (snapshot) => Console.log(snapshot.mode === "idle" ? "armed" : snapshot.mode),
       }),
     )
   }).pipe(Effect.provide(DaemonClient.layer())),
@@ -114,8 +114,7 @@ export const meetingToggleCommand = Command.make("meeting-toggle", {}, () =>
     yield* client.meetingToggle().pipe(
       Effect.matchEffect({
         onFailure: renderClientError,
-        onSuccess: (snapshot) =>
-          Console.log(snapshot.mode === "idle" ? "armed" : snapshot.mode),
+        onSuccess: (snapshot) => Console.log(snapshot.mode === "idle" ? "armed" : snapshot.mode),
       }),
     )
   }).pipe(Effect.provide(DaemonClient.layer())),

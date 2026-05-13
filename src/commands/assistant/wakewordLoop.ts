@@ -9,7 +9,7 @@ import { makeWakewordPipeline, type WakewordPipelineError } from "../../wakeword
 import { createWakewordTriggerMachine } from "../../wakeword/trigger.js"
 import type { TextInjectionBackendService } from "../../input/textInjection.js"
 import type { DesktopSession } from "../../desktop/session.js"
-import type { Niri } from "../../niri/service.js"
+import type { Niri } from "../../niri/niri.js"
 import type { AssistantDiagnostics } from "../../assistant/diagnostics.js"
 import { recordPcmUntilTrailingSilence } from "../audioCapture.js"
 import {

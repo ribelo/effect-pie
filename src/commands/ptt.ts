@@ -6,7 +6,7 @@ import { makePcmRecordOptions } from "../pulse/defs.js"
 
 import { loadSttRuntimeConfig, STT_CONFIG_PATH, type SttConfigError } from "../stt/config.js"
 import { SttService } from "../stt/service.js"
-import { Niri } from "../niri/service.js"
+import { Niri } from "../niri/niri.js"
 
 import {
   closeGlobalShortcutSession,
@@ -263,7 +263,7 @@ export const pttTranscribeCommand = Command.make(
               promptTemplate: sttConfig.transcriptionPrompt,
             },
           }),
-      }).pipe(Effect.provide(Layer.mergeAll(SttService.live(sttConfig), Niri.live)))
+      }).pipe(Effect.provide(Layer.mergeAll(SttService.live(sttConfig), Niri.live())))
     }),
 ).pipe(
   Command.withDescription(
@@ -347,7 +347,7 @@ export const pttTranslateCommand = Command.make(
               promptTemplate: sttConfig.translationPrompt,
             },
           }),
-      }).pipe(Effect.provide(Layer.mergeAll(SttService.live(sttConfig), Niri.live)))
+      }).pipe(Effect.provide(Layer.mergeAll(SttService.live(sttConfig), Niri.live())))
     }),
 ).pipe(
   Command.withDescription(

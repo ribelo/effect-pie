@@ -2,10 +2,7 @@ import * as Rpc from "effect/unstable/rpc/Rpc"
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup"
 import * as Schema from "effect/Schema"
 
-import {
-  RecordingSnapshotSchema,
-  StartResultSchema,
-} from "../commands/assistant/coordinator.js"
+import { RecordingSnapshotSchema, StartResultSchema } from "../commands/assistant/coordinator.js"
 
 const Status = Rpc.make("Status", { success: RecordingSnapshotSchema })
 

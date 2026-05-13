@@ -31,7 +31,9 @@ export class DaemonClient extends Context.Service<
   static readonly layer = (options?: {
     readonly socketPath?: string
   }): Layer.Layer<DaemonClient> => {
-    const makeFailingClient = (error: DaemonClientError): {
+    const makeFailingClient = (
+      error: DaemonClientError,
+    ): {
       readonly status: () => Effect.Effect<RecordingSnapshot, DaemonClientError>
       readonly pause: () => Effect.Effect<void, DaemonClientError>
       readonly resume: () => Effect.Effect<void, DaemonClientError>
@@ -51,49 +53,31 @@ export class DaemonClient extends Context.Service<
       meetingStop: () => Effect.fail(error),
       meetingToggle: () => Effect.fail(error),
     })
-  const socketPath = options?.socketPath ?? DAEMON_SOCKET_PATH
+    const socketPath = options?.socketPath ?? DAEMON_SOCKET_PATH
 
-  const workingLayer = Layer.effect(
-    DaemonClient,
-    Effect.gen(function* () {
-      const client = yield* RpcClient.make(DaemonRpc).pipe(
-        Effect.provide(RpcClient.layerProtocolSocket()),
-        Effect.provide(RpcSerialization.layerNdjson),
-        Effect.provide(NodeSocket.layerNet({ path: socketPath })),
-      )
+    const workingLayer = Layer.effect(
+      DaemonClient,
+      Effect.gen(function* () {
+        const client = yield* RpcClient.make(DaemonRpc).pipe(
+          Effect.provide(RpcClient.layerProtocolSocket()),
+          Effect.provide(RpcSerialization.layerNdjson),
+          Effect.provide(NodeSocket.layerNet({ path: socketPath })),
+        )
 
-      return DaemonClient.of({
-        status: () =>
-          client.Status(undefined).pipe(
-            Effect.mapError(classifyRpcClientError),
-          ),
-        pause: () =>
-          client.Pause(undefined).pipe(
-            Effect.mapError(classifyRpcClientError),
-          ),
-        resume: () =>
-          client.Resume(undefined).pipe(
-            Effect.mapError(classifyRpcClientError),
-          ),
-        toggle: () =>
-          client.Toggle(undefined).pipe(
-            Effect.mapError(classifyRpcClientError),
-          ),
-        meetingStart: () =>
-          client.MeetingStart(undefined).pipe(
-            Effect.mapError(classifyRpcClientError),
-          ),
-        meetingStop: () =>
-          client.MeetingStop(undefined).pipe(
-            Effect.mapError(classifyRpcClientError),
-          ),
-        meetingToggle: () =>
-          client.MeetingToggle(undefined).pipe(
-            Effect.mapError(classifyRpcClientError),
-          ),
-      })
-    }),
-  )
+        return DaemonClient.of({
+          status: () => client.Status(undefined).pipe(Effect.mapError(classifyRpcClientError)),
+          pause: () => client.Pause(undefined).pipe(Effect.mapError(classifyRpcClientError)),
+          resume: () => client.Resume(undefined).pipe(Effect.mapError(classifyRpcClientError)),
+          toggle: () => client.Toggle(undefined).pipe(Effect.mapError(classifyRpcClientError)),
+          meetingStart: () =>
+            client.MeetingStart(undefined).pipe(Effect.mapError(classifyRpcClientError)),
+          meetingStop: () =>
+            client.MeetingStop(undefined).pipe(Effect.mapError(classifyRpcClientError)),
+          meetingToggle: () =>
+            client.MeetingToggle(undefined).pipe(Effect.mapError(classifyRpcClientError)),
+        })
+      }),
+    )
 
     return workingLayer.pipe(
       Layer.catchTag("SocketError", (socketError: Socket.SocketError) => {

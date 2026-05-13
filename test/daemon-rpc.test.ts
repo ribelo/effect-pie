@@ -321,7 +321,9 @@ test("MeetingToggle flips between idle and meeting-transcribe", async () => {
           headers: [],
         }),
       )
-      const s1 = ((r1 as Record<string, unknown>)["exit"] as Record<string, unknown>)["value"] as Record<string, unknown>
+      const s1 = ((r1 as Record<string, unknown>)["exit"] as Record<string, unknown>)[
+        "value"
+      ] as Record<string, unknown>
       assert.strictEqual(s1["mode"], "meeting-transcribe")
 
       const r2 = yield* Effect.promise(() =>
@@ -333,7 +335,9 @@ test("MeetingToggle flips between idle and meeting-transcribe", async () => {
           headers: [],
         }),
       )
-      const s2 = ((r2 as Record<string, unknown>)["exit"] as Record<string, unknown>)["value"] as Record<string, unknown>
+      const s2 = ((r2 as Record<string, unknown>)["exit"] as Record<string, unknown>)[
+        "value"
+      ] as Record<string, unknown>
       assert.strictEqual(s2["mode"], "idle")
     }),
     socketPath,
