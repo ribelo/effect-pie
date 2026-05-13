@@ -99,6 +99,7 @@ export const runAssistantDefaultCommand = Effect.fn(
     startedAtMs: undefined,
     transcriptPath: undefined,
     lastError: undefined,
+    updatedAt: new Date().toISOString(),
   })
   yield* setAssistantRecordingMode({ ref: recordingStateRef, mode: undefined })
   yield* setAssistantRecordingEnabled({ ref: recordingStateRef, enabled: true })

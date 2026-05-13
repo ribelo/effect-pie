@@ -12,16 +12,19 @@ import {
   type AssistantRecordingRuntimeState,
 } from "../src/commands/assistant/recordingState.js"
 
+const makeRef = (runtime: Partial<AssistantRecordingRuntimeState> = {}) =>
+  Ref.make<AssistantRecordingRuntimeState>({
+    enabled: true,
+    mode: undefined,
+    startedAtMs: undefined,
+    transcriptPath: undefined,
+    lastError: undefined,
+    updatedAt: new Date().toISOString(),
+    ...runtime,
+  })
+
 test("setAssistantRecordingEnabled updates enabled without changing mode", async () => {
-  const ref = await Effect.runPromise(
-    Ref.make<AssistantRecordingRuntimeState>({
-      enabled: true,
-      mode: undefined,
-      startedAtMs: undefined,
-      transcriptPath: undefined,
-      lastError: undefined,
-    }),
-  )
+  const ref = await Effect.runPromise(makeRef())
 
   await Effect.runPromise(setAssistantRecordingEnabled({ ref, enabled: false }))
 
@@ -36,15 +39,7 @@ test("setAssistantRecordingEnabled updates enabled without changing mode", async
 })
 
 test("setAssistantRecordingMode preserves enabled flag", async () => {
-  const ref = await Effect.runPromise(
-    Ref.make<AssistantRecordingRuntimeState>({
-      enabled: false,
-      mode: undefined,
-      startedAtMs: undefined,
-      transcriptPath: undefined,
-      lastError: undefined,
-    }),
-  )
+  const ref = await Effect.runPromise(makeRef({ enabled: false }))
 
   await Effect.runPromise(setAssistantRecordingMode({ ref, mode: "ptt-transcribe" }))
 
@@ -60,15 +55,7 @@ test("setAssistantRecordingMode preserves enabled flag", async () => {
 })
 
 test("tryStartRecording succeeds when idle", async () => {
-  const ref = await Effect.runPromise(
-    Ref.make<AssistantRecordingRuntimeState>({
-      enabled: true,
-      mode: undefined,
-      startedAtMs: undefined,
-      transcriptPath: undefined,
-      lastError: undefined,
-    }),
-  )
+  const ref = await Effect.runPromise(makeRef())
 
   const result = await Effect.runPromise(tryStartRecording({ ref, mode: "ptt-transcribe" }))
 
@@ -81,15 +68,7 @@ test("tryStartRecording succeeds when idle", async () => {
 })
 
 test("tryStartRecording returns Busy when another mode is active", async () => {
-  const ref = await Effect.runPromise(
-    Ref.make<AssistantRecordingRuntimeState>({
-      enabled: true,
-      mode: "ptt-transcribe",
-      startedAtMs: Date.now(),
-      transcriptPath: undefined,
-      lastError: undefined,
-    }),
-  )
+  const ref = await Effect.runPromise(makeRef({ mode: "ptt-transcribe", startedAtMs: Date.now() }))
 
   const result = await Effect.runPromise(tryStartRecording({ ref, mode: "wakeword" }))
 
@@ -98,15 +77,7 @@ test("tryStartRecording returns Busy when another mode is active", async () => {
 })
 
 test("tryStartRecording returns Disabled when disabled", async () => {
-  const ref = await Effect.runPromise(
-    Ref.make<AssistantRecordingRuntimeState>({
-      enabled: false,
-      mode: undefined,
-      startedAtMs: undefined,
-      transcriptPath: undefined,
-      lastError: undefined,
-    }),
-  )
+  const ref = await Effect.runPromise(makeRef({ enabled: false }))
 
   const result = await Effect.runPromise(tryStartRecording({ ref, mode: "ptt-transcribe" }))
 
@@ -114,15 +85,7 @@ test("tryStartRecording returns Disabled when disabled", async () => {
 })
 
 test("stopRecording clears state when owner matches", async () => {
-  const ref = await Effect.runPromise(
-    Ref.make<AssistantRecordingRuntimeState>({
-      enabled: true,
-      mode: "ptt-transcribe",
-      startedAtMs: Date.now(),
-      transcriptPath: undefined,
-      lastError: undefined,
-    }),
-  )
+  const ref = await Effect.runPromise(makeRef({ mode: "ptt-transcribe", startedAtMs: Date.now() }))
 
   const didStop = await Effect.runPromise(stopRecording({ ref, mode: "ptt-transcribe" }))
 
@@ -133,15 +96,7 @@ test("stopRecording clears state when owner matches", async () => {
 })
 
 test("stopRecording returns false when mode does not match", async () => {
-  const ref = await Effect.runPromise(
-    Ref.make<AssistantRecordingRuntimeState>({
-      enabled: true,
-      mode: "ptt-transcribe",
-      startedAtMs: Date.now(),
-      transcriptPath: undefined,
-      lastError: undefined,
-    }),
-  )
+  const ref = await Effect.runPromise(makeRef({ mode: "ptt-transcribe", startedAtMs: Date.now() }))
 
   const didStop = await Effect.runPromise(stopRecording({ ref, mode: "wakeword" }))
 
@@ -152,15 +107,7 @@ test("stopRecording returns false when mode does not match", async () => {
 })
 
 test("tryStartRecording persists transcriptPath", async () => {
-  const ref = await Effect.runPromise(
-    Ref.make<AssistantRecordingRuntimeState>({
-      enabled: true,
-      mode: undefined,
-      startedAtMs: undefined,
-      transcriptPath: undefined,
-      lastError: undefined,
-    }),
-  )
+  const ref = await Effect.runPromise(makeRef())
 
   const result = await Effect.runPromise(
     tryStartRecording({ ref, mode: "meeting-transcribe", transcriptPath: "/tmp/meeting.txt" }),
@@ -173,15 +120,7 @@ test("tryStartRecording persists transcriptPath", async () => {
 })
 
 test("setRecordingError persists lastError", async () => {
-  const ref = await Effect.runPromise(
-    Ref.make<AssistantRecordingRuntimeState>({
-      enabled: true,
-      mode: undefined,
-      startedAtMs: undefined,
-      transcriptPath: undefined,
-      lastError: undefined,
-    }),
-  )
+  const ref = await Effect.runPromise(makeRef())
 
   await Effect.runPromise(setRecordingError({ ref, lastError: "mic disconnected" }))
 
@@ -191,13 +130,7 @@ test("setRecordingError persists lastError", async () => {
 
 test("getRecordingState derives active and mode from runtime", async () => {
   const ref = await Effect.runPromise(
-    Ref.make<AssistantRecordingRuntimeState>({
-      enabled: true,
-      mode: "wakeword",
-      startedAtMs: 1_700_000_000_000,
-      transcriptPath: undefined,
-      lastError: "previous failure",
-    }),
+    makeRef({ mode: "wakeword", startedAtMs: 1_700_000_000_000, lastError: "previous failure" }),
   )
 
   const state = await Effect.runPromise(getRecordingState({ ref }))
@@ -207,4 +140,31 @@ test("getRecordingState derives active and mode from runtime", async () => {
   assert.strictEqual(state.mode, "wakeword")
   assert.strictEqual(state.startedAt, new Date(1_700_000_000_000).toISOString())
   assert.strictEqual(state.lastError, "previous failure")
+})
+
+test("getRecordingState returns stable updatedAt when runtime is unchanged", async () => {
+  const ref = await Effect.runPromise(
+    makeRef({ mode: "ptt-transcribe", startedAtMs: 1_700_000_000_000 }),
+  )
+
+  const state1 = await Effect.runPromise(getRecordingState({ ref }))
+  await new Promise<void>((r) => {
+    setTimeout(r, 20)
+  })
+  const state2 = await Effect.runPromise(getRecordingState({ ref }))
+
+  assert.strictEqual(state1.updatedAt, state2.updatedAt)
+})
+
+test("tryStartRecording preserves lastError in Busy path", async () => {
+  const ref = await Effect.runPromise(
+    makeRef({ mode: "ptt-transcribe", startedAtMs: Date.now(), lastError: "previous error" }),
+  )
+
+  const result = await Effect.runPromise(tryStartRecording({ ref, mode: "wakeword" }))
+
+  assert.strictEqual(result["_tag"], "Busy")
+
+  const state = await Effect.runPromise(Ref.get(ref))
+  assert.strictEqual(state.lastError, "previous error")
 })

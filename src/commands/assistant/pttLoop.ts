@@ -410,6 +410,7 @@ export const runAssistantPttCombinedLoop = (config: {
             if (streamingCapture !== undefined) {
               yield* streamingCapture.cancel
             }
+            yield* stopCaptureAudio
             continue
           }
           if (result["_tag"] === "Disabled") {
@@ -423,6 +424,7 @@ export const runAssistantPttCombinedLoop = (config: {
             if (streamingCapture !== undefined) {
               yield* streamingCapture.cancel
             }
+            yield* stopCaptureAudio
             continue
           }
           yield* Ref.set(config.pttActiveRef, true)

@@ -25,6 +25,7 @@ export type RecordingRuntimeState = {
   readonly startedAtMs: number | undefined
   readonly transcriptPath: string | undefined
   readonly lastError: string | undefined
+  readonly updatedAt: string
 }
 
 export type StartRecordingResult =
@@ -54,7 +55,7 @@ const buildRecordingState = (runtime: RecordingRuntimeState): RecordingState => 
   active: runtime.mode !== undefined,
   mode: runtime.mode ?? "idle",
   startedAt: runtime.startedAtMs !== undefined ? new Date(runtime.startedAtMs).toISOString() : null,
-  updatedAt: new Date().toISOString(),
+  updatedAt: runtime.updatedAt,
   transcriptPath: runtime.transcriptPath ?? null,
   lastError: runtime.lastError ?? null,
 })
@@ -67,21 +68,13 @@ export const tryStartRecording = (config: {
   Effect.gen(function* () {
     const result = yield* Ref.modify(config.ref, (current) => {
       if (!current.enabled) {
-        const nextRuntime: RecordingRuntimeState = {
-          ...current,
-          lastError: undefined,
-        }
-        return [{ _tag: "Disabled" } as StartRecordingResult, nextRuntime] as const
+        return [{ _tag: "Disabled" } as StartRecordingResult, current] as const
       }
 
       if (current.mode !== undefined) {
-        const nextRuntime: RecordingRuntimeState = {
-          ...current,
-          lastError: undefined,
-        }
         return [
           { _tag: "Busy", activeMode: current.mode } as StartRecordingResult,
-          nextRuntime,
+          current,
         ] as const
       }
 
@@ -92,6 +85,7 @@ export const tryStartRecording = (config: {
         startedAtMs: nowMs,
         transcriptPath: config.transcriptPath,
         lastError: undefined,
+        updatedAt: new Date(nowMs).toISOString(),
       }
       return [{ _tag: "Started", mode: config.mode } as StartRecordingResult, nextRuntime] as const
     })
@@ -120,6 +114,7 @@ export const stopRecording = (config: {
         startedAtMs: undefined,
         transcriptPath: undefined,
         lastError: undefined,
+        updatedAt: new Date().toISOString(),
       }
       return [true, nextRuntime] as const
     })
@@ -141,6 +136,7 @@ export const setRecordingEnabled = (config: {
       const nextRuntime: RecordingRuntimeState = {
         ...current,
         enabled: config.enabled,
+        updatedAt: new Date().toISOString(),
       }
       return [nextRuntime, nextRuntime] as const
     })
@@ -159,6 +155,7 @@ export const setRecordingError = (config: {
       const nextRuntime: RecordingRuntimeState = {
         ...current,
         lastError: config.lastError,
+        updatedAt: new Date().toISOString(),
       }
       return [nextRuntime, nextRuntime] as const
     })
@@ -207,6 +204,7 @@ export const setAssistantRecordingMode = (config: {
           startedAtMs: undefined,
           transcriptPath: current.transcriptPath,
           lastError: current.lastError,
+          updatedAt: nowIso,
         }
         return [nextState, nextRuntime] as const
       }
@@ -231,6 +229,7 @@ export const setAssistantRecordingMode = (config: {
         startedAtMs,
         transcriptPath: current.transcriptPath,
         lastError: current.lastError,
+        updatedAt: nowIso,
       }
       return [nextState, nextRuntime] as const
     })
