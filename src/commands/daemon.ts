@@ -1,309 +1,122 @@
-import { Console, Data, Effect } from "effect"
+import { Console, Effect } from "effect"
 import { Command } from "effect/unstable/cli"
-import * as http from "node:http"
-import { mkdir as mkdirNode, unlink } from "node:fs/promises"
 
-import { EFFECT_PI_RUNTIME_DIR } from "../paths.js"
 import { notifyWarning } from "../desktop/notification.js"
-import { isRecord } from "../utils/isRecord.js"
-import { RecordingCoordinator, type RecordingMode } from "./assistant/coordinator.js"
+import { DaemonClient } from "../daemon/client.js"
+import type { DaemonClientError } from "../daemon/errors.js"
 
-export const DAEMON_SOCKET_PATH = `${EFFECT_PI_RUNTIME_DIR}/control.sock`
-
-class DaemonClientError extends Data.TaggedError("DaemonClientError")<{
-  readonly message: string
-  readonly cause?: unknown
-}> {}
-
-const daemonRequest = (options: {
-  readonly method: string
-  readonly path: string
-  readonly body?: string
-}): Effect.Effect<string> =>
-  Effect.tryPromise({
-    try: () =>
-      new Promise<string>((resolve, reject) => {
-        const req = http.request(
-          {
-            socketPath: DAEMON_SOCKET_PATH,
-            path: options.path,
-            method: options.method,
-            headers:
-              options.body !== undefined
-                ? {
-                    "Content-Type": "application/json",
-                    "Content-Length": String(Buffer.byteLength(options.body)),
-                  }
-                : {},
-          },
-          (res) => {
-            let data = ""
-            res.on("data", (c) => {
-              data += c
-            })
-            res.on("end", () => resolve(data))
-          },
-        )
-        req.on("error", (err) => reject(err))
-        if (options.body !== undefined) {
-          req.write(options.body)
-        }
-        req.end()
-      }),
-    catch: (cause) => new DaemonClientError({ message: String(cause) }),
-  }).pipe(Effect.catch(() => Effect.succeed("")))
-
-export const startDaemonServer: Effect.Effect<never, never, RecordingCoordinator> = Effect.scoped(
+const renderClientError = (e: DaemonClientError): Effect.Effect<void> =>
   Effect.gen(function* () {
-    const coordinator = yield* RecordingCoordinator
-    const services = yield* Effect.context<RecordingCoordinator>()
-    const runPromise = Effect.runPromiseWith(services)
-
-    yield* Effect.tryPromise({
-      try: async () => {
-        await mkdirNode(EFFECT_PI_RUNTIME_DIR, { recursive: true })
-        await unlink(DAEMON_SOCKET_PATH).catch(() => {})
-      },
-      catch: () => new DaemonClientError({ message: "daemon setup failed" }),
-    }).pipe(Effect.catch(() => Effect.void))
-
-    const server = Bun.serve({
-      unix: DAEMON_SOCKET_PATH,
-      async fetch(req) {
-        const url = new URL(req.url)
-        const method = req.method
-        const pathname = url.pathname
-
-        if (method === "GET" && pathname === "/state") {
-          const state = await runPromise(coordinator.snapshot)
-          return new Response(JSON.stringify(state), {
-            headers: { "Content-Type": "application/json" },
-          })
-        }
-
-        if (method === "POST" && pathname === "/pause") {
-          await runPromise(coordinator.setEnabled(false))
-          return new Response(JSON.stringify({ enabled: false }))
-        }
-
-        if (method === "POST" && pathname === "/resume") {
-          await runPromise(coordinator.setEnabled(true))
-          return new Response(JSON.stringify({ enabled: true }))
-        }
-
-        if (method === "POST" && pathname === "/toggle") {
-          const nextEnabled = await runPromise(coordinator.toggleEnabled)
-          return new Response(JSON.stringify({ enabled: nextEnabled }))
-        }
-
-        if (method === "POST" && pathname === "/meeting/start") {
-          const result = await runPromise(coordinator.tryStart("meeting-transcribe"))
-          const state = await runPromise(coordinator.snapshot)
-          return new Response(JSON.stringify({ result, state }))
-        }
-
-        if (method === "POST" && pathname === "/meeting/stop") {
-          await runPromise(coordinator.stop("meeting-transcribe"))
-          const state = await runPromise(coordinator.snapshot)
-          return new Response(JSON.stringify({ state }))
-        }
-
-        if (method === "POST" && pathname === "/meeting/toggle") {
-          const state = await runPromise(coordinator.toggleMeeting)
-          return new Response(JSON.stringify({ state }))
-        }
-
-        return new Response("Not Found", { status: 404 })
-      },
-    })
-
-    yield* Effect.addFinalizer(() =>
-      Effect.promise(() => Promise.resolve(server.stop(true))).pipe(Effect.ignore),
-    )
-
-    yield* Console.log(`[daemon] Listening on ${DAEMON_SOCKET_PATH}`)
-    return yield* Effect.never
-  }),
-)
-
-const isValidMode = (mode: string): mode is RecordingMode | "idle" =>
-  mode === "ptt-transcribe" ||
-  mode === "ptt-translate" ||
-  mode === "wakeword" ||
-  mode === "meeting-transcribe" ||
-  mode === "idle"
+    switch (e.kind) {
+      case "NotRunning": {
+        yield* Console.log("off")
+        return
+      }
+      case "Transport": {
+        yield* Console.error(`pie: daemon transport error: ${e.message}`)
+        return yield* Effect.sync(() => process.exit(1))
+      }
+      case "Protocol": {
+        yield* Console.error(`pie: daemon protocol error: ${e.message}`)
+        return yield* Effect.sync(() => process.exit(1))
+      }
+    }
+  })
 
 export const statusCommand = Command.make("status", {}, () =>
   Effect.gen(function* () {
-    const response = yield* daemonRequest({
-      method: "GET",
-      path: "/state",
-    })
-
-    if (response === "") {
-      yield* Console.log("off")
-      return
-    }
-
-    const parsed: unknown = JSON.parse(response)
-    if (typeof parsed !== "object" || parsed === null) {
-      yield* Console.log("stale")
-      return
-    }
-
-    const pr = isRecord(parsed) ? parsed : null
-    if (
-      pr === null ||
-      typeof pr["enabled"] !== "boolean" ||
-      typeof pr["active"] !== "boolean" ||
-      typeof pr["mode"] !== "string"
-    ) {
-      yield* Console.log("stale")
-      return
-    }
-
-    if (!pr["enabled"]) {
-      yield* Console.log("paused")
-      return
-    }
-
-    if (!pr["active"]) {
-      yield* Console.log("armed")
-      return
-    }
-
-    const mode = pr["mode"]
-    if (isValidMode(mode) && mode !== "idle") {
-      yield* Console.log(mode)
-      return
-    }
-
-    yield* Console.log("stale")
-  }),
+    const client = yield* DaemonClient
+    yield* client.status().pipe(
+      Effect.matchEffect({
+        onFailure: renderClientError,
+        onSuccess: (snapshot) => {
+          if (!snapshot.enabled) {
+            return Console.log("paused")
+          }
+          if (!snapshot.active) {
+            return Console.log("armed")
+          }
+          return Console.log(snapshot.mode === "idle" ? "stale" : snapshot.mode)
+        },
+      }),
+    )
+  }).pipe(Effect.provide(DaemonClient.layer())),
 )
 
 export const toggleCommand = Command.make("toggle", {}, () =>
   Effect.gen(function* () {
-    const response = yield* daemonRequest({
-      method: "POST",
-      path: "/toggle",
-    })
-
-    if (response === "") {
-      yield* notifyWarning("PIE", "PIE is not running").pipe(Effect.ignore)
-      yield* Console.log("off")
-      return
-    }
-
-    const parsed2: unknown = JSON.parse(response)
-    if (typeof parsed2 !== "object" || parsed2 === null) {
-      yield* Console.log("stale")
-      return
-    }
-
-    const p2 = isRecord(parsed2) ? parsed2 : null
-    if (p2 === null || typeof p2["enabled"] !== "boolean") {
-      yield* Console.log("stale")
-      return
-    }
-
-    yield* Console.log(p2["enabled"] ? "armed" : "paused")
-  }),
+    const client = yield* DaemonClient
+    yield* client.toggle().pipe(
+      Effect.matchEffect({
+        onFailure: (e) =>
+          e.kind === "NotRunning"
+            ? Effect.gen(function* () {
+                yield* notifyWarning("PIE", "PIE is not running").pipe(Effect.ignore)
+                yield* Console.log("off")
+              })
+            : renderClientError(e),
+        onSuccess: (nextEnabled) => Console.log(nextEnabled ? "armed" : "paused"),
+      }),
+    )
+  }).pipe(Effect.provide(DaemonClient.layer())),
 )
 
 export const pauseCommand = Command.make("pause", {}, () =>
-  daemonRequest({ method: "POST", path: "/pause" }),
+  Effect.gen(function* () {
+    const client = yield* DaemonClient
+    yield* client.pause().pipe(Effect.catch(renderClientError))
+  }).pipe(Effect.provide(DaemonClient.layer())),
 )
 
 export const resumeCommand = Command.make("resume", {}, () =>
-  daemonRequest({ method: "POST", path: "/resume" }),
+  Effect.gen(function* () {
+    const client = yield* DaemonClient
+    yield* client.resume().pipe(Effect.catch(renderClientError))
+  }).pipe(Effect.provide(DaemonClient.layer())),
 )
 
 export const meetingStartCommand = Command.make("meeting-start", {}, () =>
   Effect.gen(function* () {
-    const response = yield* daemonRequest({ method: "POST", path: "/meeting/start" })
-    if (response === "") {
-      yield* Console.log("off")
-      return
-    }
-    const parsed: unknown = JSON.parse(response)
-    if (typeof parsed !== "object" || parsed === null) {
-      yield* Console.log("stale")
-      return
-    }
-    const pStart = isRecord(parsed) ? parsed : null
-    if (pStart !== null) {
-      const rawResult = pStart["result"]
-      const result = isRecord(rawResult) ? rawResult : null
-      if (result !== null) {
-        if (result["_tag"] === "Busy") {
-          yield* Console.log(`busy:${String(result["activeMode"])}`)
-          return
-        }
-        if (result["_tag"] === "Disabled") {
-          yield* Console.log("paused")
-          return
-        }
-      }
-      const rawState = pStart["state"]
-      const state = isRecord(rawState) ? rawState : null
-      if (state !== null && typeof state["mode"] === "string") {
-        yield* Console.log(state["mode"])
-        return
-      }
-    }
-    yield* Console.log("stale")
-  }),
+    const client = yield* DaemonClient
+    yield* client.meetingStart().pipe(
+      Effect.matchEffect({
+        onFailure: renderClientError,
+        onSuccess: ({ result, snapshot }) => {
+          if (Reflect.get(result, "_tag") === "Busy") {
+            return Console.log(`busy:${result.activeMode}`)
+          }
+          if (Reflect.get(result, "_tag") === "Disabled") {
+            return Console.log("paused")
+          }
+          return Console.log(snapshot.mode)
+        },
+      }),
+    )
+  }).pipe(Effect.provide(DaemonClient.layer())),
 ).pipe(Command.withDescription("Start meeting transcription"))
 
 export const meetingStopCommand = Command.make("meeting-stop", {}, () =>
   Effect.gen(function* () {
-    const response = yield* daemonRequest({ method: "POST", path: "/meeting/stop" })
-    if (response === "") {
-      yield* Console.log("off")
-      return
-    }
-    const parsed: unknown = JSON.parse(response)
-    if (typeof parsed !== "object" || parsed === null) {
-      yield* Console.log("stale")
-      return
-    }
-    const pStop = isRecord(parsed) ? parsed : null
-    if (pStop !== null) {
-      const rawState = pStop["state"]
-      const state = isRecord(rawState) ? rawState : null
-      if (state !== null && typeof state["mode"] === "string") {
-        const mode = state["mode"]
-        yield* Console.log(mode === "idle" ? "armed" : mode)
-        return
-      }
-    }
-    yield* Console.log("stale")
-  }),
+    const client = yield* DaemonClient
+    yield* client.meetingStop().pipe(
+      Effect.matchEffect({
+        onFailure: renderClientError,
+        onSuccess: (snapshot) =>
+          Console.log(snapshot.mode === "idle" ? "armed" : snapshot.mode),
+      }),
+    )
+  }).pipe(Effect.provide(DaemonClient.layer())),
 ).pipe(Command.withDescription("Stop meeting transcription"))
 
 export const meetingToggleCommand = Command.make("meeting-toggle", {}, () =>
   Effect.gen(function* () {
-    const response = yield* daemonRequest({ method: "POST", path: "/meeting/toggle" })
-    if (response === "") {
-      yield* Console.log("off")
-      return
-    }
-    const parsed: unknown = JSON.parse(response)
-    if (typeof parsed !== "object" || parsed === null) {
-      yield* Console.log("stale")
-      return
-    }
-    const pToggle = isRecord(parsed) ? parsed : null
-    if (pToggle !== null) {
-      const rawState = pToggle["state"]
-      const state = isRecord(rawState) ? rawState : null
-      if (state !== null && typeof state["mode"] === "string") {
-        const mode = state["mode"]
-        yield* Console.log(mode === "idle" ? "armed" : mode)
-        return
-      }
-    }
-    yield* Console.log("stale")
-  }),
+    const client = yield* DaemonClient
+    yield* client.meetingToggle().pipe(
+      Effect.matchEffect({
+        onFailure: renderClientError,
+        onSuccess: (snapshot) =>
+          Console.log(snapshot.mode === "idle" ? "armed" : snapshot.mode),
+      }),
+    )
+  }).pipe(Effect.provide(DaemonClient.layer())),
 ).pipe(Command.withDescription("Toggle meeting transcription"))

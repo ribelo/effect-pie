@@ -40,16 +40,22 @@ export const DaemonRpcServer = {
         MeetingToggle: () => coordinator.toggleMeeting,
       }
 
-      const serverLayer = DaemonRpc.toLayer(handlers).pipe(
-        Layer.provide(RpcServer.layerProtocolSocketServer),
+      const protocolLayer = RpcServer.layerProtocolSocketServer.pipe(
         Layer.provide(RpcSerialization.layerNdjson),
         Layer.provide(
           BunSocketServer.layer({ path: DAEMON_SOCKET_PATH }).pipe(Layer.orDie),
         ),
       )
 
+      const serverLayer = DaemonRpc.toLayer(handlers).pipe(
+        Layer.provideMerge(protocolLayer),
+      )
+
       const ctx = yield* Layer.build(serverLayer)
-      return yield* RpcServer.make(DaemonRpc).pipe(Effect.provideContext(ctx))
+      yield* RpcServer.make(DaemonRpc).pipe(
+        Effect.provideContext(ctx),
+        Effect.forkScoped,
+      )
     }),
   ),
 }

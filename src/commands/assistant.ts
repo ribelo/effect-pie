@@ -9,7 +9,7 @@ import type { DesktopSession } from "../desktop/session.js"
 import { AssistantDiagnostics, isShellTraceEnabled } from "../assistant/diagnostics.js"
 import { CliError } from "./shared.js"
 import { ASSISTANT_RECORDING_STATE_PATH, RecordingCoordinator } from "./assistant/coordinator.js"
-import { startDaemonServer } from "./daemon.js"
+import { DaemonRpcServer } from "../daemon/server.js"
 import {
   DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE,
   DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM,
@@ -100,7 +100,7 @@ export const runAssistantDefaultCommand = Effect.fn(
       yield* coordinator.clear
       yield* Console.log(`[assistant] Recording state file: ${ASSISTANT_RECORDING_STATE_PATH}`)
 
-      yield* startDaemonServer.pipe(Effect.forkScoped)
+      // DaemonRpcServer.layer is provided in the outer Layer.mergeAll
 
       yield* Effect.all(
         [
@@ -140,7 +140,12 @@ export const runAssistantDefaultCommand = Effect.fn(
 
   return yield* effect.pipe(
     Effect.provide(
-      Layer.mergeAll(SttService.live(sttConfig), Niri.live, RecordingCoordinator.live()),
+      Layer.mergeAll(
+        SttService.live(sttConfig),
+        Niri.live,
+        RecordingCoordinator.live(),
+        DaemonRpcServer.layer.pipe(Layer.provide(RecordingCoordinator.live())),
+      ),
     ),
     Effect.tapError((cause) =>
       Effect.gen(function* () {
