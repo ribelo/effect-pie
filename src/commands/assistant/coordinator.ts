@@ -3,6 +3,7 @@ import * as Data from "effect/Data"
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Ref from "effect/Ref"
+import * as Schema from "effect/Schema"
 import * as path from "node:path"
 import { mkdir as mkdirNode, writeFile as writeNodeFile } from "node:fs/promises"
 
@@ -10,22 +11,45 @@ import { EFFECT_PI_RUNTIME_DIR } from "../../paths.js"
 
 export const ASSISTANT_RECORDING_STATE_PATH = path.join(EFFECT_PI_RUNTIME_DIR, "recording.json")
 
-export type RecordingMode = "ptt-transcribe" | "ptt-translate" | "wakeword" | "meeting-transcribe"
+export const RecordingModeSchema = Schema.Union([
+  Schema.Literal("ptt-transcribe"),
+  Schema.Literal("ptt-translate"),
+  Schema.Literal("wakeword"),
+  Schema.Literal("meeting-transcribe"),
+])
+export type RecordingMode = typeof RecordingModeSchema.Type
 
-export type RecordingSnapshot = {
-  readonly enabled: boolean
-  readonly active: boolean
-  readonly mode: RecordingMode | "idle"
-  readonly startedAt: string | null
-  readonly updatedAt: string
-  readonly transcriptPath: string | null
-  readonly lastError: string | null
-}
+export const RecordingSnapshotSchema = Schema.Struct({
+  enabled: Schema.Boolean,
+  active: Schema.Boolean,
+  mode: Schema.Union([
+    Schema.Literal("ptt-transcribe"),
+    Schema.Literal("ptt-translate"),
+    Schema.Literal("wakeword"),
+    Schema.Literal("meeting-transcribe"),
+    Schema.Literal("idle"),
+  ]),
+  startedAt: Schema.Union([Schema.String, Schema.Null]),
+  updatedAt: Schema.String,
+  transcriptPath: Schema.Union([Schema.String, Schema.Null]),
+  lastError: Schema.Union([Schema.String, Schema.Null]),
+})
+export type RecordingSnapshot = typeof RecordingSnapshotSchema.Type
 
-export type StartResult =
-  | { readonly _tag: "Started"; readonly mode: RecordingMode }
-  | { readonly _tag: "Busy"; readonly activeMode: RecordingMode }
-  | { readonly _tag: "Disabled" }
+export const StartResultSchema = Schema.Union([
+  Schema.Struct({
+    _tag: Schema.Literal("Started"),
+    mode: RecordingModeSchema,
+  }),
+  Schema.Struct({
+    _tag: Schema.Literal("Busy"),
+    activeMode: RecordingModeSchema,
+  }),
+  Schema.Struct({
+    _tag: Schema.Literal("Disabled"),
+  }),
+])
+export type StartResult = typeof StartResultSchema.Type
 
 export class RecordingPersistError extends Data.TaggedError("RecordingPersistError")<{
   readonly message: string
