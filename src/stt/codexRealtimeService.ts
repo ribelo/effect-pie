@@ -29,6 +29,21 @@ import {
 } from "./codexRealtime.js"
 import { CodexAuthService, type CodexAuthError } from "./codexAuth.js"
 
+const concatAudioChunks = (chunks: Iterable<Uint8Array>): Uint8Array => {
+  let total = 0
+  for (const chunk of chunks) {
+    total += chunk.length
+  }
+
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    out.set(chunk, offset)
+    offset += chunk.length
+  }
+  return out
+}
+
 export class CodexRealtimeSttError extends Data.TaggedError("CodexRealtimeSttError")<{
   readonly message: string
   readonly code?: string | undefined
@@ -394,6 +409,17 @@ export class CodexRealtimeSttService extends Context.Service<
           translate: (config) =>
             Effect.gen(function* () {
               const token = yield* auth.getAccessToken
+              if (config.model === CODEX_CONVERSATION_TRANSLATION_MODEL) {
+                const pcmBytes = yield* config.audio.pipe(
+                  Stream.runCollect,
+                  Effect.map(concatAudioChunks),
+                )
+                return yield* translateWithCodexRealtime(bunWebSocketFactory, token, {
+                  ...config,
+                  audio: Stream.succeed(pcmBytes),
+                  onDelta: undefined,
+                })
+              }
               return yield* translateWithCodexRealtime(bunWebSocketFactory, token, config)
             }),
         })

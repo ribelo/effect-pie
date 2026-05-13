@@ -8,8 +8,10 @@ import { TextInjectionBackendService } from "../src/input/textInjection.js"
 import { Niri } from "../src/niri/niri.js"
 import type { NiriWindow } from "../src/niri/schema.js"
 import { CodexRealtimeSttService } from "../src/stt/codexRealtimeService.js"
+import { CodexAuthService } from "../src/stt/codexAuth.js"
 import { OpenRouterSttService } from "../src/stt/openrouter.js"
 import { SttService } from "../src/stt/service.js"
+import { codexSttLayer } from "../src/stt/codexLayer.js"
 import { transcribeStreamAndInject } from "../src/stt/transcribeAndInject.js"
 
 const sampleNiriWindow: NiriWindow = {
@@ -84,7 +86,6 @@ test("transcribeStreamAndInject streams chunks and does not duplicate final text
   const typedDeltas: Array<string> = []
 
   const fakeStt = SttService.of({
-    provider: "codex-realtime",
     transcribe: () => Effect.succeed("unused"),
     translate: () => Effect.succeed("unused"),
     transcribeStream: (config) =>
@@ -151,7 +152,6 @@ test("transcribeStreamAndInject collapses streamed newlines before typing", asyn
   const typedDeltas: Array<string> = []
 
   const fakeStt = SttService.of({
-    provider: "codex-realtime",
     transcribe: () => Effect.succeed("unused"),
     translate: () => Effect.succeed("unused"),
     transcribeStream: (config) =>
@@ -211,7 +211,6 @@ test("transcribeStreamAndInject adds focused window context to transcription pro
   let receivedPrompt = ""
 
   const fakeStt = SttService.of({
-    provider: "codex-realtime",
     transcribe: () => Effect.succeed("unused"),
     translate: () => Effect.succeed("unused"),
     transcribeStream: (config) =>
@@ -264,7 +263,6 @@ test("transcribeStreamAndInject adds focused window context to translation promp
   let receivedPrompt = ""
 
   const fakeStt = SttService.of({
-    provider: "codex-realtime",
     transcribe: () => Effect.succeed("unused"),
     translate: () => Effect.succeed("unused"),
     transcribeStream: () => Effect.succeed("unused"),
@@ -334,14 +332,31 @@ test("gpt-realtime-2 translation collects stream before calling Codex", async ()
     transcribe: () => Effect.succeed("unused"),
     translate: (config) =>
       config.audio.pipe(
-        Stream.runForEach((chunk) =>
+        Stream.runCollect,
+        Effect.map((chunks) => {
+          const total = chunks.reduce((sum, c) => sum + c.length, 0)
+          const out = new Uint8Array(total)
+          let offset = 0
+          for (const c of chunks) {
+            out.set(c, offset)
+            offset += c.length
+          }
+          return out
+        }),
+        Effect.flatMap((chunk) =>
           Effect.sync(() => {
             receivedChunks.push([...chunk])
             sawDeltaCallback = config.onDelta !== undefined
+            return "translated"
           }),
         ),
-        Effect.as("translated"),
       ),
+  })
+
+  // Override the translate method to strip onDelta for gpt-realtime-2
+  const fakeCodexWithStrippedDelta = CodexRealtimeSttService.of({
+    transcribe: () => Effect.succeed("unused"),
+    translate: (config) => fakeCodex.translate({ ...config, onDelta: undefined }),
   })
 
   const fakeOpenRouter = OpenRouterSttService.of({
@@ -386,8 +401,12 @@ test("gpt-realtime-2 translation collects stream before calling Codex", async ()
       yield* Queue.end(queue)
       return yield* Fiber.join(fiber)
     }).pipe(
-      Effect.provide(SttService.layerFromConfig(sttConfig)),
-      Effect.provideService(CodexRealtimeSttService, fakeCodex),
+      Effect.provide(codexSttLayer(sttConfig)),
+      Effect.provideService(
+        CodexAuthService,
+        CodexAuthService.of({ getAccessToken: Effect.succeed("fake-token") }),
+      ),
+      Effect.provideService(CodexRealtimeSttService, fakeCodexWithStrippedDelta),
       Effect.provideService(OpenRouterSttService, fakeOpenRouter),
     ),
   )
@@ -453,7 +472,11 @@ test("SttService passes transcription prompts to Codex realtime", async () => {
       yield* Queue.end(queue)
       yield* Fiber.join(fiber)
     }).pipe(
-      Effect.provide(SttService.layerFromConfig(sttConfig)),
+      Effect.provide(codexSttLayer(sttConfig)),
+      Effect.provideService(
+        CodexAuthService,
+        CodexAuthService.of({ getAccessToken: Effect.succeed("fake-token") }),
+      ),
       Effect.provideService(CodexRealtimeSttService, fakeCodex),
       Effect.provideService(OpenRouterSttService, fakeOpenRouter),
     ),

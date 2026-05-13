@@ -9,7 +9,7 @@ import { NiriIpcError } from "../src/niri/errors.js"
 import { CodexRealtimeSttError } from "../src/stt/codexRealtimeService.js"
 import { OpenRouterSttError } from "../src/stt/openrouter.js"
 import { CodexAuthError } from "../src/stt/codexAuth.js"
-import { SttService, SttDispatchError } from "../src/stt/service.js"
+import { SttService } from "../src/stt/service.js"
 import { classifyStreamingError, makeStreamedSttDispatch } from "../src/stt/streamedDispatch.js"
 import { isSttServiceFailure } from "../src/stt/streamingError.js"
 
@@ -64,7 +64,6 @@ test("makeStreamedSttDispatch offer/finish happy path", async () => {
   const receivedChunks: Array<Array<number>> = []
 
   const fakeStt = SttService.of({
-    provider: "codex-realtime",
     transcribe: () => Effect.succeed("unused"),
     translate: () => Effect.succeed("unused"),
     transcribeStream: (config) =>
@@ -111,7 +110,6 @@ test("makeStreamedSttDispatch offer/finish happy path", async () => {
 
 test("makeStreamedSttDispatch offer/cancel interrupts fiber without error", async () => {
   const fakeStt = SttService.of({
-    provider: "codex-realtime",
     transcribe: () => Effect.succeed("unused"),
     translate: () => Effect.succeed("unused"),
     transcribeStream: () => Effect.succeed("unused"),
@@ -144,7 +142,6 @@ test("makeStreamedSttDispatch offer/cancel interrupts fiber without error", asyn
 
 test("makeStreamedSttDispatch STT failure surfaces via finish", async () => {
   const fakeStt = SttService.of({
-    provider: "codex-realtime",
     transcribe: () => Effect.succeed("unused"),
     translate: () => Effect.succeed("unused"),
     transcribeStream: () =>
@@ -190,7 +187,6 @@ test("makeStreamedSttDispatch STT failure surfaces via finish", async () => {
 
 test("makeStreamedSttDispatch injection-delta failure surfaces via finish", async () => {
   const fakeStt = SttService.of({
-    provider: "codex-realtime",
     transcribe: () => Effect.succeed("unused"),
     translate: () => Effect.succeed("unused"),
     transcribeStream: (config) =>
@@ -244,7 +240,6 @@ test("classifyStreamingError branches for all known tags", () => {
     new OpenRouterSttError({ message: "openrouter" }),
     new CodexRealtimeSttError({ message: "codex" }),
     new CodexAuthError({ message: "auth" }),
-    new SttDispatchError({ message: "dispatch" }),
     new NiriIpcError({ message: "niri" }),
   ]
 
@@ -276,7 +271,6 @@ test("isSttServiceFailure matches expected tags", () => {
   assert.equal(isSttServiceFailure(new OpenRouterSttError({ message: "" })), true)
   assert.equal(isSttServiceFailure(new CodexRealtimeSttError({ message: "" })), true)
   assert.equal(isSttServiceFailure(new CodexAuthError({ message: "" })), true)
-  assert.equal(isSttServiceFailure(new SttDispatchError({ message: "" })), true)
   assert.equal(isSttServiceFailure(new NiriIpcError({ message: "" })), true)
   assert.equal(isSttServiceFailure(new TextInjectionError({ message: "" })), false)
   assert.equal(isSttServiceFailure({} as { readonly _tag?: string }), false)
@@ -284,7 +278,6 @@ test("isSttServiceFailure matches expected tags", () => {
 
 test("makeStreamedSttDispatch cancel without offer does not error", async () => {
   const fakeStt = SttService.of({
-    provider: "codex-realtime",
     transcribe: () => Effect.succeed("unused"),
     translate: () => Effect.succeed("unused"),
     transcribeStream: () => Effect.succeed("unused"),
