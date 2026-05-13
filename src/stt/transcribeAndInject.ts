@@ -12,7 +12,8 @@ import type { NiriError } from "../niri/errors.js"
 import type { Niri } from "../niri/service.js"
 import { promptTemplateWithFocusedWindowContext } from "./focusedWindowPrompt.js"
 import { SttService, type SttServiceError } from "./service.js"
-import { isSttServiceFailure, type SttInjectionDiagnostics } from "./streamedDispatch.js"
+import { isSttServiceFailure } from "./streamingError.js"
+import type { SttInjectionDiagnostics } from "./streamedDispatch.js"
 
 type TranscribeAndInjectConfig = {
   readonly pcmBytes: Uint8Array

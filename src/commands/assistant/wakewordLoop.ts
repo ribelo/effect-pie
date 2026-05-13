@@ -19,10 +19,7 @@ import {
 } from "../wakewordHelpers.js"
 import { readDetectionTuningSnapshot, type WakewordSnapshotError } from "../../wakeword/tuning.js"
 import type { SttService } from "../../stt/service.js"
-import {
-  classifyStreamingError,
-  makeStreamedSttDispatch,
-} from "../../stt/streamedDispatch.js"
+import { classifyStreamingError, makeStreamedSttDispatch } from "../../stt/streamedDispatch.js"
 import type { SttRuntimeConfig } from "../../stt/config.js"
 import { CliError } from "../shared.js"
 import {

@@ -6,10 +6,7 @@ import type { TextInjectionBackendService } from "../input/textInjection.js"
 import type { Niri } from "../niri/service.js"
 import { MIN_GAIN_TO_APPLY, normalizePcmForStt, pcmPeak, pcmRms } from "../audio/pcm.js"
 import type { SttService } from "../stt/service.js"
-import {
-  classifyStreamingError,
-  makeStreamedSttDispatch,
-} from "../stt/streamedDispatch.js"
+import { classifyStreamingError, makeStreamedSttDispatch } from "../stt/streamedDispatch.js"
 import type { AssistantDiagnostics } from "../assistant/diagnostics.js"
 import { writePcmWavFile, type WakewordTrainingError } from "../wakeword/training.js"
 import { makePttClipPath } from "../commands/shared.js"

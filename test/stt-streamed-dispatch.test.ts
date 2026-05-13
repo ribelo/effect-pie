@@ -10,11 +10,8 @@ import { CodexRealtimeSttError } from "../src/stt/codexRealtimeService.js"
 import { OpenRouterSttError } from "../src/stt/openrouter.js"
 import { CodexAuthError } from "../src/stt/codexAuth.js"
 import { SttService, SttDispatchError } from "../src/stt/service.js"
-import {
-  classifyStreamingError,
-  isSttServiceFailure,
-  makeStreamedSttDispatch,
-} from "../src/stt/streamedDispatch.js"
+import { classifyStreamingError, makeStreamedSttDispatch } from "../src/stt/streamedDispatch.js"
+import { isSttServiceFailure } from "../src/stt/streamingError.js"
 
 const fakeNiri = Niri.of({
   version: Effect.die("unused"),
@@ -185,7 +182,10 @@ test("makeStreamedSttDispatch STT failure surfaces via finish", async () => {
 
   const classified = classifyStreamingError(error, "Streamed transcription failed")
   assert.equal(classified.kind, "stt")
-  assert.equal(classified.message, "Streamed transcription failed: Realtime connection closed unexpectedly")
+  assert.equal(
+    classified.message,
+    "Streamed transcription failed: Realtime connection closed unexpectedly",
+  )
 })
 
 test("makeStreamedSttDispatch injection-delta failure surfaces via finish", async () => {
@@ -205,10 +205,7 @@ test("makeStreamedSttDispatch injection-delta failure surfaces via finish", asyn
 
   const fakeTextInjection = TextInjectionBackendService.of({
     backend: "wtype",
-    typeText: () =>
-      Effect.fail(
-        new TextInjectionError({ message: "wtype text injection failed" }),
-      ),
+    typeText: () => Effect.fail(new TextInjectionError({ message: "wtype text injection failed" })),
   })
 
   const error = await Effect.runPromise(
@@ -253,7 +250,7 @@ test("classifyStreamingError branches for all known tags", () => {
 
   for (const err of sttErrors) {
     const result = classifyStreamingError(err, "prefix")
-    assert.equal(result.kind, "stt", `expected stt for ${err._tag}`)
+    assert.equal(result.kind, "stt", `expected stt for ${Reflect.get(err, "_tag")}`)
     assert.match(result.message, /^prefix: /)
   }
 
@@ -262,14 +259,15 @@ test("classifyStreamingError branches for all known tags", () => {
     message: "unknown",
   }
 
-  const injectionErrors = [
-    new TextInjectionError({ message: "injection" }),
-    unknownError,
-  ]
+  const injectionErrors = [new TextInjectionError({ message: "injection" }), unknownError]
 
   for (const err of injectionErrors) {
     const result = classifyStreamingError(err, "prefix")
-    assert.equal(result.kind, "injection", `expected injection for ${err._tag ?? "no-tag"}`)
+    assert.equal(
+      result.kind,
+      "injection",
+      `expected injection for ${Reflect.get(err, "_tag") ?? "no-tag"}`,
+    )
     assert.match(result.message, /^Failed to inject streamed text: /)
   }
 })
