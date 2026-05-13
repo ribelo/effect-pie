@@ -34,25 +34,21 @@ export type StreamedSttDispatchConfig = {
   readonly logPrefix: string
   readonly inject?: boolean | undefined
   readonly diagnostics?: SttInjectionDiagnostics | undefined
-} & (
-  | {
-      readonly operation: {
+  readonly operation:
+    | {
         readonly kind: "transcribe"
         readonly model: string
         readonly language: string
         readonly promptTemplate: string
       }
-    }
-  | {
-      readonly operation: {
+    | {
         readonly kind: "translate"
         readonly model: string
         readonly sourceLanguage: string
         readonly targetLanguage: string
         readonly promptTemplate: string
       }
-    }
-)
+}
 
 export const isSttServiceFailure = (cause: { readonly _tag?: string }): boolean =>
   cause["_tag"] === "OpenRouterSttError" ||

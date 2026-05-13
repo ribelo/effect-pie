@@ -1,4 +1,4 @@
-import { Console, Effect, Fiber, Queue, Stream, type Cause } from "effect"
+import { Console, Effect } from "effect"
 
 import { PttKeyboardError } from "../keyboard/monitor.js"
 import type { DesktopSession } from "../desktop/session.js"
@@ -6,23 +6,14 @@ import type { TextInjectionBackendService } from "../input/textInjection.js"
 import type { Niri } from "../niri/service.js"
 import { MIN_GAIN_TO_APPLY, normalizePcmForStt, pcmPeak, pcmRms } from "../audio/pcm.js"
 import type { SttService } from "../stt/service.js"
-import { isSttServiceFailure } from "../stt/streamedDispatch.js"
-import { transcribeStreamAndInject } from "../stt/transcribeAndInject.js"
+import {
+  classifyStreamingError,
+  makeStreamedSttDispatch,
+} from "../stt/streamedDispatch.js"
 import type { AssistantDiagnostics } from "../assistant/diagnostics.js"
 import { writePcmWavFile, type WakewordTrainingError } from "../wakeword/training.js"
 import { makePttClipPath } from "../commands/shared.js"
 import type { PttCaptureHandle } from "./loop.js"
-
-export const classifyStreamingSttError = (
-  failurePrefix: string,
-  cause: { readonly _tag?: string; readonly message: string },
-): PttKeyboardError => {
-  const message = isSttServiceFailure(cause)
-    ? `${failurePrefix}: ${cause.message}`
-    : `Failed to inject streamed text: ${cause.message}`
-
-  return new PttKeyboardError({ message, cause })
-}
 
 export const makeStreamedSttHandle = (config: {
   readonly sampleRate: number
@@ -50,76 +41,38 @@ export const makeStreamedSttHandle = (config: {
   SttService | Niri | TextInjectionBackendService | DesktopSession
 > =>
   Effect.gen(function* () {
-    const services = yield* Effect.context<
-      SttService | Niri | TextInjectionBackendService | DesktopSession
-    >()
-    let audioQueue: Queue.Queue<Uint8Array, Cause.Done> | undefined
-    let transcriptFiber: Fiber.Fiber<void, PttKeyboardError> | undefined
-
-    const start = Effect.gen(function* () {
-      if (audioQueue !== undefined) {
-        return audioQueue
-      }
-
-      const queue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
-      const stream = Stream.fromQueue(queue)
-      const transcriptEffect =
+    const dispatch = yield* makeStreamedSttDispatch({
+      sampleRate: config.sampleRate,
+      logPrefix: config.logPrefix,
+      inject: config.inject,
+      diagnostics: config.diagnostics,
+      operation:
         config.operation.kind === "transcribe"
-          ? transcribeStreamAndInject({
-              operation: "transcribe",
+          ? {
+              kind: "transcribe",
               model: config.operation.model,
-              audio: stream,
-              sampleRate: config.sampleRate,
               language: config.operation.language,
               promptTemplate: config.operation.promptTemplate,
-              logPrefix: config.logPrefix,
-              ...(config.inject !== undefined ? { inject: config.inject } : {}),
-              ...(config.diagnostics !== undefined ? { diagnostics: config.diagnostics } : {}),
-            })
-          : transcribeStreamAndInject({
-              operation: "translate",
+            }
+          : {
+              kind: "translate",
               model: config.operation.model,
-              audio: stream,
-              sampleRate: config.sampleRate,
               sourceLanguage: config.operation.sourceLanguage,
               targetLanguage: config.operation.targetLanguage,
               promptTemplate: config.operation.promptTemplate,
-              logPrefix: config.logPrefix,
-              ...(config.inject !== undefined ? { inject: config.inject } : {}),
-              ...(config.diagnostics !== undefined ? { diagnostics: config.diagnostics } : {}),
-            })
-
-      transcriptFiber = yield* transcriptEffect.pipe(
-        Effect.mapError((cause) => classifyStreamingSttError(config.failurePrefix, cause)),
-        Effect.asVoid,
-        (effect) => Effect.forkChild(effect, { startImmediately: true }),
-      )
-      audioQueue = queue
-      return queue
+            },
     })
-    const startProvided = start.pipe(Effect.provideContext(services))
 
     return {
-      offer: (chunk) =>
-        startProvided.pipe(
-          Effect.flatMap((queue) => Queue.offer(queue, chunk)),
-          Effect.asVoid,
-        ),
+      offer: dispatch.offer,
       finish: (_clip) =>
-        Effect.gen(function* () {
-          if (audioQueue === undefined || transcriptFiber === undefined) {
-            return
-          }
-          yield* Queue.end(audioQueue)
-          yield* Fiber.join(transcriptFiber)
-        }),
-      cancel: Effect.gen(function* () {
-        if (audioQueue === undefined || transcriptFiber === undefined) {
-          return
-        }
-        yield* Queue.end(audioQueue)
-        yield* Fiber.interrupt(transcriptFiber)
-      }).pipe(Effect.ignore),
+        dispatch.finish.pipe(
+          Effect.mapError((cause) => {
+            const classified = classifyStreamingError(cause, config.failurePrefix)
+            return new PttKeyboardError({ message: classified.message, cause })
+          }),
+        ),
+      cancel: dispatch.cancel,
     }
   })
 
