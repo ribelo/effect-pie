@@ -157,11 +157,21 @@ export const injectTranscript = Effect.fn("pie/input/textInjection.injectTranscr
       ),
     )
 
+    yield* Effect.annotateCurrentSpan({
+      "injection.backend": result.backend,
+      "injection.chars": result.text.length,
+      "injection.session_type": result.sessionType,
+    })
+
     config.diagnostics?.injectionComplete()
     config.diagnostics?.setState("idle")
 
-    yield* Console.log(
-      `[${config.logPrefix}] Typed ${result.text.length} chars with ${result.backend}`,
+    yield* Effect.logInfo("Injection completed").pipe(
+      Effect.annotateLogs({
+        "injection.backend": result.backend,
+        "injection.chars": result.text.length,
+        "injection.session_type": result.sessionType,
+      }),
     )
 
     return result

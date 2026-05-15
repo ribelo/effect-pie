@@ -104,5 +104,5 @@ export const createWakewordTelemetryStream = (
       yield* Effect.addFinalizer(() => Queue.shutdown(queue))
 
       return Stream.fromQueue(queue)
-    }),
+    }).pipe(Effect.withSpan("pie/wakeword/live.createWakewordTelemetryStream")),
   )

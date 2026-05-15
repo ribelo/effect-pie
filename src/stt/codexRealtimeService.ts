@@ -81,7 +81,9 @@ const renderTemplate = (template: string, variables: Readonly<Record<string, str
 
 const APPEND_CHUNK_SIZE = 32_000
 
-export const runCodexRealtimeSession = (config: {
+export const runCodexRealtimeSession = Effect.fn(
+  "pie/stt/codexRealtimeService.runCodexRealtimeSession",
+)(function* (config: {
   readonly sessionUpdate: unknown
   readonly mode?: CodexRealtimeMode | undefined
   readonly audio: Stream.Stream<Uint8Array>
@@ -90,110 +92,109 @@ export const runCodexRealtimeSession = (config: {
   readonly translationOutputDrainMillis?: number | undefined
   readonly responseCreate?: unknown
   readonly connection: CodexRealtimeConnection
-}): Effect.Effect<string, CodexRealtimeSttError> =>
-  Effect.gen(function* () {
-    const { connection } = config
-    const mode = config.mode ?? "transcription"
+}): Effect.fn.Return<string, CodexRealtimeSttError> {
+  const { connection } = config
+  const mode = config.mode ?? "transcription"
 
-    yield* connection.send(encodeJson(config.sessionUpdate))
+  yield* connection.send(encodeJson(config.sessionUpdate))
 
-    const finalRef = yield* Ref.make<string | undefined>(undefined)
-    const accumulatedDeltasRef = yield* Ref.make("")
-    const errorRef = yield* Ref.make<CodexRealtimeSttError | undefined>(undefined)
+  const finalRef = yield* Ref.make<string | undefined>(undefined)
+  const accumulatedDeltasRef = yield* Ref.make("")
+  const errorRef = yield* Ref.make<CodexRealtimeSttError | undefined>(undefined)
 
-    const receive = connection.messages.pipe(
-      Stream.mapEffect((payload) =>
-        parseCodexRealtimeEvent(payload).pipe(
-          Effect.mapError(
-            (cause) =>
-              new CodexRealtimeSttError({
-                message: `Failed to parse Codex realtime event: ${cause.message}`,
-                cause,
-              }),
-          ),
+  const receive = connection.messages.pipe(
+    Stream.mapEffect((payload) =>
+      parseCodexRealtimeEvent(payload).pipe(
+        Effect.mapError(
+          (cause) =>
+            new CodexRealtimeSttError({
+              message: `Failed to parse Codex realtime event: ${cause.message}`,
+              cause,
+            }),
         ),
       ),
-      Stream.takeUntilEffect((event: CodexRealtimeEvent) =>
-        Effect.gen(function* () {
-          if (event.kind === "error") {
-            yield* Ref.set(
-              errorRef,
-              new CodexRealtimeSttError({
-                message: `Codex realtime server error: ${event.message}`,
-                ...(event.code !== undefined ? { code: event.code } : {}),
-              }),
-            )
-            return true
-          }
-          if (event.kind === "transcriptDelta") {
-            yield* Ref.update(accumulatedDeltasRef, (current) => current + event.delta)
-            if (config.onDelta !== undefined) {
-              yield* config.onDelta(event.delta)
-            }
-            return false
-          }
-          if (event.kind === "transcriptDone") {
-            yield* Ref.set(finalRef, event.transcript)
-            return true
-          }
-          if (event.kind === "responseDone") {
-            return true
+    ),
+    Stream.takeUntilEffect((event: CodexRealtimeEvent) =>
+      Effect.gen(function* () {
+        if (event.kind === "error") {
+          yield* Ref.set(
+            errorRef,
+            new CodexRealtimeSttError({
+              message: `Codex realtime server error: ${event.message}`,
+              ...(event.code !== undefined ? { code: event.code } : {}),
+            }),
+          )
+          return true
+        }
+        if (event.kind === "transcriptDelta") {
+          yield* Ref.update(accumulatedDeltasRef, (current) => current + event.delta)
+          if (config.onDelta !== undefined) {
+            yield* config.onDelta(event.delta)
           }
           return false
-        }),
-      ),
-      Stream.runDrain,
-    )
+        }
+        if (event.kind === "transcriptDone") {
+          yield* Ref.set(finalRef, event.transcript)
+          return true
+        }
+        if (event.kind === "responseDone") {
+          return true
+        }
+        return false
+      }),
+    ),
+    Stream.runDrain,
+  )
 
-    const sendAudioChunks = config.audio.pipe(
-      Stream.map((chunk) =>
-        resampleS16lePcm(chunk, config.inputSampleRate, CODEX_REALTIME_SAMPLE_RATE),
-      ),
-      Stream.filter((chunk) => chunk.length > 0),
-      Stream.runForEach((chunk) =>
-        Effect.gen(function* () {
-          for (let offset = 0; offset < chunk.length; offset += APPEND_CHUNK_SIZE) {
-            const slice = chunk.subarray(offset, Math.min(offset + APPEND_CHUNK_SIZE, chunk.length))
-            yield* connection.send(encodeJson(buildAudioAppend(slice, mode)))
-          }
-        }),
-      ),
-    )
+  const sendAudioChunks = config.audio.pipe(
+    Stream.map((chunk) =>
+      resampleS16lePcm(chunk, config.inputSampleRate, CODEX_REALTIME_SAMPLE_RATE),
+    ),
+    Stream.filter((chunk) => chunk.length > 0),
+    Stream.runForEach((chunk) =>
+      Effect.gen(function* () {
+        for (let offset = 0; offset < chunk.length; offset += APPEND_CHUNK_SIZE) {
+          const slice = chunk.subarray(offset, Math.min(offset + APPEND_CHUNK_SIZE, chunk.length))
+          yield* connection.send(encodeJson(buildAudioAppend(slice, mode)))
+        }
+      }),
+    ),
+  )
 
-    const sendAudio =
-      mode === "translation"
-        ? sendAudioChunks.pipe(
-            Effect.flatMap(() =>
-              Effect.sleep(Duration.millis(config.translationOutputDrainMillis ?? 2_000)),
-            ),
-            Effect.flatMap(() => connection.close),
-          )
-        : sendAudioChunks.pipe(
-            Effect.flatMap(() => connection.send(encodeJson(buildAudioCommit()))),
-            Effect.flatMap(() =>
-              config.responseCreate === undefined
-                ? Effect.void
-                : connection.send(encodeJson(config.responseCreate)),
-            ),
-          )
+  const sendAudio =
+    mode === "translation"
+      ? sendAudioChunks.pipe(
+          Effect.flatMap(() =>
+            Effect.sleep(Duration.millis(config.translationOutputDrainMillis ?? 2_000)),
+          ),
+          Effect.flatMap(() => connection.close),
+        )
+      : sendAudioChunks.pipe(
+          Effect.flatMap(() => connection.send(encodeJson(buildAudioCommit()))),
+          Effect.flatMap(() =>
+            config.responseCreate === undefined
+              ? Effect.void
+              : connection.send(encodeJson(config.responseCreate)),
+          ),
+        )
 
-    yield* Effect.all([receive, sendAudio], { concurrency: 2 })
+  yield* Effect.all([receive, sendAudio], { concurrency: 2 })
 
-    const err = yield* Ref.get(errorRef)
-    if (err !== undefined) {
-      return yield* Effect.fail(err)
-    }
+  const err = yield* Ref.get(errorRef)
+  if (err !== undefined) {
+    return yield* Effect.fail(err)
+  }
 
-    const done = yield* Ref.get(finalRef)
-    if (done !== undefined) {
-      return done
-    }
-    const accumulated = (yield* Ref.get(accumulatedDeltasRef)).trim()
-    if (accumulated.length === 0) {
-      return ""
-    }
-    return accumulated
-  })
+  const done = yield* Ref.get(finalRef)
+  if (done !== undefined) {
+    return done
+  }
+  const accumulated = (yield* Ref.get(accumulatedDeltasRef)).trim()
+  if (accumulated.length === 0) {
+    return ""
+  }
+  return accumulated
+})
 
 export type CodexRealtimeSocketFactory = (config: {
   readonly url: string
@@ -311,12 +312,14 @@ const makeRealUrl = (config: {
     baseUrl: resolveCodexRealtimeBaseUrl(),
   })
 
-export const transcribeWithCodexRealtime = (
+export const transcribeWithCodexRealtime = Effect.fn(
+  "pie/stt/codexRealtimeService.transcribeWithCodexRealtime",
+)(function* (
   factory: CodexRealtimeSocketFactory,
   accessToken: string,
   config: CodexRealtimeTranscribeConfig,
-): Effect.Effect<string, CodexRealtimeSttError> =>
-  Effect.scoped(
+): Effect.fn.Return<string, CodexRealtimeSttError> {
+  return yield* Effect.scoped(
     Effect.gen(function* () {
       const prompt = renderTemplate(config.promptTemplate, {
         language: config.language,
@@ -335,13 +338,16 @@ export const transcribeWithCodexRealtime = (
       })
     }),
   )
+})
 
-export const translateWithCodexRealtime = (
+export const translateWithCodexRealtime = Effect.fn(
+  "pie/stt/codexRealtimeService.translateWithCodexRealtime",
+)(function* (
   factory: CodexRealtimeSocketFactory,
   accessToken: string,
   config: CodexRealtimeTranslateConfig,
-): Effect.Effect<string, CodexRealtimeSttError> =>
-  Effect.scoped(
+): Effect.fn.Return<string, CodexRealtimeSttError> {
+  return yield* Effect.scoped(
     Effect.gen(function* () {
       const prompt = renderTemplate(config.promptTemplate, {
         source_language: config.sourceLanguage,
@@ -383,6 +389,7 @@ export const translateWithCodexRealtime = (
       })
     }),
   )
+})
 
 export class CodexRealtimeSttService extends Context.Service<
   CodexRealtimeSttService,

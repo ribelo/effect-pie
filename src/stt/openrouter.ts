@@ -429,15 +429,17 @@ const runOpenRouterAudioStreaming = (
     return yield* runOpenRouterAudioStreamingCore(config).pipe(Effect.provide(openAiLayer))
   })
 
-export const transcribePcmWithOpenRouter = (config: {
+export const transcribePcmWithOpenRouter = Effect.fn(
+  "pie/stt/openrouter.transcribePcmWithOpenRouter",
+)(function* (config: {
   readonly model: string
   readonly pcmBytes: Uint8Array
   readonly sampleRate: number
   readonly language: string
   readonly promptTemplate: string
   readonly onDelta?: (delta: string) => Effect.Effect<void>
-}): Effect.Effect<string, OpenRouterSttError> =>
-  runOpenRouterAudioStreaming({
+}): Effect.fn.Return<string, OpenRouterSttError> {
+  return yield* runOpenRouterAudioStreaming({
     model: config.model,
     prompt: renderTemplate(config.promptTemplate, {
       language: config.language,
@@ -450,8 +452,11 @@ export const transcribePcmWithOpenRouter = (config: {
         }
       : { onDelta: config.onDelta }),
   })
+})
 
-export const transcribeAndTranslatePcmWithOpenRouter = (config: {
+export const transcribeAndTranslatePcmWithOpenRouter = Effect.fn(
+  "pie/stt/openrouter.transcribeAndTranslatePcmWithOpenRouter",
+)(function* (config: {
   readonly model: string
   readonly pcmBytes: Uint8Array
   readonly sampleRate: number
@@ -459,8 +464,8 @@ export const transcribeAndTranslatePcmWithOpenRouter = (config: {
   readonly targetLanguage: string
   readonly promptTemplate: string
   readonly onDelta?: (delta: string) => Effect.Effect<void>
-}): Effect.Effect<string, OpenRouterSttError> =>
-  runOpenRouterAudioStreaming({
+}): Effect.fn.Return<string, OpenRouterSttError> {
+  return yield* runOpenRouterAudioStreaming({
     model: config.model,
     prompt: renderTemplate(config.promptTemplate, {
       source_language: config.sourceLanguage,
@@ -474,6 +479,7 @@ export const transcribeAndTranslatePcmWithOpenRouter = (config: {
         }
       : { onDelta: config.onDelta }),
   })
+})
 
 export class OpenRouterSttService extends Context.Service<
   OpenRouterSttService,

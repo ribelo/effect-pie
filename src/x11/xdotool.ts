@@ -38,6 +38,10 @@ export const typeTextWithXdotool = Effect.fn("pie/x11/xdotool.typeTextWithXdotoo
     return
   }
 
+  yield* Effect.annotateCurrentSpan({
+    "injection.chars": normalizedText.length,
+  })
+
   const xdotoolExecutable = yield* findXdotoolExecutable
 
   const commandArgs = buildXdotoolCommandArgs(xdotoolExecutable, normalizedText)

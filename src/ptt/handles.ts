@@ -12,32 +12,32 @@ import { writePcmWavFile, type WakewordTrainingError } from "../wakeword/trainin
 import { makePttClipPath } from "../commands/shared.js"
 import type { PttCaptureHandle } from "./loop.js"
 
-export const makeStreamedSttHandle = (config: {
-  readonly sampleRate: number
-  readonly logPrefix: string
-  readonly failurePrefix: string
-  readonly inject?: boolean | undefined
-  readonly operation:
-    | {
-        readonly kind: "transcribe"
-        readonly model: string
-        readonly language: string
-        readonly promptTemplate: string
-      }
-    | {
-        readonly kind: "translate"
-        readonly model: string
-        readonly sourceLanguage: string
-        readonly targetLanguage: string
-        readonly promptTemplate: string
-      }
-  readonly diagnostics?: AssistantDiagnostics | undefined
-}): Effect.Effect<
-  PttCaptureHandle,
-  PttKeyboardError,
-  SttService | Niri | TextInjectionBackendService | DesktopSession
-> =>
-  Effect.gen(function* () {
+export const makeStreamedSttHandle = Effect.fn("pie/ptt/handles.makeStreamedSttHandle")(
+  function* (config: {
+    readonly sampleRate: number
+    readonly logPrefix: string
+    readonly failurePrefix: string
+    readonly inject?: boolean | undefined
+    readonly operation:
+      | {
+          readonly kind: "transcribe"
+          readonly model: string
+          readonly language: string
+          readonly promptTemplate: string
+        }
+      | {
+          readonly kind: "translate"
+          readonly model: string
+          readonly sourceLanguage: string
+          readonly targetLanguage: string
+          readonly promptTemplate: string
+        }
+    readonly diagnostics?: AssistantDiagnostics | undefined
+  }): Effect.fn.Return<
+    PttCaptureHandle,
+    PttKeyboardError,
+    SttService | Niri | TextInjectionBackendService | DesktopSession
+  > {
     const dispatch = yield* makeStreamedSttDispatch({
       sampleRate: config.sampleRate,
       logPrefix: config.logPrefix,
@@ -71,7 +71,8 @@ export const makeStreamedSttHandle = (config: {
         ),
       cancel: dispatch.cancel,
     }
-  })
+  },
+)
 
 export const makeWavClipHandle = (config: {
   readonly outputDir: string

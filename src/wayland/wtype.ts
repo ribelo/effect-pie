@@ -213,6 +213,10 @@ export const typeTextWithWtype = Effect.fn("pie/wayland/wtype.typeTextWithWtype"
     return
   }
 
+  yield* Effect.annotateCurrentSpan({
+    "injection.chars": normalizedText.length,
+  })
+
   const wtypeExecutable = yield* findWtypeExecutable
   const mode = options?.mode ?? (yield* resolveWtypeInjectionMode())
   const directCommandTimeoutMs = yield* resolveCommandTimeoutMs(

@@ -66,8 +66,21 @@ export const transcribeAndInject = Effect.fn("pie/stt/transcribeAndInject.transc
     config.diagnostics?.setState("stt")
     config.diagnostics?.sttStart(config.model)
 
+    yield* Effect.annotateCurrentSpan({
+      "stt.model": config.model,
+      "stt.operation": config.operation,
+      "audio.bytes": config.pcmBytes.length,
+      ...(config.operation === "transcribe"
+        ? { "stt.language": config.language }
+        : {
+            "stt.sourceLanguage": config.sourceLanguage,
+            "stt.targetLanguage": config.targetLanguage,
+          }),
+    })
+
     const stt = yield* SttService
     const promptTemplate = yield* promptTemplateWithFocusedWindowContext(config.promptTemplate)
+    const sttStartedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis)
     const text = yield* (
       config.operation === "transcribe"
         ? stt.transcribe({
@@ -93,7 +106,21 @@ export const transcribeAndInject = Effect.fn("pie/stt/transcribeAndInject.transc
       ),
     )
 
+    const sttFinishedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis)
+    const latencyMs = sttFinishedAt - sttStartedAt
     config.diagnostics?.sttComplete(text.length)
+
+    yield* Effect.annotateCurrentSpan({
+      "stt.streamed_chars": text.length,
+    })
+
+    yield* Effect.logInfo("STT completed").pipe(
+      Effect.annotateLogs({
+        "stt.model": config.model,
+        "stt.text_length": text.length,
+        "stt.latency_ms": latencyMs,
+      }),
+    )
 
     const injectionConfig: {
       text: string
@@ -126,8 +153,20 @@ export const transcribeStreamAndInject = Effect.fn(
   config.diagnostics?.setState("stt")
   config.diagnostics?.sttStart(config.model)
 
+  yield* Effect.annotateCurrentSpan({
+    "stt.model": config.model,
+    "stt.operation": config.operation,
+    ...(config.operation === "transcribe"
+      ? { "stt.language": config.language }
+      : {
+          "stt.sourceLanguage": config.sourceLanguage,
+          "stt.targetLanguage": config.targetLanguage,
+        }),
+  })
+
   const stt = yield* SttService
   const promptTemplate = yield* promptTemplateWithFocusedWindowContext(config.promptTemplate)
+  const sttStartedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis)
   const streamedCharsRef = yield* Ref.make(0)
   const injectionErrorRef = yield* Ref.make<TextInjectionError | undefined>(undefined)
   const backend = config.inject === false ? undefined : yield* TextInjectionBackendService
@@ -192,7 +231,21 @@ export const transcribeStreamAndInject = Effect.fn(
     ),
   )
 
+  const sttFinishedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis)
+  const latencyMs = sttFinishedAt - sttStartedAt
   config.diagnostics?.sttComplete(text.length)
+
+  yield* Effect.annotateCurrentSpan({
+    "stt.streamed_chars": text.length,
+  })
+
+  yield* Effect.logInfo("STT completed").pipe(
+    Effect.annotateLogs({
+      "stt.model": config.model,
+      "stt.text_length": text.length,
+      "stt.latency_ms": latencyMs,
+    }),
+  )
 
   const injectionError = yield* Ref.get(injectionErrorRef)
   if (injectionError !== undefined) {
@@ -208,8 +261,11 @@ export const transcribeStreamAndInject = Effect.fn(
     }
     config.diagnostics?.injectionComplete()
     config.diagnostics?.setState("idle")
-    yield* Console.log(
-      `[${config.logPrefix}] Typed ${streamedChars} streamed chars with ${backend?.backend ?? "unknown"}`,
+    yield* Effect.logInfo("Injection completed").pipe(
+      Effect.annotateLogs({
+        "injection.backend": backend?.backend ?? "unknown",
+        "injection.chars": streamedChars,
+      }),
     )
     return undefined
   }

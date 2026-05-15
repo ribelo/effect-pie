@@ -15,6 +15,7 @@
     "test": "bun test",
     "effect:diagnostics": "bunx effect-language-service diagnostics --project tsconfig.json --format pretty --progress",
     "cli": "bun run src/cli.ts",
+    "cli:motel": "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:27686 bun run src/cli.ts",
     "wakeword:install-feature-models": "bun run scripts/install-openwakeword-feature-models.ts",
     "gate": "bun run check && bun run effect:diagnostics && bun run lint && bun run format:check && bun run test"
   },

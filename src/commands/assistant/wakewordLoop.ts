@@ -183,17 +183,24 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                 calibrationSnapshot?.resolved.speechRms ??
                 config.sttConfig.wakewordDictationSpeechRmsThreshold
 
-              yield* Console.log(
-                `[wakeword-transcribe] Trigger detected (${selectedModelName}). Dictation capture started (silence=${dictationSilenceSeconds}s, max=${dictationMaxSeconds}s, speech_start_timeout=${dictationSpeechStartTimeoutSeconds}s, speech_rms=${dictationSpeechRmsThreshold.toFixed(4)})...`,
+              yield* Effect.logInfo("Wakeword trigger detected; dictation capture started").pipe(
+                Effect.annotateLogs({
+                  "wakeword.model": selectedModelName,
+                  "wakeword.confidence": event.event.score,
+                  "wakeword.silence_seconds": dictationSilenceSeconds,
+                  "wakeword.max_seconds": dictationMaxSeconds,
+                }),
               )
 
               const result = yield* coordinator.tryStart("wakeword")
               if (result["_tag"] === "Busy") {
-                yield* Console.log(`[wakeword-transcribe] Ignored: ${result.activeMode} is active`)
+                yield* Effect.logWarning("Wakeword ignored: another mode is active").pipe(
+                  Effect.annotateLogs({ "wakeword.active_mode": result.activeMode }),
+                )
                 return
               }
               if (result["_tag"] === "Disabled") {
-                yield* Console.log(`[wakeword-transcribe] Ignored: PIE is disabled`)
+                yield* Effect.logWarning("Wakeword ignored: PIE is disabled")
                 return
               }
 
@@ -251,7 +258,9 @@ export const runAssistantWakewordTranscribeLoop = (config: {
               Effect.catch((cause: CliError) => {
                 config.diagnostics?.sttFailure(cause.message)
                 config.diagnostics?.injectionFailure(cause.message)
-                return Console.log(`[wakeword-transcribe] ${cause.message}`)
+                return Effect.logError("Wakeword transcription failed").pipe(
+                  Effect.annotateLogs({ "wakeword.error": cause.message }),
+                )
               }),
               Effect.ensuring(Ref.set(isTranscribingRef, false)),
             )

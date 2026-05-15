@@ -61,80 +61,81 @@ export const classifyStreamingError = (
   return { kind: "injection", message: `Failed to inject streamed text: ${cause.message}` }
 }
 
-export const makeStreamedSttDispatch = (
+export const makeStreamedSttDispatch = Effect.fn(
+  "pie/stt/streamedDispatch.makeStreamedSttDispatch",
+)(function* (
   config: StreamedSttDispatchConfig,
-): Effect.Effect<
+): Effect.fn.Return<
   StreamedSttDispatch,
   never,
   SttService | Niri | TextInjectionBackendService | DesktopSession
-> =>
-  Effect.gen(function* () {
-    const services = yield* Effect.context<
-      SttService | Niri | TextInjectionBackendService | DesktopSession
-    >()
-    let audioQueue: Queue.Queue<Uint8Array, Cause.Done> | undefined
-    let transcriptFiber: Fiber.Fiber<void, StreamedSttDispatchError> | undefined
+> {
+  const services = yield* Effect.context<
+    SttService | Niri | TextInjectionBackendService | DesktopSession
+  >()
+  let audioQueue: Queue.Queue<Uint8Array, Cause.Done> | undefined
+  let transcriptFiber: Fiber.Fiber<void, StreamedSttDispatchError> | undefined
 
-    const start = Effect.gen(function* () {
-      if (audioQueue !== undefined) {
-        return audioQueue
-      }
-
-      const queue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
-      const stream = Stream.fromQueue(queue)
-      const transcriptEffect =
-        config.operation.kind === "transcribe"
-          ? transcribeStreamAndInject({
-              operation: "transcribe",
-              model: config.operation.model,
-              audio: stream,
-              sampleRate: config.sampleRate,
-              language: config.operation.language,
-              promptTemplate: config.operation.promptTemplate,
-              logPrefix: config.logPrefix,
-              ...(config.inject !== undefined ? { inject: config.inject } : {}),
-              ...(config.diagnostics !== undefined ? { diagnostics: config.diagnostics } : {}),
-            })
-          : transcribeStreamAndInject({
-              operation: "translate",
-              model: config.operation.model,
-              audio: stream,
-              sampleRate: config.sampleRate,
-              sourceLanguage: config.operation.sourceLanguage,
-              targetLanguage: config.operation.targetLanguage,
-              promptTemplate: config.operation.promptTemplate,
-              logPrefix: config.logPrefix,
-              ...(config.inject !== undefined ? { inject: config.inject } : {}),
-              ...(config.diagnostics !== undefined ? { diagnostics: config.diagnostics } : {}),
-            })
-
-      transcriptFiber = yield* transcriptEffect.pipe(Effect.asVoid, (effect) =>
-        Effect.forkChild(effect, { startImmediately: true }),
-      )
-      audioQueue = queue
-      return queue
-    })
-    const startProvided = start.pipe(Effect.provideContext(services))
-
-    return {
-      offer: (chunk) =>
-        startProvided.pipe(
-          Effect.flatMap((queue) => Queue.offer(queue, chunk)),
-          Effect.asVoid,
-        ),
-      finish: Effect.gen(function* () {
-        if (audioQueue === undefined || transcriptFiber === undefined) {
-          return
-        }
-        yield* Queue.end(audioQueue)
-        yield* Fiber.join(transcriptFiber)
-      }),
-      cancel: Effect.gen(function* () {
-        if (audioQueue === undefined || transcriptFiber === undefined) {
-          return
-        }
-        yield* Queue.end(audioQueue)
-        yield* Fiber.interrupt(transcriptFiber)
-      }).pipe(Effect.ignore),
+  const start = Effect.gen(function* () {
+    if (audioQueue !== undefined) {
+      return audioQueue
     }
+
+    const queue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
+    const stream = Stream.fromQueue(queue)
+    const transcriptEffect =
+      config.operation.kind === "transcribe"
+        ? transcribeStreamAndInject({
+            operation: "transcribe",
+            model: config.operation.model,
+            audio: stream,
+            sampleRate: config.sampleRate,
+            language: config.operation.language,
+            promptTemplate: config.operation.promptTemplate,
+            logPrefix: config.logPrefix,
+            ...(config.inject !== undefined ? { inject: config.inject } : {}),
+            ...(config.diagnostics !== undefined ? { diagnostics: config.diagnostics } : {}),
+          })
+        : transcribeStreamAndInject({
+            operation: "translate",
+            model: config.operation.model,
+            audio: stream,
+            sampleRate: config.sampleRate,
+            sourceLanguage: config.operation.sourceLanguage,
+            targetLanguage: config.operation.targetLanguage,
+            promptTemplate: config.operation.promptTemplate,
+            logPrefix: config.logPrefix,
+            ...(config.inject !== undefined ? { inject: config.inject } : {}),
+            ...(config.diagnostics !== undefined ? { diagnostics: config.diagnostics } : {}),
+          })
+
+    transcriptFiber = yield* transcriptEffect.pipe(Effect.asVoid, (effect) =>
+      Effect.forkChild(effect, { startImmediately: true }),
+    )
+    audioQueue = queue
+    return queue
   })
+  const startProvided = start.pipe(Effect.provideContext(services))
+
+  return {
+    offer: (chunk) =>
+      startProvided.pipe(
+        Effect.flatMap((queue) => Queue.offer(queue, chunk)),
+        Effect.asVoid,
+      ),
+    finish: Effect.gen(function* () {
+      if (audioQueue === undefined || transcriptFiber === undefined) {
+        return
+      }
+      yield* Queue.end(audioQueue)
+      yield* Fiber.join(transcriptFiber)
+    }),
+    cancel: Effect.gen(function* () {
+      if (audioQueue === undefined || transcriptFiber === undefined) {
+        return
+      }
+      yield* Queue.end(audioQueue)
+      yield* Fiber.interrupt(transcriptFiber)
+    }).pipe(Effect.ignore),
+  }
+})

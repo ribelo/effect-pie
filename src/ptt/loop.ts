@@ -70,6 +70,11 @@ export const runPttLoop = Effect.fn("pie/ptt/loop.runPttLoop")(function* <M exte
 ): Effect.fn.Return<never, PttKeyboardError, PulseAudioClient | KeyboardMonitorService | R> {
   return yield* Effect.scoped(
     Effect.gen(function* () {
+      yield* Effect.annotateCurrentSpan({
+        "ptt.source": config.recordOptions.sourceName ?? "default",
+        "ptt.sample_rate": config.recordOptions.sampleSpec.rate,
+        "ptt.min_duration_ms": config.minDurationMs,
+      })
       const loopScope = yield* Effect.scope
       const keyboard = yield* KeyboardMonitorService
       const eventQueue = yield* keyboard.subscribe
@@ -229,8 +234,12 @@ export const runPttLoop = Effect.fn("pie/ptt/loop.runPttLoop")(function* <M exte
           yield* Ref.set(captureStateRef, nextState)
           yield* startAudio
 
-          const prefix = config.logPrefix(match.mode)
-          yield* Console.log(`[${prefix}] Capturing... release key to stop`)
+          yield* Effect.logInfo("PTT capture started").pipe(
+            Effect.annotateLogs({
+              "ptt.mode": match.mode,
+              "ptt.source": config.recordOptions.sourceName ?? "default",
+            }),
+          )
           continue
         }
 
@@ -306,11 +315,22 @@ export const runPttLoop = Effect.fn("pie/ptt/loop.runPttLoop")(function* <M exte
 
         const capturedBytes = chunks.reduce((sum, chunk) => sum + chunk.length, 0)
         const prefix = config.logPrefix(match.mode)
-        yield* Console.log(`[${prefix}] Capture stopped (${durationMs}ms, ${capturedBytes} bytes)`)
+        yield* Effect.logInfo("PTT capture stopped").pipe(
+          Effect.annotateLogs({
+            "ptt.mode": match.mode,
+            "ptt.duration_ms": durationMs,
+            "ptt.bytes": capturedBytes,
+            "ptt.source": config.recordOptions.sourceName ?? "default",
+          }),
+        )
 
         if (durationMs < config.minDurationMs) {
-          yield* Console.log(
-            `[${prefix}] Ignored short clip (${durationMs}ms < ${config.minDurationMs}ms)`,
+          yield* Effect.logInfo("PTT ignored short clip").pipe(
+            Effect.annotateLogs({
+              "ptt.mode": match.mode,
+              "ptt.duration_ms": durationMs,
+              "ptt.min_duration_ms": config.minDurationMs,
+            }),
           )
           if (handle !== undefined) {
             yield* handle.cancel.pipe(Effect.ignore)
@@ -321,7 +341,11 @@ export const runPttLoop = Effect.fn("pie/ptt/loop.runPttLoop")(function* <M exte
 
         const rawPcmBytes = concatChunks(chunks)
         if (rawPcmBytes.length === 0) {
-          yield* Console.log(`[${prefix}] Ignored empty clip`)
+          yield* Effect.logInfo("PTT ignored empty clip").pipe(
+            Effect.annotateLogs({
+              "ptt.mode": match.mode,
+            }),
+          )
           if (handle !== undefined) {
             yield* handle.cancel.pipe(Effect.ignore)
           }
