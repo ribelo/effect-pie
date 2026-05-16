@@ -1,4 +1,4 @@
-import { Console, Effect, Layer, Option, Ref } from "effect"
+import { Effect, Layer, Option } from "effect"
 import { loadSttRuntimeConfig, type SttConfigError } from "../stt/config.js"
 import { SttService } from "../stt/service.js"
 import { Niri } from "../niri/niri.js"
@@ -18,6 +18,7 @@ import {
 } from "./assistant/constants.js"
 import { runAssistantWakewordTranscribeLoop } from "./assistant/wakewordLoop.js"
 import { runAssistantPttCombinedLoop } from "./assistant/pttLoop.js"
+import { MeetingTranscriptionController } from "./assistant/meetingTranscription.js"
 
 const resolveDefaultSourceName = (): Effect.Effect<string, CliError, PulseAudioClient> =>
   Effect.gen(function* () {
@@ -63,31 +64,36 @@ export const runAssistantDefaultCommand = Effect.fn(
   )
 
   const sourceName = yield* resolveDefaultSourceName()
-  yield* Console.log("[assistant] Running default assistant mode")
-  if (sttConfig.wakewordEnabled) {
-    yield* Console.log(
-      `[assistant] Wakeword model=${DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE} -> transcription (${sttConfig.transcriptionLanguage})`,
-    )
-  } else {
-    yield* Console.log("[assistant] Wakeword disabled (PTT-only mode)")
-  }
-  yield* Console.log(
-    `[assistant] PTT transcribe keysym=${Option.getOrElse(config["ptt-transcribe-keysym"], () => DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM)}, PTT translate keysym=${Option.getOrElse(config["ptt-translate-keysym"], () => DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM)}`,
+  yield* Effect.logInfo("Running default assistant mode").pipe(
+    Effect.annotateLogs({
+      "assistant.wakeword_enabled": sttConfig.wakewordEnabled,
+      "assistant.ptt_transcribe_keysym": Option.getOrElse(
+        config["ptt-transcribe-keysym"],
+        () => DEFAULT_ASSISTANT_PTT_TRANSCRIBE_KEYSYM,
+      ),
+      "assistant.ptt_translate_keysym": Option.getOrElse(
+        config["ptt-translate-keysym"],
+        () => DEFAULT_ASSISTANT_PTT_TRANSLATE_KEYSYM,
+      ),
+    }),
   )
   if (sttConfig.wakewordEnabled) {
-    yield* Console.log(
-      `[assistant] Wakeword dictation: silence=${sttConfig.wakewordDictationSilenceSeconds}s max=${sttConfig.wakewordDictationMaxSeconds}s speech_start_timeout=${resolveWakewordSpeechStartTimeoutSeconds(
-        {
+    yield* Effect.logInfo("Wakeword enabled").pipe(
+      Effect.annotateLogs({
+        "assistant.wakeword_model": DEFAULT_ASSISTANT_WAKEWORD_MODEL_FILE,
+        "assistant.transcription_language": sttConfig.transcriptionLanguage,
+        "assistant.dictation_silence_seconds": sttConfig.wakewordDictationSilenceSeconds,
+        "assistant.dictation_max_seconds": sttConfig.wakewordDictationMaxSeconds,
+        "assistant.speech_start_timeout_seconds": resolveWakewordSpeechStartTimeoutSeconds({
           silenceSeconds: sttConfig.wakewordDictationSilenceSeconds,
           maxSeconds: sttConfig.wakewordDictationMaxSeconds,
-        },
-      )}s speech_rms=${sttConfig.wakewordDictationSpeechRmsThreshold.toFixed(4)}`,
+        }),
+        "assistant.dictation_speech_rms_threshold": sttConfig.wakewordDictationSpeechRmsThreshold,
+      }),
     )
+  } else {
+    yield* Effect.logInfo("Wakeword disabled (PTT-only mode)")
   }
-  yield* Console.log("[assistant] Focus the target app (for example Slack) to receive typed text")
-  yield* Console.log("[assistant] Press Ctrl+C to stop all listeners")
-
-  const pttActiveRef = yield* Ref.make(false)
 
   const shellTraceEnabled = yield* Effect.sync(() =>
     isShellTraceEnabled(process.env["PIE_SHELL_TRACE"]),
@@ -98,7 +104,9 @@ export const runAssistantDefaultCommand = Effect.fn(
     Effect.gen(function* () {
       const coordinator = yield* RecordingCoordinator
       yield* coordinator.clear
-      yield* Console.log(`[assistant] Recording state file: ${ASSISTANT_RECORDING_STATE_PATH}`)
+      yield* Effect.logInfo("Recording state file ready").pipe(
+        Effect.annotateLogs({ "assistant.recording_state_path": ASSISTANT_RECORDING_STATE_PATH }),
+      )
 
       // DaemonRpcServer.layer is provided in the outer Layer.mergeAll
 
@@ -107,7 +115,6 @@ export const runAssistantDefaultCommand = Effect.fn(
           runAssistantPttCombinedLoop({
             sourceName,
             sttConfig,
-            pttActiveRef,
             diagnostics,
             pttTranscribeKeysym: config["ptt-transcribe-keysym"],
             pttTranslateKeysym: config["ptt-translate-keysym"],
@@ -117,7 +124,6 @@ export const runAssistantDefaultCommand = Effect.fn(
                 runAssistantWakewordTranscribeLoop({
                   sourceName,
                   sttConfig,
-                  pttActiveRef,
                   diagnostics,
                 }),
               ]
@@ -138,17 +144,15 @@ export const runAssistantDefaultCommand = Effect.fn(
     ),
   )
 
+  const sttLayer = SttService.live(sttConfig)
   const coordinatorLayer = RecordingCoordinator.live()
+  const meetingLayer = MeetingTranscriptionController.live({ sttConfig }).pipe(
+    Layer.provideMerge(Layer.mergeAll(sttLayer, coordinatorLayer)),
+  )
+  const daemonLayer = DaemonRpcServer.layer().pipe(Layer.provideMerge(meetingLayer))
 
   return yield* effect.pipe(
-    Effect.provide(
-      Layer.mergeAll(
-        SttService.live(sttConfig),
-        Niri.live(),
-        coordinatorLayer,
-        DaemonRpcServer.layer().pipe(Layer.provide(coordinatorLayer)),
-      ),
-    ),
+    Effect.provide(Layer.mergeAll(Niri.live(), daemonLayer)),
     Effect.catchTag("SocketPreflightError", (err) =>
       Effect.fail(
         new CliError({
@@ -161,7 +165,9 @@ export const runAssistantDefaultCommand = Effect.fn(
       Effect.gen(function* () {
         if (diagnostics !== undefined) {
           diagnostics.setState("idle")
-          yield* Console.error(diagnostics.renderSnapshot())
+          yield* Effect.logError("Assistant diagnostics snapshot").pipe(
+            Effect.annotateLogs({ "diagnostics.snapshot": diagnostics.renderSnapshot() }),
+          )
         }
       }),
     ),

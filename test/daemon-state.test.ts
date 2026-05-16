@@ -79,6 +79,54 @@ test("tryStart returns Busy when another mode is active", async () => {
   await fs.unlink(persistPath).catch(() => {})
 })
 
+test("wakeword trigger tryStart returns Busy when ptt-transcribe is active", async () => {
+  const persistPath = path.join(os.tmpdir(), `pie-test-${crypto.randomUUID()}.json`)
+  const coordinator = await makeCoordinator(persistPath)
+
+  await Effect.runPromise(coordinator.tryStart("ptt-transcribe"))
+
+  const result = await Effect.runPromise(coordinator.tryStart("wakeword"))
+
+  assert.strictEqual(result["_tag"], "Busy")
+  assert.strictEqual(result.activeMode, "ptt-transcribe")
+
+  await fs.unlink(persistPath).catch(() => {})
+})
+
+test("wakeword trigger tryStart returns Busy when meeting-transcribe is active", async () => {
+  const persistPath = path.join(os.tmpdir(), `pie-test-${crypto.randomUUID()}.json`)
+  const coordinator = await makeCoordinator(persistPath)
+
+  await Effect.runPromise(coordinator.toggleMeeting)
+
+  const result = await Effect.runPromise(coordinator.tryStart("wakeword"))
+
+  assert.strictEqual(result["_tag"], "Busy")
+  assert.strictEqual(result.activeMode, "meeting-transcribe")
+
+  await fs.unlink(persistPath).catch(() => {})
+})
+
+test("tryStart returns Busy while meeting transcription owns recording", async () => {
+  const persistPath = path.join(os.tmpdir(), `pie-test-${crypto.randomUUID()}.json`)
+  const coordinator = await makeCoordinator(persistPath)
+
+  await Effect.runPromise(coordinator.toggleMeeting)
+
+  const pttResult = await Effect.runPromise(coordinator.tryStart("ptt-transcribe"))
+  const wakewordResult = await Effect.runPromise(coordinator.tryStart("wakeword"))
+
+  assert.strictEqual(pttResult["_tag"], "Busy")
+  assert.strictEqual(pttResult.activeMode, "meeting-transcribe")
+  assert.strictEqual(wakewordResult["_tag"], "Busy")
+  assert.strictEqual(wakewordResult.activeMode, "meeting-transcribe")
+
+  const state = await Effect.runPromise(coordinator.snapshot)
+  assert.strictEqual(state.mode, "meeting-transcribe")
+
+  await fs.unlink(persistPath).catch(() => {})
+})
+
 test("tryStart returns Disabled when disabled", async () => {
   const persistPath = path.join(os.tmpdir(), `pie-test-${crypto.randomUUID()}.json`)
   const coordinator = await makeCoordinator(persistPath)

@@ -1,4 +1,4 @@
-import { Console, Effect, Option, Ref } from "effect"
+import { Effect, Option } from "effect"
 
 import type { PulseAudioClient } from "../../pulse/client.js"
 import type { KeyboardMonitorService, PttKeyboardError } from "../../keyboard/monitor.js"
@@ -24,7 +24,6 @@ type AssistantPttMode = "transcribe" | "translate"
 export const runAssistantPttCombinedLoop = (config: {
   readonly sourceName: string
   readonly sttConfig: SttRuntimeConfig
-  readonly pttActiveRef: Ref.Ref<boolean>
   readonly diagnostics?: AssistantDiagnostics | undefined
   readonly pttTranscribeKeysym: Option.Option<number>
   readonly pttTranslateKeysym: Option.Option<number>
@@ -57,7 +56,6 @@ export const runAssistantPttCombinedLoop = (config: {
 
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
-          yield* Ref.set(config.pttActiveRef, false)
           const snapshot = yield* coordinator.snapshot
           if (snapshot.mode === "ptt-transcribe" || snapshot.mode === "ptt-translate") {
             yield* coordinator.stop(snapshot.mode)
@@ -90,14 +88,13 @@ export const runAssistantPttCombinedLoop = (config: {
             yield* baseHandle.finish(clip)
             config.diagnostics?.pttFinalize(clip.durationMs)
             config.diagnostics?.setState("idle")
-          }).pipe(Effect.ensuring(Ref.set(config.pttActiveRef, false))),
+          }),
         cancel: Effect.gen(function* () {
           yield* baseHandle.cancel.pipe(Effect.ignore)
           const snapshot = yield* coordinator.snapshot
           if (snapshot.mode === "ptt-transcribe" || snapshot.mode === "ptt-translate") {
             yield* coordinator.stop(snapshot.mode)
           }
-          yield* Ref.set(config.pttActiveRef, false)
           config.diagnostics?.setState("idle")
         }),
       })
@@ -116,20 +113,15 @@ export const runAssistantPttCombinedLoop = (config: {
         minDurationMs: DEFAULT_ASSISTANT_MIN_DURATION_MS,
         logPrefix: (mode) =>
           mode === "transcribe" ? "assistant-ptt-transcribe" : "assistant-ptt-translate",
-        onReady: Effect.gen(function* () {
-          yield* Console.log(
-            `[assistant] PTT transcribe armed on keysym=${transcribeKeysym} source=${config.sourceName}`,
-          )
-          yield* Console.log(
-            `[assistant] PTT translate armed on keysym=${translateKeysym} source=${config.sourceName} (${sourceLanguage} -> ${targetLanguage})`,
-          )
-          yield* Console.log(
-            `PTT transcribe ready (keysym=${transcribeKeysym}). Hold key to dictate.`,
-          )
-          yield* Console.log(
-            `PTT translate ready (keysym=${translateKeysym}, ${sourceLanguage} -> ${targetLanguage}). Hold key to dictate.`,
-          )
-        }),
+        onReady: Effect.logInfo("PTT armed").pipe(
+          Effect.annotateLogs({
+            "assistant.ptt_transcribe_keysym": transcribeKeysym,
+            "assistant.ptt_translate_keysym": translateKeysym,
+            "assistant.source": config.sourceName,
+            "assistant.source_language": sourceLanguage,
+            "assistant.target_language": targetLanguage,
+          }),
+        ),
         onPress: (mode) =>
           Effect.gen(function* () {
             const recordingMode: RecordingMode =
@@ -138,12 +130,19 @@ export const runAssistantPttCombinedLoop = (config: {
             const result = yield* coordinator.tryStart(recordingMode)
 
             if (result["_tag"] === "Busy") {
-              yield* Console.log(`[assistant-ptt-${mode}] Ignored: ${result.activeMode} is active`)
+              yield* Effect.logInfo("PTT ignored: another mode is active").pipe(
+                Effect.annotateLogs({
+                  "assistant.ptt_mode": mode,
+                  "assistant.active_mode": result.activeMode,
+                }),
+              )
               return "skip" as const
             }
 
             if (result["_tag"] === "Disabled") {
-              yield* Console.log(`[assistant-ptt-${mode}] Ignored: PIE is disabled`)
+              yield* Effect.logInfo("PTT ignored: PIE is disabled").pipe(
+                Effect.annotateLogs({ "assistant.ptt_mode": mode }),
+              )
               return "skip" as const
             }
 
@@ -170,7 +169,6 @@ export const runAssistantPttCombinedLoop = (config: {
                     },
             })
 
-            yield* Ref.set(config.pttActiveRef, true)
             config.diagnostics?.pttHold(mode)
             config.diagnostics?.setState(recordingMode)
 

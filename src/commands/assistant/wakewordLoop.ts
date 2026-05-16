@@ -37,7 +37,6 @@ const normalizeWakewordModelName = (modelName: string): string =>
 export const runAssistantWakewordTranscribeLoop = (config: {
   readonly sourceName: string
   readonly sttConfig: SttRuntimeConfig
-  readonly pttActiveRef: Ref.Ref<boolean>
   readonly diagnostics?: AssistantDiagnostics | undefined
 }): Effect.Effect<
   void,
@@ -155,11 +154,6 @@ export const runAssistantWakewordTranscribeLoop = (config: {
             }
 
             if (event.type !== "trigger" || event.event.model !== selectedModelName) {
-              return
-            }
-
-            const pttActive = yield* Ref.get(config.pttActiveRef)
-            if (pttActive) {
               return
             }
 
