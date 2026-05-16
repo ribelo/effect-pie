@@ -6,7 +6,7 @@ import { PulseAudioClient } from "../pulse/client.js"
 import type { KeyboardMonitorService, PttKeyboardError } from "../keyboard/monitor.js"
 import type { TextInjectionBackendService } from "../input/textInjection.js"
 import type { DesktopSession } from "../desktop/session.js"
-import { AssistantDiagnostics, isShellTraceEnabled } from "../assistant/diagnostics.js"
+
 import { CliError } from "./shared.js"
 import { ASSISTANT_RECORDING_STATE_PATH, RecordingCoordinator } from "./assistant/coordinator.js"
 import { DaemonRpcServer } from "../daemon/server.js"
@@ -95,11 +95,6 @@ export const runAssistantDefaultCommand = Effect.fn(
     yield* Effect.logInfo("Wakeword disabled (PTT-only mode)")
   }
 
-  const shellTraceEnabled = yield* Effect.sync(() =>
-    isShellTraceEnabled(process.env["PIE_SHELL_TRACE"]),
-  )
-  const diagnostics = shellTraceEnabled ? new AssistantDiagnostics() : undefined
-
   const effect = Effect.scoped(
     Effect.gen(function* () {
       const coordinator = yield* RecordingCoordinator
@@ -115,7 +110,6 @@ export const runAssistantDefaultCommand = Effect.fn(
           runAssistantPttCombinedLoop({
             sourceName,
             sttConfig,
-            diagnostics,
             pttTranscribeKeysym: config["ptt-transcribe-keysym"],
             pttTranslateKeysym: config["ptt-translate-keysym"],
           }),
@@ -124,7 +118,6 @@ export const runAssistantDefaultCommand = Effect.fn(
                 runAssistantWakewordTranscribeLoop({
                   sourceName,
                   sttConfig,
-                  diagnostics,
                 }),
               ]
             : []),
@@ -139,6 +132,20 @@ export const runAssistantDefaultCommand = Effect.fn(
         Effect.gen(function* () {
           const coordinator = yield* RecordingCoordinator
           yield* coordinator.clear
+        }),
+      ),
+      Effect.onError((cause) =>
+        Effect.gen(function* () {
+          const coordinator = yield* RecordingCoordinator
+          const snapshot = yield* coordinator.snapshot
+          yield* Effect.logError("Assistant exited with error").pipe(
+            Effect.annotateLogs({
+              "assistant.last_mode": snapshot.mode,
+              "assistant.last_active": snapshot.active,
+              "assistant.last_enabled": snapshot.enabled,
+              "assistant.cause": String(cause),
+            }),
+          )
         }),
       ),
     ),
@@ -160,16 +167,6 @@ export const runAssistantDefaultCommand = Effect.fn(
           cause: err,
         }),
       ),
-    ),
-    Effect.tapError((cause) =>
-      Effect.gen(function* () {
-        if (diagnostics !== undefined) {
-          diagnostics.setState("idle")
-          yield* Effect.logError("Assistant diagnostics snapshot").pipe(
-            Effect.annotateLogs({ "diagnostics.snapshot": diagnostics.renderSnapshot() }),
-          )
-        }
-      }),
     ),
   )
 })

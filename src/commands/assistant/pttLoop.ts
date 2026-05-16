@@ -5,7 +5,6 @@ import type { KeyboardMonitorService, PttKeyboardError } from "../../keyboard/mo
 import type { TextInjectionBackendService } from "../../input/textInjection.js"
 import type { DesktopSession } from "../../desktop/session.js"
 import type { Niri } from "../../niri/niri.js"
-import type { AssistantDiagnostics } from "../../assistant/diagnostics.js"
 import type { SttService } from "../../stt/service.js"
 import type { SttRuntimeConfig } from "../../stt/config.js"
 import { runPttLoop, type PttCaptureHandle } from "../../ptt/loop.js"
@@ -24,7 +23,6 @@ type AssistantPttMode = "transcribe" | "translate"
 export const runAssistantPttCombinedLoop = (config: {
   readonly sourceName: string
   readonly sttConfig: SttRuntimeConfig
-  readonly diagnostics?: AssistantDiagnostics | undefined
   readonly pttTranscribeKeysym: Option.Option<number>
   readonly pttTranslateKeysym: Option.Option<number>
 }): Effect.Effect<
@@ -86,8 +84,6 @@ export const runAssistantPttCombinedLoop = (config: {
           Effect.gen(function* () {
             yield* coordinator.stop(recordingMode)
             yield* baseHandle.finish(clip)
-            config.diagnostics?.pttFinalize(clip.durationMs)
-            config.diagnostics?.setState("idle")
           }),
         cancel: Effect.gen(function* () {
           yield* baseHandle.cancel.pipe(Effect.ignore)
@@ -95,7 +91,6 @@ export const runAssistantPttCombinedLoop = (config: {
           if (snapshot.mode === "ptt-transcribe" || snapshot.mode === "ptt-translate") {
             yield* coordinator.stop(snapshot.mode)
           }
-          config.diagnostics?.setState("idle")
         }),
       })
 
@@ -151,7 +146,6 @@ export const runAssistantPttCombinedLoop = (config: {
               logPrefix: `assistant-ptt-${mode}`,
               failurePrefix:
                 mode === "transcribe" ? "PTT transcription failed" : "PTT translation failed",
-              diagnostics: config.diagnostics,
               operation:
                 mode === "transcribe"
                   ? {
@@ -169,15 +163,9 @@ export const runAssistantPttCombinedLoop = (config: {
                     },
             })
 
-            config.diagnostics?.pttHold(mode)
-            config.diagnostics?.setState(recordingMode)
-
             return wrapHandle(baseHandle, mode, recordingMode)
           }),
-        onRelease: (mode) =>
-          Effect.sync(() => {
-            config.diagnostics?.pttRelease()
-          }),
+        onRelease: () => Effect.void,
         onAbort: coordinator.snapshot.pipe(Effect.map((s) => !s.enabled)),
       })
     }),

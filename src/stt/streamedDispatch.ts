@@ -1,22 +1,12 @@
 import { Effect, Fiber, Queue, Stream, type Cause } from "effect"
 
 import type { DesktopSession, SessionDetectionError } from "../desktop/session.js"
-import type {
-  InjectionDiagnostics,
-  TextInjectionBackendService,
-  TextInjectionError,
-} from "../input/textInjection.js"
+import type { TextInjectionBackendService, TextInjectionError } from "../input/textInjection.js"
 import type { NiriError } from "../niri/errors.js"
 import type { Niri } from "../niri/niri.js"
 import type { SttService, SttServiceError } from "./service.js"
 import { transcribeStreamAndInject } from "./transcribeAndInject.js"
 import { isSttServiceFailure } from "./streamingError.js"
-
-export type SttInjectionDiagnostics = InjectionDiagnostics & {
-  readonly sttStart: (model: string) => void
-  readonly sttComplete: (length: number) => void
-  readonly sttFailure: (message: string) => void
-}
 
 export type StreamedSttDispatchError =
   | SttServiceError
@@ -34,7 +24,6 @@ export type StreamedSttDispatchConfig = {
   readonly sampleRate: number
   readonly logPrefix: string
   readonly inject?: boolean | undefined
-  readonly diagnostics?: SttInjectionDiagnostics | undefined
   readonly operation:
     | {
         readonly kind: "transcribe"
@@ -94,7 +83,6 @@ export const makeStreamedSttDispatch = Effect.fn(
             promptTemplate: config.operation.promptTemplate,
             logPrefix: config.logPrefix,
             ...(config.inject !== undefined ? { inject: config.inject } : {}),
-            ...(config.diagnostics !== undefined ? { diagnostics: config.diagnostics } : {}),
           })
         : transcribeStreamAndInject({
             operation: "translate",
@@ -106,7 +94,6 @@ export const makeStreamedSttDispatch = Effect.fn(
             promptTemplate: config.operation.promptTemplate,
             logPrefix: config.logPrefix,
             ...(config.inject !== undefined ? { inject: config.inject } : {}),
-            ...(config.diagnostics !== undefined ? { diagnostics: config.diagnostics } : {}),
           })
 
     transcriptFiber = yield* transcriptEffect.pipe(Effect.asVoid, (effect) =>

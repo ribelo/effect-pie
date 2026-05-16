@@ -13,7 +13,6 @@ import type { Niri } from "../niri/niri.js"
 import { promptTemplateWithFocusedWindowContext } from "./focusedWindowPrompt.js"
 import { SttService, type SttServiceError } from "./service.js"
 import { isSttServiceFailure } from "./streamingError.js"
-import type { SttInjectionDiagnostics } from "./streamedDispatch.js"
 
 type TranscribeAndInjectConfig = {
   readonly pcmBytes: Uint8Array
@@ -22,7 +21,6 @@ type TranscribeAndInjectConfig = {
   readonly promptTemplate: string
   readonly logPrefix: string
   readonly inject?: boolean
-  readonly diagnostics?: SttInjectionDiagnostics | undefined
 } & (
   | {
       readonly operation: "transcribe"
@@ -42,7 +40,6 @@ type TranscribeStreamAndInjectConfig = {
   readonly promptTemplate: string
   readonly logPrefix: string
   readonly inject?: boolean
-  readonly diagnostics?: SttInjectionDiagnostics | undefined
 } & (
   | {
       readonly operation: "transcribe"
@@ -63,9 +60,6 @@ export const transcribeAndInject = Effect.fn("pie/stt/transcribeAndInject.transc
     SttServiceError | NiriError | TextInjectionError | SessionDetectionError,
     SttService | Niri | DesktopSession | TextInjectionBackendService
   > {
-    config.diagnostics?.setState("stt")
-    config.diagnostics?.sttStart(config.model)
-
     yield* Effect.annotateCurrentSpan({
       "stt.model": config.model,
       "stt.operation": config.operation,
@@ -100,15 +94,12 @@ export const transcribeAndInject = Effect.fn("pie/stt/transcribeAndInject.transc
           })
     ).pipe(
       Effect.tapError((cause) =>
-        Effect.sync(() => {
-          config.diagnostics?.sttFailure(cause.message)
-        }),
+        Effect.logError("STT failed").pipe(Effect.annotateLogs({ "stt.error": cause.message })),
       ),
     )
 
     const sttFinishedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis)
     const latencyMs = sttFinishedAt - sttStartedAt
-    config.diagnostics?.sttComplete(text.length)
 
     yield* Effect.annotateCurrentSpan({
       "stt.streamed_chars": text.length,
@@ -126,11 +117,9 @@ export const transcribeAndInject = Effect.fn("pie/stt/transcribeAndInject.transc
       text: string
       logPrefix: string
       inject?: boolean
-      diagnostics?: SttInjectionDiagnostics | undefined
     } = {
       text,
       logPrefix: config.logPrefix,
-      diagnostics: config.diagnostics,
     }
 
     if (config.inject !== undefined) {
@@ -150,9 +139,6 @@ export const transcribeStreamAndInject = Effect.fn(
   SttServiceError | NiriError | TextInjectionError | SessionDetectionError,
   SttService | Niri | DesktopSession | TextInjectionBackendService
 > {
-  config.diagnostics?.setState("stt")
-  config.diagnostics?.sttStart(config.model)
-
   yield* Effect.annotateCurrentSpan({
     "stt.model": config.model,
     "stt.operation": config.operation,
@@ -185,12 +171,6 @@ export const transcribeStreamAndInject = Effect.fn(
               return
             }
 
-            const streamedChars = yield* Ref.get(streamedCharsRef)
-            if (streamedChars === 0) {
-              config.diagnostics?.setState("injection")
-              config.diagnostics?.injectionStart(normalizedDelta.length)
-            }
-
             yield* backend.typeText(normalizedDelta).pipe(
               Effect.matchEffect({
                 onFailure: (cause) => Ref.set(injectionErrorRef, cause),
@@ -221,11 +201,15 @@ export const transcribeStreamAndInject = Effect.fn(
         })
   ).pipe(
     Effect.tapError((cause) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         if (isSttServiceFailure(cause)) {
-          config.diagnostics?.sttFailure(cause.message)
+          yield* Effect.logError("STT streaming failed").pipe(
+            Effect.annotateLogs({ "stt.error": cause.message }),
+          )
         } else {
-          config.diagnostics?.injectionFailure(cause.message)
+          yield* Effect.logError("Injection failed during streaming").pipe(
+            Effect.annotateLogs({ "injection.error": cause.message }),
+          )
         }
       }),
     ),
@@ -233,7 +217,6 @@ export const transcribeStreamAndInject = Effect.fn(
 
   const sttFinishedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis)
   const latencyMs = sttFinishedAt - sttStartedAt
-  config.diagnostics?.sttComplete(text.length)
 
   yield* Effect.annotateCurrentSpan({
     "stt.streamed_chars": text.length,
@@ -249,15 +232,15 @@ export const transcribeStreamAndInject = Effect.fn(
 
   const injectionError = yield* Ref.get(injectionErrorRef)
   if (injectionError !== undefined) {
-    config.diagnostics?.injectionFailure(injectionError.message)
+    yield* Effect.logError("Injection failed").pipe(
+      Effect.annotateLogs({ "injection.error": injectionError.message }),
+    )
     return yield* injectionError
   }
 
   const streamedChars = yield* Ref.get(streamedCharsRef)
   if (streamedChars > 0) {
     const trimmedText = normalizeTextDeltaForInjection(text).trim()
-    config.diagnostics?.injectionComplete()
-    config.diagnostics?.setState("idle")
     yield* Effect.logInfo("Injection completed").pipe(
       Effect.annotateLogs({
         "injection.backend": backend?.backend ?? "unknown",
@@ -273,11 +256,9 @@ export const transcribeStreamAndInject = Effect.fn(
     text: string
     logPrefix: string
     inject?: boolean
-    diagnostics?: SttInjectionDiagnostics | undefined
   } = {
     text,
     logPrefix: config.logPrefix,
-    diagnostics: config.diagnostics,
   }
 
   if (config.inject !== undefined) {

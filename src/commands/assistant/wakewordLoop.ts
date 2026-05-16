@@ -10,7 +10,6 @@ import { createWakewordTriggerMachine } from "../../wakeword/trigger.js"
 import type { TextInjectionBackendService } from "../../input/textInjection.js"
 import type { DesktopSession } from "../../desktop/session.js"
 import type { Niri } from "../../niri/niri.js"
-import type { AssistantDiagnostics } from "../../assistant/diagnostics.js"
 import { recordPcmUntilTrailingSilence } from "../audioCapture.js"
 import {
   calibrationPathFor,
@@ -37,7 +36,6 @@ const normalizeWakewordModelName = (modelName: string): string =>
 export const runAssistantWakewordTranscribeLoop = (config: {
   readonly sourceName: string
   readonly sttConfig: SttRuntimeConfig
-  readonly diagnostics?: AssistantDiagnostics | undefined
 }): Effect.Effect<
   void,
   CliError,
@@ -163,10 +161,8 @@ export const runAssistantWakewordTranscribeLoop = (config: {
             }
 
             yield* Ref.set(isTranscribingRef, true)
-            config.diagnostics?.wakewordTrigger(selectedModelName)
 
             const triggerEffect = Effect.gen(function* () {
-              config.diagnostics?.setState("wakeword-dictation")
               const dictationSilenceSeconds = config.sttConfig.wakewordDictationSilenceSeconds
               const dictationMaxSeconds = config.sttConfig.wakewordDictationMaxSeconds
               const dictationSpeechStartTimeoutSeconds = resolveWakewordSpeechStartTimeoutSeconds({
@@ -207,7 +203,6 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                 },
                 sampleRate: DEFAULT_ASSISTANT_SAMPLE_RATE,
                 logPrefix: "wakeword-transcribe",
-                diagnostics: config.diagnostics,
               })
 
               yield* recordPcmUntilTrailingSilence({
@@ -249,13 +244,11 @@ export const runAssistantWakewordTranscribeLoop = (config: {
                 }),
               )
             }).pipe(
-              Effect.catch((cause: CliError) => {
-                config.diagnostics?.sttFailure(cause.message)
-                config.diagnostics?.injectionFailure(cause.message)
-                return Effect.logError("Wakeword transcription failed").pipe(
+              Effect.catch((cause: CliError) =>
+                Effect.logError("Wakeword transcription failed").pipe(
                   Effect.annotateLogs({ "wakeword.error": cause.message }),
-                )
-              }),
+                ),
+              ),
               Effect.ensuring(Ref.set(isTranscribingRef, false)),
             )
 

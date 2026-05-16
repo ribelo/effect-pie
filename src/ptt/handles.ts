@@ -7,7 +7,6 @@ import type { Niri } from "../niri/niri.js"
 import { MIN_GAIN_TO_APPLY, normalizePcmForStt, pcmPeak, pcmRms } from "../audio/pcm.js"
 import type { SttService } from "../stt/service.js"
 import { classifyStreamingError, makeStreamedSttDispatch } from "../stt/streamedDispatch.js"
-import type { AssistantDiagnostics } from "../assistant/diagnostics.js"
 import { writePcmWavFile, type WakewordTrainingError } from "../wakeword/training.js"
 import { makePttClipPath } from "../commands/shared.js"
 import type { PttCaptureHandle } from "./loop.js"
@@ -32,7 +31,6 @@ export const makeStreamedSttHandle = Effect.fn("pie/ptt/handles.makeStreamedSttH
           readonly targetLanguage: string
           readonly promptTemplate: string
         }
-    readonly diagnostics?: AssistantDiagnostics | undefined
   }): Effect.fn.Return<
     PttCaptureHandle,
     PttKeyboardError,
@@ -42,7 +40,6 @@ export const makeStreamedSttHandle = Effect.fn("pie/ptt/handles.makeStreamedSttH
       sampleRate: config.sampleRate,
       logPrefix: config.logPrefix,
       inject: config.inject,
-      diagnostics: config.diagnostics,
       operation:
         config.operation.kind === "transcribe"
           ? {

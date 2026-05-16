@@ -7,7 +7,6 @@ import {
   type DesktopSessionType,
   type SessionDetectionError,
 } from "../desktop/session.js"
-import type { AssistantState } from "../assistant/diagnostics.js"
 import { typeTextWithWtype } from "../wayland/wtype.js"
 import { typeTextWithXdotool } from "../x11/xdotool.js"
 import { notifyWarning } from "../desktop/notification.js"
@@ -101,19 +100,11 @@ export const TextInjectionBackendLive = Layer.effect(
   }),
 )
 
-export type InjectionDiagnostics = {
-  readonly setState: (state: AssistantState) => void
-  readonly injectionStart: (length: number) => void
-  readonly injectionComplete: () => void
-  readonly injectionFailure: (message: string) => void
-}
-
 export const injectTranscript = Effect.fn("pie/input/textInjection.injectTranscript")(
   function* (config: {
     readonly text: string
     readonly logPrefix: string
     readonly inject?: boolean
-    readonly diagnostics?: InjectionDiagnostics | undefined
     readonly notifyEmptyTranscript?:
       | ((title: string, message: string) => Effect.Effect<void, unknown>)
       | undefined
@@ -132,7 +123,6 @@ export const injectTranscript = Effect.fn("pie/input/textInjection.injectTranscr
         "pie: no transcript",
         "Speech-to-text produced no transcript text. Try speaking louder or checking microphone input.",
       ).pipe(Effect.ignore)
-      config.diagnostics?.setState("idle")
       return undefined
     }
 
@@ -140,16 +130,13 @@ export const injectTranscript = Effect.fn("pie/input/textInjection.injectTranscr
       return undefined
     }
 
-    config.diagnostics?.setState("injection")
-    config.diagnostics?.injectionStart(normalizedText.length)
-
     const result = yield* typeTextInFocusedApp(normalizedText).pipe(
       Effect.tapError((cause) =>
-        Effect.sync(() => {
-          config.diagnostics?.injectionFailure(
-            cause instanceof Error ? cause.message : String(cause),
-          )
-        }),
+        Effect.logError("Injection failed").pipe(
+          Effect.annotateLogs({
+            "injection.failure_reason": cause instanceof Error ? cause.message : String(cause),
+          }),
+        ),
       ),
     )
 
@@ -158,9 +145,6 @@ export const injectTranscript = Effect.fn("pie/input/textInjection.injectTranscr
       "injection.chars": result.text.length,
       "injection.session_type": result.sessionType,
     })
-
-    config.diagnostics?.injectionComplete()
-    config.diagnostics?.setState("idle")
 
     yield* Effect.logInfo("Injection completed").pipe(
       Effect.annotateLogs({
