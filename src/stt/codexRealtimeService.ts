@@ -28,6 +28,7 @@ import {
   type CodexRealtimeMode,
 } from "./codexRealtime.js"
 import { CodexAuthService, type CodexAuthError } from "./codexAuth.js"
+import { isRecord } from "../utils/isRecord.js"
 
 const concatAudioChunks = (chunks: Iterable<Uint8Array>): Uint8Array => {
   let total = 0
@@ -201,6 +202,63 @@ export type CodexRealtimeSocketFactory = (config: {
   readonly accessToken: string
 }) => Effect.Effect<CodexRealtimeConnection, CodexRealtimeSttError, Scope.Scope>
 
+export type CodexRealtimeTranscriptionSessionFactory = (config: {
+  readonly baseUrl: string
+  readonly accessToken: string
+  readonly model: string
+}) => Effect.Effect<string, CodexRealtimeSttError>
+
+const realtimeRestBaseUrl = (baseUrl: string): string =>
+  baseUrl.replace(/^wss:/, "https:").replace(/^ws:/, "http:").replace(/\/+$/, "")
+
+export const createCodexRealtimeTranscriptionSession: CodexRealtimeTranscriptionSessionFactory = (
+  config,
+) =>
+  Effect.tryPromise({
+    try: async () => {
+      const response = await fetch(
+        `${realtimeRestBaseUrl(config.baseUrl)}/v1/realtime/transcription_sessions`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${config.accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            input_audio_format: "pcm16",
+            input_audio_transcription: { model: config.model },
+            turn_detection: null,
+          }),
+        },
+      )
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new CodexRealtimeSttError({
+          message: `Failed to create Codex realtime transcription session: HTTP ${response.status}: ${errorText}`,
+        })
+      }
+
+      const body: unknown = await response.json()
+      const clientSecret = isRecord(body) ? body["client_secret"] : undefined
+      const value = isRecord(clientSecret) ? clientSecret["value"] : undefined
+      if (typeof value !== "string" || value.length === 0) {
+        throw new CodexRealtimeSttError({
+          message: "Codex realtime transcription session response missing client_secret.value",
+          cause: body,
+        })
+      }
+      return value
+    },
+    catch: (cause) =>
+      cause instanceof CodexRealtimeSttError
+        ? cause
+        : new CodexRealtimeSttError({
+            message: "Failed to create Codex realtime transcription session",
+            cause,
+          }),
+  })
+
 type BunWebSocketOptions = {
   readonly headers?: Readonly<Record<string, string>>
 }
@@ -318,15 +376,22 @@ export const transcribeWithCodexRealtime = Effect.fn(
   factory: CodexRealtimeSocketFactory,
   accessToken: string,
   config: CodexRealtimeTranscribeConfig,
+  createTranscriptionSession: CodexRealtimeTranscriptionSessionFactory = createCodexRealtimeTranscriptionSession,
 ): Effect.fn.Return<string, CodexRealtimeSttError> {
   return yield* Effect.scoped(
     Effect.gen(function* () {
+      const baseUrl = resolveCodexRealtimeBaseUrl()
+      const transcriptionAccessToken = yield* createTranscriptionSession({
+        baseUrl,
+        accessToken,
+        model: config.model,
+      })
       const prompt = renderTemplate(config.promptTemplate, {
         language: config.language,
       })
       const connection = yield* factory({
-        url: makeRealUrl({ mode: "transcription", model: config.model }),
-        accessToken,
+        url: buildCodexRealtimeUrl({ mode: "transcription", model: config.model, baseUrl }),
+        accessToken: transcriptionAccessToken,
       })
       return yield* runCodexRealtimeSession({
         sessionUpdate: buildTranscriptionSessionUpdate({ model: config.model, prompt }),

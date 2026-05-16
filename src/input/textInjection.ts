@@ -1,5 +1,5 @@
 import * as Context from "effect/Context"
-import { Console, Data, Effect } from "effect"
+import { Data, Effect } from "effect"
 import * as Layer from "effect/Layer"
 
 import {
@@ -124,7 +124,9 @@ export const injectTranscript = Effect.fn("pie/input/textInjection.injectTranscr
   > {
     const normalizedText = normalizeTextForInjection(config.text)
     if (normalizedText.length === 0) {
-      yield* Console.log(`[${config.logPrefix}] Ignored empty transcript`)
+      yield* Effect.logWarning("Ignored empty transcript").pipe(
+        Effect.annotateLogs({ "injection.log_prefix": config.logPrefix }),
+      )
       const notify = config.notifyEmptyTranscript ?? notifyWarning
       yield* notify(
         "pie: no transcript",
@@ -134,15 +136,9 @@ export const injectTranscript = Effect.fn("pie/input/textInjection.injectTranscr
       return undefined
     }
 
-    yield* Console.log(`[${config.logPrefix}] ${normalizedText}`)
-
     if (config.inject === false) {
       return undefined
     }
-
-    yield* Console.log(`[${config.logPrefix}] Will type (start)`)
-    yield* Console.log(normalizedText)
-    yield* Console.log(`[${config.logPrefix}] Will type (end)`)
 
     config.diagnostics?.setState("injection")
     config.diagnostics?.injectionStart(normalizedText.length)
@@ -171,6 +167,8 @@ export const injectTranscript = Effect.fn("pie/input/textInjection.injectTranscr
         "injection.backend": result.backend,
         "injection.chars": result.text.length,
         "injection.session_type": result.sessionType,
+        "injection.text": result.text,
+        "injection.log_prefix": config.logPrefix,
       }),
     )
 

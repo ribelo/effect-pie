@@ -7,6 +7,7 @@ import * as path from "node:path"
 import { Context, Effect, Layer } from "effect"
 import * as fs from "node:fs/promises"
 import { RecordingCoordinator } from "../src/commands/assistant/coordinator.js"
+import { MeetingTranscriptionController } from "../src/commands/assistant/meetingTranscription.js"
 import { DaemonClient } from "../src/daemon/client.js"
 import { classifyRpcClientError, SocketPreflightError } from "../src/daemon/errors.js"
 import { DaemonRpcServer } from "../src/daemon/server.js"
@@ -16,6 +17,27 @@ const makeTmpSocketPath = () =>
 
 const makeTmpPersistPath = () =>
   path.join(os.tmpdir(), `pie-daemon-test-${process.pid}-${crypto.randomUUID()}.json`)
+
+const makeDaemonTestLayer = (socketPath: string, persistPath: string) => {
+  const coordinatorLayer = RecordingCoordinator.live({ persistPath })
+  const meetingLayer = Layer.effect(
+    MeetingTranscriptionController,
+    Effect.gen(function* () {
+      const coordinator = yield* RecordingCoordinator
+      return MeetingTranscriptionController.of({
+        start: Effect.gen(function* () {
+          const result = yield* coordinator.tryStart("meeting-transcribe")
+          const snapshot = yield* coordinator.snapshot
+          return { result, snapshot }
+        }),
+        stop: coordinator.stop("meeting-transcribe").pipe(Effect.andThen(coordinator.snapshot)),
+        toggle: coordinator.toggleMeeting,
+      })
+    }),
+  ).pipe(Layer.provideMerge(coordinatorLayer))
+
+  return DaemonRpcServer.layer({ socketPath }).pipe(Layer.provideMerge(meetingLayer))
+}
 
 const sendRaw = (socketPath: string, request: unknown): Promise<unknown> =>
   new Promise((resolve, reject) => {
@@ -51,10 +73,7 @@ const withServer = <A, E, R>(
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const serverLayer = DaemonRpcServer.layer({ socketPath }).pipe(
-        Layer.provide(RecordingCoordinator.live({ persistPath })),
-      )
-      yield* Layer.build(serverLayer)
+      yield* Layer.build(makeDaemonTestLayer(socketPath, persistPath))
       yield* Effect.sleep(200)
       return yield* effect
     }),
@@ -349,6 +368,25 @@ test("MeetingToggle flips between idle and meeting-transcribe", async () => {
   await Effect.runPromise(program)
 })
 
+test("DaemonClient reads status from a running daemon", async () => {
+  const socketPath = makeTmpSocketPath()
+  const persistPath = makeTmpPersistPath()
+
+  const program = withServer(
+    Effect.gen(function* () {
+      const client = yield* DaemonClient
+      const snapshot = yield* client.status()
+
+      assert.strictEqual(snapshot.mode, "idle")
+      assert.strictEqual(snapshot.enabled, true)
+    }).pipe(Effect.provide(DaemonClient.layer({ socketPath }))),
+    socketPath,
+    persistPath,
+  )
+
+  await Effect.runPromise(program)
+})
+
 test("DaemonClient against stale socket returns NotRunning without hanging", async () => {
   const socketPath = makeTmpSocketPath()
 
@@ -380,10 +418,7 @@ test("socket is unlinked when server scope closes", async () => {
   await Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const serverLayer = DaemonRpcServer.layer({ socketPath }).pipe(
-          Layer.provide(RecordingCoordinator.live({ persistPath })),
-        )
-        yield* Layer.build(serverLayer)
+        yield* Layer.build(makeDaemonTestLayer(socketPath, persistPath))
         yield* Effect.sleep(200)
 
         const existsBefore = yield* Effect.promise(() =>
@@ -424,10 +459,7 @@ test("socket preflight fails loudly on non-ENOENT errors", async () => {
 
   const program = Effect.scoped(
     Effect.gen(function* () {
-      const serverLayer = DaemonRpcServer.layer({ socketPath }).pipe(
-        Layer.provide(RecordingCoordinator.live({ persistPath })),
-      )
-      yield* Layer.build(serverLayer)
+      yield* Layer.build(makeDaemonTestLayer(socketPath, persistPath))
     }),
   )
 
@@ -484,11 +516,7 @@ test("daemon and direct coordinator share state", async () => {
   const socketPath = makeTmpSocketPath()
   const persistPath = makeTmpPersistPath()
 
-  const coordinatorLayer = RecordingCoordinator.live({ persistPath })
-  const merged = Layer.mergeAll(
-    coordinatorLayer,
-    DaemonRpcServer.layer({ socketPath }).pipe(Layer.provide(coordinatorLayer)),
-  )
+  const merged = makeDaemonTestLayer(socketPath, persistPath)
 
   const program = Effect.scoped(
     Effect.gen(function* () {

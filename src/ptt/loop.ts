@@ -1,4 +1,4 @@
-import { Console, Duration, Effect, Fiber, Queue, Ref, Stream } from "effect"
+import { Duration, Effect, Fiber, Queue, Ref, Stream } from "effect"
 
 import {
   KeyboardMonitorService,
@@ -131,8 +131,11 @@ export const runPttLoop = Effect.fn("pie/ptt/loop.runPttLoop")(function* <M exte
 
           if (warn) {
             const mode = yield* Ref.get(currentModeRef)
-            const prefix = mode === undefined ? "ptt" : config.logPrefix(mode)
-            yield* Console.log(`[${prefix}] No input detected; microphone probably muted`)
+            yield* Effect.logWarning("No input detected; microphone probably muted").pipe(
+              Effect.annotateLogs({
+                "ptt.mode": mode === undefined ? "ptt" : config.logPrefix(mode),
+              }),
+            )
           }
 
           if (dead) {
@@ -171,8 +174,12 @@ export const runPttLoop = Effect.fn("pie/ptt/loop.runPttLoop")(function* <M exte
             Effect.catch((cause: { message: string }) =>
               Effect.gen(function* () {
                 const mode = yield* Ref.get(currentModeRef)
-                const prefix = mode === undefined ? "ptt" : config.logPrefix(mode)
-                yield* Console.log(`[${prefix}] Audio capture failed: ${cause.message}`)
+                yield* Effect.logWarning("Audio capture failed").pipe(
+                  Effect.annotateLogs({
+                    "ptt.mode": mode === undefined ? "ptt" : config.logPrefix(mode),
+                    "ptt.capture_error": cause.message,
+                  }),
+                )
               }),
             ),
           ),
@@ -212,8 +219,11 @@ export const runPttLoop = Effect.fn("pie/ptt/loop.runPttLoop")(function* <M exte
           if (state.tag === "postRoll") {
             yield* Ref.set(captureStateRef, nextState)
             const mode = yield* Ref.get(currentModeRef)
-            const prefix = mode === undefined ? "ptt" : config.logPrefix(mode)
-            yield* Console.log(`[${prefix}] Post-roll cancelled, continuing capture`)
+            yield* Effect.logInfo("Post-roll cancelled, continuing capture").pipe(
+              Effect.annotateLogs({
+                "ptt.mode": mode === undefined ? "ptt" : config.logPrefix(mode),
+              }),
+            )
             continue
           }
 
@@ -295,8 +305,9 @@ export const runPttLoop = Effect.fn("pie/ptt/loop.runPttLoop")(function* <M exte
 
           if (evtMatch.phase === "press" && evtMatch.mode === match.mode) {
             yield* Ref.update(captureStateRef, (s) => pttCaptureStart(s, Date.now()))
-            const prefix = config.logPrefix(match.mode)
-            yield* Console.log(`[${prefix}] Post-roll cancelled, continuing capture`)
+            yield* Effect.logInfo("Post-roll cancelled, continuing capture").pipe(
+              Effect.annotateLogs({ "ptt.mode": config.logPrefix(match.mode) }),
+            )
             continue mainLoop
           }
         }

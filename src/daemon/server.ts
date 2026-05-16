@@ -8,6 +8,7 @@ import { mkdir as mkdirNode, unlink } from "node:fs/promises"
 import * as path from "node:path"
 
 import { RecordingCoordinator } from "../commands/assistant/coordinator.js"
+import { MeetingTranscriptionController } from "../commands/assistant/meetingTranscription.js"
 import { DAEMON_SOCKET_PATH } from "../paths.js"
 import { DaemonRpc } from "./contract.js"
 import { SocketPreflightError } from "./errors.js"
@@ -15,12 +16,17 @@ import { SocketPreflightError } from "./errors.js"
 export const DaemonRpcServer = {
   layer: (options?: {
     readonly socketPath?: string
-  }): Layer.Layer<never, SocketPreflightError, RecordingCoordinator> => {
+  }): Layer.Layer<
+    never,
+    SocketPreflightError,
+    RecordingCoordinator | MeetingTranscriptionController
+  > => {
     const socketPath = options?.socketPath ?? DAEMON_SOCKET_PATH
 
     return Layer.effectDiscard(
       Effect.gen(function* () {
         const coordinator = yield* RecordingCoordinator
+        const meeting = yield* MeetingTranscriptionController
 
         yield* Effect.tryPromise({
           try: async () => {
@@ -49,15 +55,9 @@ export const DaemonRpcServer = {
           Pause: () => coordinator.setEnabled(false),
           Resume: () => coordinator.setEnabled(true),
           Toggle: () => coordinator.toggleEnabled,
-          MeetingStart: () =>
-            Effect.gen(function* () {
-              const result = yield* coordinator.tryStart("meeting-transcribe")
-              const snapshot = yield* coordinator.snapshot
-              return { result, snapshot }
-            }),
-          MeetingStop: () =>
-            coordinator.stop("meeting-transcribe").pipe(Effect.andThen(coordinator.snapshot)),
-          MeetingToggle: () => coordinator.toggleMeeting,
+          MeetingStart: () => meeting.start,
+          MeetingStop: () => meeting.stop,
+          MeetingToggle: () => meeting.toggle,
         }
 
         const protocolLayer = RpcServer.layerProtocolSocketServer.pipe(

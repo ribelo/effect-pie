@@ -1,4 +1,4 @@
-import { Console, Effect, Ref, type Stream } from "effect"
+import { Effect, Ref, type Stream } from "effect"
 
 import type { DesktopSession, SessionDetectionError } from "../desktop/session.js"
 import {
@@ -256,15 +256,14 @@ export const transcribeStreamAndInject = Effect.fn(
   const streamedChars = yield* Ref.get(streamedCharsRef)
   if (streamedChars > 0) {
     const trimmedText = normalizeTextDeltaForInjection(text).trim()
-    if (trimmedText.length > 0) {
-      yield* Console.log(`[${config.logPrefix}] ${trimmedText}`)
-    }
     config.diagnostics?.injectionComplete()
     config.diagnostics?.setState("idle")
     yield* Effect.logInfo("Injection completed").pipe(
       Effect.annotateLogs({
         "injection.backend": backend?.backend ?? "unknown",
         "injection.chars": streamedChars,
+        "injection.text": trimmedText,
+        "injection.log_prefix": config.logPrefix,
       }),
     )
     return undefined

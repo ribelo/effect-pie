@@ -59,15 +59,13 @@ test("buildTranscriptionSessionUpdate selects gpt-realtime-whisper and 24 kHz au
     prompt: "Transcribe in English.\n\nFocused window context:\n- app_id: com.slack.Slack",
   })
   assert.deepEqual(payload, {
-    type: "session.update",
+    type: "transcription_session.update",
     session: {
-      type: "transcription",
       audio: {
         input: {
           format: { type: "audio/pcm", rate: CODEX_REALTIME_SAMPLE_RATE },
           transcription: {
             model: "gpt-realtime-whisper",
-            prompt: "Transcribe in English.\n\nFocused window context:\n- app_id: com.slack.Slack",
           },
         },
       },

@@ -1,4 +1,4 @@
-import { Console, Effect } from "effect"
+import { Effect } from "effect"
 
 import { PttKeyboardError } from "../keyboard/monitor.js"
 import type { DesktopSession } from "../desktop/session.js"
@@ -85,8 +85,13 @@ export const makeWavClipHandle = (config: {
       Effect.gen(function* () {
         const { normalizedBytes, gain } = normalizePcmForStt(clip.pcmBytes)
         if (gain > MIN_GAIN_TO_APPLY) {
-          yield* Console.log(
-            `[${config.logPrefix}] Normalized clip (rms=${pcmRms(clip.pcmBytes).toFixed(4)} peak=${pcmPeak(clip.pcmBytes).toFixed(4)} gain=${gain.toFixed(2)})`,
+          yield* Effect.logInfo("Normalized clip").pipe(
+            Effect.annotateLogs({
+              "ptt.log_prefix": config.logPrefix,
+              "ptt.rms": pcmRms(clip.pcmBytes),
+              "ptt.peak": pcmPeak(clip.pcmBytes),
+              "ptt.gain": gain,
+            }),
           )
         }
         const outputPath = makePttClipPath(config.outputDir)
@@ -99,8 +104,14 @@ export const makeWavClipHandle = (config: {
               }),
           ),
         )
-        const seconds = (clip.durationMs / 1000).toFixed(2)
-        yield* Console.log(`[${config.logPrefix}] Saved ${outputPath} (${seconds}s)`)
+        const seconds = clip.durationMs / 1000
+        yield* Effect.logInfo("Saved PTT clip").pipe(
+          Effect.annotateLogs({
+            "ptt.log_prefix": config.logPrefix,
+            "ptt.output_path": outputPath,
+            "ptt.duration_seconds": seconds,
+          }),
+        )
       }),
     cancel: Effect.void,
   })

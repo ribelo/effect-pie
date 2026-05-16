@@ -75,18 +75,16 @@ export const buildTranscriptionSessionUpdate = (config: {
   readonly model: string
   readonly prompt?: string | undefined
 }): {
-  readonly type: "session.update"
+  readonly type: "transcription_session.update"
   readonly session: unknown
 } => ({
-  type: "session.update",
+  type: "transcription_session.update",
   session: {
-    type: "transcription",
     audio: {
       input: {
         format: { type: "audio/pcm", rate: CODEX_REALTIME_SAMPLE_RATE },
         transcription: {
           model: config.model,
-          ...(config.prompt === undefined ? {} : { prompt: config.prompt }),
         },
       },
     },

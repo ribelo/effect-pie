@@ -7,6 +7,7 @@ import {
   buildCodexRealtimeHeaders,
   CodexRealtimeSttError,
   runCodexRealtimeSession,
+  transcribeWithCodexRealtime,
   type CodexRealtimeConnection,
 } from "../src/stt/codexRealtimeService.js"
 import {
@@ -62,7 +63,7 @@ test("buildCodexRealtimeHeaders uses the GA realtime API by omitting the beta he
   assert.strictEqual("OpenAI-Beta" in headers, false)
 })
 
-test("runCodexRealtimeSession sends session.update first, appends audio, then commits", async () => {
+test("runCodexRealtimeSession sends transcription_session.update first, appends audio, then commits", async () => {
   const fake = await makeFakeConnection()
   const audio = Stream.fromIterable([pcm16bytes([1, 2, 3, 4])])
 
@@ -87,9 +88,63 @@ test("runCodexRealtimeSession sends session.update first, appends audio, then co
   assert.strictEqual(transcript, "hello")
 
   const sentTypes = fake.sent.map((raw) => JSON.parse(raw).type)
-  assert.strictEqual(sentTypes[0], "session.update")
+  assert.strictEqual(sentTypes[0], "transcription_session.update")
   assert.ok(sentTypes.includes("input_audio_buffer.append"))
   assert.strictEqual(sentTypes[sentTypes.length - 1], "input_audio_buffer.commit")
+})
+
+test("transcribeWithCodexRealtime creates a transcription session and uses its token", async () => {
+  const fake = await makeFakeConnection()
+  const urls: Array<string> = []
+  const accessTokens: Array<string> = []
+  const createdSessions: Array<{ readonly accessToken: string; readonly model: string }> = []
+
+  const sessionPromise = Effect.runPromise(
+    transcribeWithCodexRealtime(
+      (config) =>
+        Effect.sync(() => {
+          urls.push(config.url)
+          accessTokens.push(config.accessToken)
+          return fake.connection
+        }),
+      "token",
+      {
+        model: "gpt-realtime-whisper",
+        inputSampleRate: 24_000,
+        audio: Stream.empty,
+        language: "en",
+        promptTemplate: "transcribe {{language}}",
+      },
+      (config) =>
+        Effect.sync(() => {
+          createdSessions.push({ accessToken: config.accessToken, model: config.model })
+          return "transcription-session-token"
+        }),
+    ),
+  )
+
+  await sleep(20)
+  await fake.pushMessage(
+    JSON.stringify({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "hello",
+    }),
+  )
+
+  const transcript = await sessionPromise
+  assert.strictEqual(transcript, "hello")
+  assert.match(urls[0] ?? "", /model=gpt-realtime-whisper/)
+  assert.deepEqual(accessTokens, ["transcription-session-token"])
+  assert.deepEqual(createdSessions, [{ accessToken: "token", model: "gpt-realtime-whisper" }])
+  const sessionUpdate = JSON.parse(fake.sent[0] ?? "{}") as {
+    readonly session?: {
+      readonly audio?: { readonly input?: { readonly transcription?: { readonly model?: string } } }
+    }
+  }
+  assert.strictEqual(
+    sessionUpdate.session?.audio?.input?.transcription?.model,
+    "gpt-realtime-whisper",
+  )
 })
 
 test("runCodexRealtimeSession streams delta callbacks and accumulates final text", async () => {
