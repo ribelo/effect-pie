@@ -9,7 +9,6 @@ import { Niri } from "../src/niri/niri.js"
 
 test("transcribeStreamAndInject returns undefined on streaming completion", async () => {
   const mockStt = SttService.of({
-    transcribe: () => Effect.succeed(""),
     transcribeStream: ({ onDelta }) =>
       Effect.gen(function* () {
         if (onDelta) {
@@ -17,7 +16,6 @@ test("transcribeStreamAndInject returns undefined on streaming completion", asyn
         }
         return "hello world"
       }),
-    translate: () => Effect.succeed(""),
     translateStream: () => Effect.succeed(""),
   })
 

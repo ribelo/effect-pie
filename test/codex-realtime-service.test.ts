@@ -1,15 +1,19 @@
 import * as assert from "node:assert/strict"
 import { test } from "node:test"
 import type { Cause } from "effect"
-import { Effect, Exit, Queue, Stream } from "effect"
+import { Effect, Exit, Layer, Queue, Stream } from "effect"
 
 import {
   buildCodexRealtimeHeaders,
   CodexRealtimeSttError,
+  concatAudioChunks,
+  makeCodexSttLayer,
   runCodexRealtimeSession,
   transcribeWithCodexRealtime,
   type CodexRealtimeConnection,
 } from "../src/stt/codexRealtimeService.js"
+import { CodexAuthService } from "../src/stt/codexAuth.js"
+import { SttService } from "../src/stt/service.js"
 import {
   buildTranscriptionSessionUpdate,
   buildTranslationSessionUpdate,
@@ -322,6 +326,60 @@ test("runCodexRealtimeSession returns an empty transcript when the session ends 
 
   const transcript = await sessionPromise
   assert.strictEqual(transcript, "")
+})
+
+test("concatAudioChunks joins multiple Uint8Array chunks in order", () => {
+  const a = new Uint8Array([1, 2])
+  const b = new Uint8Array([3, 4, 5])
+  const c = new Uint8Array([6])
+  const result = concatAudioChunks([a, b, c])
+  assert.deepEqual([...result], [1, 2, 3, 4, 5, 6])
+})
+
+test("makeCodexSttLayer translateStream collects stream and strips onDelta for conversation model", async () => {
+  const fake = await makeFakeConnection()
+  const factory = (config: { readonly url: string; readonly accessToken: string }) =>
+    Effect.sync(() => {
+      assert.strictEqual(config.accessToken, "fake-token")
+      return fake.connection
+    })
+
+  const layer = Layer.provide(
+    makeCodexSttLayer(factory),
+    Layer.succeed(
+      CodexAuthService,
+      CodexAuthService.of({ getAccessToken: Effect.succeed("fake-token") }),
+    ),
+  )
+
+  const resultPromise = Effect.runPromise(
+    Effect.gen(function* () {
+      const stt = yield* SttService
+      return yield* stt.translateStream({
+        model: "gpt-realtime-2",
+        audio: Stream.fromIterable([pcm16bytes([1, 2]), pcm16bytes([3, 4])]),
+        sampleRate: 24_000,
+        sourceLanguage: "Polish",
+        targetLanguage: "English",
+        promptTemplate: "Translate {{source_language}} to {{target_language}}",
+        onDelta: () => Effect.sync(() => assert.fail("onDelta should be stripped")),
+      })
+    }).pipe(Effect.provide(layer)),
+  )
+
+  await sleep(10)
+  await fake.pushMessage(JSON.stringify({ type: "response.done" }))
+
+  const result = await resultPromise
+  assert.strictEqual(result, "")
+
+  const sentTypes = fake.sent.map((raw) => JSON.parse(raw).type)
+  assert.deepEqual(sentTypes, [
+    "session.update",
+    "input_audio_buffer.append",
+    "input_audio_buffer.commit",
+    "response.create",
+  ])
 })
 
 test("CodexRealtimeSttError keeps message concise and doesn't embed tokens", () => {

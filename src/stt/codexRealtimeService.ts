@@ -1,15 +1,4 @@
-import {
-  type Cause,
-  Context,
-  Data,
-  Duration,
-  Effect,
-  Layer,
-  Queue,
-  Ref,
-  type Scope,
-  Stream,
-} from "effect"
+import { type Cause, Data, Duration, Effect, Layer, Queue, Ref, type Scope, Stream } from "effect"
 
 import {
   buildAudioAppend,
@@ -27,10 +16,11 @@ import {
   resolveCodexRealtimeBaseUrl,
   type CodexRealtimeMode,
 } from "./codexRealtime.js"
-import { CodexAuthService, type CodexAuthError } from "./codexAuth.js"
+import { CodexAuthService } from "./codexAuth.js"
+import { SttService } from "./service.js"
 import { isRecord } from "../utils/isRecord.js"
 
-const concatAudioChunks = (chunks: Iterable<Uint8Array>): Uint8Array => {
+export const concatAudioChunks = (chunks: Iterable<Uint8Array>): Uint8Array => {
   let total = 0
   for (const chunk of chunks) {
     total += chunk.length
@@ -456,45 +446,57 @@ export const translateWithCodexRealtime = Effect.fn(
   )
 })
 
-export class CodexRealtimeSttService extends Context.Service<
-  CodexRealtimeSttService,
-  {
-    readonly transcribe: (
-      config: CodexRealtimeTranscribeConfig,
-    ) => Effect.Effect<string, CodexRealtimeSttError | CodexAuthError>
-    readonly translate: (
-      config: CodexRealtimeTranslateConfig,
-    ) => Effect.Effect<string, CodexRealtimeSttError | CodexAuthError>
-  }
->()("pie/stt/CodexRealtimeSttService") {
-  static readonly layer: Layer.Layer<CodexRealtimeSttService, never, CodexAuthService> =
-    Layer.effect(
-      CodexRealtimeSttService,
-      Effect.gen(function* () {
-        const auth = yield* CodexAuthService
-        return CodexRealtimeSttService.of({
-          transcribe: (config) =>
-            Effect.gen(function* () {
-              const token = yield* auth.getAccessToken
-              return yield* transcribeWithCodexRealtime(bunWebSocketFactory, token, config)
-            }),
-          translate: (config) =>
-            Effect.gen(function* () {
-              const token = yield* auth.getAccessToken
-              if (config.model === CODEX_CONVERSATION_TRANSLATION_MODEL) {
-                const pcmBytes = yield* config.audio.pipe(
-                  Stream.runCollect,
-                  Effect.map(concatAudioChunks),
-                )
-                return yield* translateWithCodexRealtime(bunWebSocketFactory, token, {
-                  ...config,
-                  audio: Stream.succeed(pcmBytes),
-                  onDelta: undefined,
-                })
-              }
-              return yield* translateWithCodexRealtime(bunWebSocketFactory, token, config)
-            }),
-        })
-      }),
-    )
-}
+export const makeCodexSttLayer = (
+  factory: CodexRealtimeSocketFactory,
+): Layer.Layer<SttService, never, CodexAuthService> =>
+  Layer.effect(
+    SttService,
+    Effect.gen(function* () {
+      const auth = yield* CodexAuthService
+      return SttService.of({
+        transcribeStream: (config) =>
+          Effect.gen(function* () {
+            const token = yield* auth.getAccessToken
+            return yield* transcribeWithCodexRealtime(factory, token, {
+              model: config.model,
+              inputSampleRate: config.sampleRate,
+              audio: config.audio,
+              language: config.language,
+              promptTemplate: config.promptTemplate,
+              ...(config.onDelta !== undefined ? { onDelta: config.onDelta } : {}),
+            })
+          }),
+        translateStream: (config) =>
+          Effect.gen(function* () {
+            const token = yield* auth.getAccessToken
+            if (config.model === CODEX_CONVERSATION_TRANSLATION_MODEL) {
+              const pcmBytes = yield* config.audio.pipe(
+                Stream.runCollect,
+                Effect.map(concatAudioChunks),
+              )
+              return yield* translateWithCodexRealtime(factory, token, {
+                model: config.model,
+                inputSampleRate: config.sampleRate,
+                audio: Stream.succeed(pcmBytes),
+                sourceLanguage: config.sourceLanguage,
+                targetLanguage: config.targetLanguage,
+                promptTemplate: config.promptTemplate,
+                onDelta: undefined,
+              })
+            }
+            return yield* translateWithCodexRealtime(factory, token, {
+              model: config.model,
+              inputSampleRate: config.sampleRate,
+              audio: config.audio,
+              sourceLanguage: config.sourceLanguage,
+              targetLanguage: config.targetLanguage,
+              promptTemplate: config.promptTemplate,
+              ...(config.onDelta !== undefined ? { onDelta: config.onDelta } : {}),
+            })
+          }),
+      })
+    }),
+  )
+
+export const codexSttLayer: Layer.Layer<SttService, never, CodexAuthService> =
+  makeCodexSttLayer(bunWebSocketFactory)

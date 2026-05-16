@@ -7,11 +7,7 @@ import { DesktopSession } from "../src/desktop/session.js"
 import { TextInjectionBackendService } from "../src/input/textInjection.js"
 import { Niri } from "../src/niri/niri.js"
 import type { NiriWindow } from "../src/niri/schema.js"
-import { CodexRealtimeSttService } from "../src/stt/codexRealtimeService.js"
-import { CodexAuthService } from "../src/stt/codexAuth.js"
-import { OpenRouterSttService } from "../src/stt/openrouter.js"
 import { SttService } from "../src/stt/service.js"
-import { codexSttLayer } from "../src/stt/codexLayer.js"
 import { transcribeStreamAndInject } from "../src/stt/transcribeAndInject.js"
 
 const sampleNiriWindow: NiriWindow = {
@@ -86,8 +82,6 @@ test("transcribeStreamAndInject streams chunks and does not duplicate final text
   const typedDeltas: Array<string> = []
 
   const fakeStt = SttService.of({
-    transcribe: () => Effect.succeed("unused"),
-    translate: () => Effect.succeed("unused"),
     transcribeStream: (config) =>
       config.audio.pipe(
         Stream.runForEach((chunk) =>
@@ -152,8 +146,6 @@ test("transcribeStreamAndInject collapses streamed newlines before typing", asyn
   const typedDeltas: Array<string> = []
 
   const fakeStt = SttService.of({
-    transcribe: () => Effect.succeed("unused"),
-    translate: () => Effect.succeed("unused"),
     transcribeStream: (config) =>
       config.audio.pipe(
         Stream.runForEach(() =>
@@ -211,8 +203,6 @@ test("transcribeStreamAndInject adds focused window context to transcription pro
   let receivedPrompt = ""
 
   const fakeStt = SttService.of({
-    transcribe: () => Effect.succeed("unused"),
-    translate: () => Effect.succeed("unused"),
     transcribeStream: (config) =>
       config.audio.pipe(
         Stream.runDrain,
@@ -263,8 +253,6 @@ test("transcribeStreamAndInject adds focused window context to translation promp
   let receivedPrompt = ""
 
   const fakeStt = SttService.of({
-    transcribe: () => Effect.succeed("unused"),
-    translate: () => Effect.succeed("unused"),
     transcribeStream: () => Effect.succeed("unused"),
     translateStream: (config) =>
       config.audio.pipe(
@@ -322,165 +310,4 @@ test("default realtime command paths do not normalize or WAV-wrap STT audio", as
     assert.equal(content.includes("normalizePcmForStt"), false, file)
     assert.equal(content.includes("encodePcm16MonoWav"), false, file)
   }
-})
-
-test("gpt-realtime-2 translation collects stream before calling Codex", async () => {
-  const receivedChunks: Array<Array<number>> = []
-  let sawDeltaCallback = false
-
-  const fakeCodex = CodexRealtimeSttService.of({
-    transcribe: () => Effect.succeed("unused"),
-    translate: (config) =>
-      config.audio.pipe(
-        Stream.runCollect,
-        Effect.map((chunks) => {
-          const total = chunks.reduce((sum, c) => sum + c.length, 0)
-          const out = new Uint8Array(total)
-          let offset = 0
-          for (const c of chunks) {
-            out.set(c, offset)
-            offset += c.length
-          }
-          return out
-        }),
-        Effect.flatMap((chunk) =>
-          Effect.sync(() => {
-            receivedChunks.push([...chunk])
-            sawDeltaCallback = config.onDelta !== undefined
-            return "translated"
-          }),
-        ),
-      ),
-  })
-
-  // Override the translate method to strip onDelta for gpt-realtime-2
-  const fakeCodexWithStrippedDelta = CodexRealtimeSttService.of({
-    transcribe: () => Effect.succeed("unused"),
-    translate: (config) => fakeCodex.translate({ ...config, onDelta: undefined }),
-  })
-
-  const fakeOpenRouter = OpenRouterSttService.of({
-    transcribe: () => Effect.succeed("unused"),
-    translate: () => Effect.succeed("unused"),
-  })
-
-  const sttConfig = {
-    schemaVersion: 2 as const,
-    provider: "codex-realtime" as const,
-    transcriptionModel: "gpt-realtime-whisper",
-    translationModel: "gpt-realtime-2",
-    transcriptionLanguage: "Polish",
-    translationSourceLanguage: "Polish",
-    translationTargetLanguage: "English",
-    wakewordEnabled: false,
-    wakewordDictationSilenceSeconds: 3,
-    wakewordDictationMaxSeconds: 120,
-    wakewordDictationSpeechRmsThreshold: 0.01,
-    transcriptionPrompt: "Transcribe in {{language}}",
-    translationPrompt: "Translate {{source_language}} to {{target_language}}",
-  }
-
-  const result = await Effect.runPromise(
-    Effect.gen(function* () {
-      const queue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
-      const stt = yield* SttService
-      const fiber = yield* stt
-        .translateStream({
-          model: "gpt-realtime-2",
-          audio: Stream.fromQueue(queue),
-          sampleRate: 24_000,
-          sourceLanguage: "Polish",
-          targetLanguage: "English",
-          promptTemplate: "Translate {{source_language}} to {{target_language}}",
-          onDelta: () => Effect.sync(() => {}),
-        })
-        .pipe(Effect.forkChild)
-
-      yield* Queue.offer(queue, new Uint8Array([1, 2]))
-      yield* Queue.offer(queue, new Uint8Array([3, 4]))
-      yield* Queue.end(queue)
-      return yield* Fiber.join(fiber)
-    }).pipe(
-      Effect.provide(codexSttLayer(sttConfig)),
-      Effect.provideService(
-        CodexAuthService,
-        CodexAuthService.of({ getAccessToken: Effect.succeed("fake-token") }),
-      ),
-      Effect.provideService(CodexRealtimeSttService, fakeCodexWithStrippedDelta),
-      Effect.provideService(OpenRouterSttService, fakeOpenRouter),
-    ),
-  )
-
-  assert.strictEqual(result, "translated")
-  assert.deepEqual(receivedChunks, [[1, 2, 3, 4]])
-  assert.strictEqual(sawDeltaCallback, false)
-})
-
-test("SttService passes transcription prompts to Codex realtime", async () => {
-  let receivedPrompt: unknown
-
-  const fakeCodex = CodexRealtimeSttService.of({
-    transcribe: (config) =>
-      config.audio.pipe(
-        Stream.runDrain,
-        Effect.tap(() =>
-          Effect.sync(() => {
-            receivedPrompt = Reflect.get(config, "promptTemplate")
-          }),
-        ),
-        Effect.as("transcribed"),
-      ),
-    translate: () => Effect.succeed("unused"),
-  })
-
-  const fakeOpenRouter = OpenRouterSttService.of({
-    transcribe: () => Effect.succeed("unused"),
-    translate: () => Effect.succeed("unused"),
-  })
-
-  const sttConfig = {
-    schemaVersion: 2 as const,
-    provider: "codex-realtime" as const,
-    transcriptionModel: "gpt-realtime-whisper",
-    translationModel: "gpt-realtime-2",
-    transcriptionLanguage: "Polish",
-    translationSourceLanguage: "Polish",
-    translationTargetLanguage: "English",
-    wakewordEnabled: false,
-    wakewordDictationSilenceSeconds: 3,
-    wakewordDictationMaxSeconds: 120,
-    wakewordDictationSpeechRmsThreshold: 0.01,
-    transcriptionPrompt: "Transcribe in {{language}}",
-    translationPrompt: "Translate {{source_language}} to {{target_language}}",
-  }
-
-  await Effect.runPromise(
-    Effect.gen(function* () {
-      const queue = yield* Queue.unbounded<Uint8Array, Cause.Done>()
-      const stt = yield* SttService
-      const fiber = yield* stt
-        .transcribeStream({
-          model: "gpt-realtime-whisper",
-          audio: Stream.fromQueue(queue),
-          sampleRate: 24_000,
-          language: "Polish",
-          promptTemplate: "Transcribe in {{language}}. Focused window context: Slack.",
-        })
-        .pipe(Effect.forkChild)
-
-      yield* Queue.offer(queue, new Uint8Array([1, 2]))
-      yield* Queue.end(queue)
-      yield* Fiber.join(fiber)
-    }).pipe(
-      Effect.provide(codexSttLayer(sttConfig)),
-      Effect.provideService(
-        CodexAuthService,
-        CodexAuthService.of({ getAccessToken: Effect.succeed("fake-token") }),
-      ),
-      Effect.provideService(CodexRealtimeSttService, fakeCodex),
-      Effect.provideService(OpenRouterSttService, fakeOpenRouter),
-    ),
-  )
-
-  assert.strictEqual(receivedPrompt, "Transcribe in {{language}}. Focused window context: Slack.")
 })

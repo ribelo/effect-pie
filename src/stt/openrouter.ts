@@ -1,6 +1,6 @@
 import { type Generated as OpenAiGenerated, OpenAiClientGenerated } from "@effect/ai-openai"
-import * as Context from "effect/Context"
 import { Data, Effect, Layer, Redacted, Schema, Stream } from "effect"
+import { SttService } from "./service.js"
 import * as FetchHttpClient from "effect/unstable/http/FetchHttpClient"
 import * as HttpClient from "effect/unstable/http/HttpClient"
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest"
@@ -481,34 +481,54 @@ export const transcribeAndTranslatePcmWithOpenRouter = Effect.fn(
   })
 })
 
-export class OpenRouterSttService extends Context.Service<
-  OpenRouterSttService,
-  {
-    readonly transcribe: (config: {
-      readonly model: string
-      readonly pcmBytes: Uint8Array
-      readonly sampleRate: number
-      readonly language: string
-      readonly promptTemplate: string
-      readonly onDelta?: (delta: string) => Effect.Effect<void>
-    }) => Effect.Effect<string, OpenRouterSttError>
-
-    readonly translate: (config: {
-      readonly model: string
-      readonly pcmBytes: Uint8Array
-      readonly sampleRate: number
-      readonly sourceLanguage: string
-      readonly targetLanguage: string
-      readonly promptTemplate: string
-      readonly onDelta?: (delta: string) => Effect.Effect<void>
-    }) => Effect.Effect<string, OpenRouterSttError>
+const concatAudioChunks = (chunks: Iterable<Uint8Array>): Uint8Array => {
+  let total = 0
+  for (const chunk of chunks) {
+    total += chunk.length
   }
->()("pie/stt/OpenRouterSttService") {
-  static readonly layer = Layer.succeed(
-    OpenRouterSttService,
-    OpenRouterSttService.of({
-      transcribe: transcribePcmWithOpenRouter,
-      translate: transcribeAndTranslatePcmWithOpenRouter,
-    }),
-  )
+
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    out.set(chunk, offset)
+    offset += chunk.length
+  }
+  return out
 }
+
+export const openRouterSttLayer: Layer.Layer<SttService> = Layer.succeed(
+  SttService,
+  SttService.of({
+    transcribeStream: (config) =>
+      config.audio.pipe(
+        Stream.runCollect,
+        Effect.map(concatAudioChunks),
+        Effect.flatMap((pcmBytes) =>
+          transcribePcmWithOpenRouter({
+            model: config.model,
+            pcmBytes,
+            sampleRate: config.sampleRate,
+            language: config.language,
+            promptTemplate: config.promptTemplate,
+            ...(config.onDelta !== undefined ? { onDelta: config.onDelta } : {}),
+          }),
+        ),
+      ),
+    translateStream: (config) =>
+      config.audio.pipe(
+        Stream.runCollect,
+        Effect.map(concatAudioChunks),
+        Effect.flatMap((pcmBytes) =>
+          transcribeAndTranslatePcmWithOpenRouter({
+            model: config.model,
+            pcmBytes,
+            sampleRate: config.sampleRate,
+            sourceLanguage: config.sourceLanguage,
+            targetLanguage: config.targetLanguage,
+            promptTemplate: config.promptTemplate,
+            ...(config.onDelta !== undefined ? { onDelta: config.onDelta } : {}),
+          }),
+        ),
+      ),
+  }),
+)

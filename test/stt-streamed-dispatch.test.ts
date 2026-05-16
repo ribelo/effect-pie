@@ -64,8 +64,6 @@ test("makeStreamedSttDispatch offer/finish happy path", async () => {
   const receivedChunks: Array<Array<number>> = []
 
   const fakeStt = SttService.of({
-    transcribe: () => Effect.succeed("unused"),
-    translate: () => Effect.succeed("unused"),
     transcribeStream: (config) =>
       config.audio.pipe(
         Stream.runForEach((chunk) =>
@@ -110,8 +108,6 @@ test("makeStreamedSttDispatch offer/finish happy path", async () => {
 
 test("makeStreamedSttDispatch offer/cancel interrupts fiber without error", async () => {
   const fakeStt = SttService.of({
-    transcribe: () => Effect.succeed("unused"),
-    translate: () => Effect.succeed("unused"),
     transcribeStream: () => Effect.succeed("unused"),
     translateStream: () => Effect.succeed("unused"),
   })
@@ -142,8 +138,6 @@ test("makeStreamedSttDispatch offer/cancel interrupts fiber without error", asyn
 
 test("makeStreamedSttDispatch STT failure surfaces via finish", async () => {
   const fakeStt = SttService.of({
-    transcribe: () => Effect.succeed("unused"),
-    translate: () => Effect.succeed("unused"),
     transcribeStream: () =>
       Effect.fail(
         new CodexRealtimeSttError({ message: "Realtime connection closed unexpectedly" }),
@@ -187,8 +181,6 @@ test("makeStreamedSttDispatch STT failure surfaces via finish", async () => {
 
 test("makeStreamedSttDispatch injection-delta failure surfaces via finish", async () => {
   const fakeStt = SttService.of({
-    transcribe: () => Effect.succeed("unused"),
-    translate: () => Effect.succeed("unused"),
     transcribeStream: (config) =>
       Effect.gen(function* () {
         if (config.onDelta !== undefined) {
@@ -278,8 +270,6 @@ test("isSttServiceFailure matches expected tags", () => {
 
 test("makeStreamedSttDispatch cancel without offer does not error", async () => {
   const fakeStt = SttService.of({
-    transcribe: () => Effect.succeed("unused"),
-    translate: () => Effect.succeed("unused"),
     transcribeStream: () => Effect.succeed("unused"),
     translateStream: () => Effect.succeed("unused"),
   })

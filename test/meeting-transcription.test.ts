@@ -116,8 +116,6 @@ test("meeting transcription captures monitor audio, writes transcript, and clear
   const sttLayer = Layer.succeed(
     SttService,
     SttService.of({
-      transcribe: () => Effect.die("not used"),
-      translate: () => Effect.die("not used"),
       translateStream: () => Effect.die("not used"),
       transcribeStream: (config) =>
         Stream.runForEach(config.audio, () => config.onDelta?.("hello ") ?? Effect.void).pipe(

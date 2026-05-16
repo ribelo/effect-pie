@@ -1,12 +1,11 @@
 import { test } from "node:test"
 import * as assert from "node:assert/strict"
-import { Cause, Effect, Exit } from "effect"
+import { Effect, Exit } from "effect"
 
 import {
   decodeStructuredTranscription,
   decodeStructuredTranslation,
   encodePcm16MonoWav,
-  OpenRouterSttService,
   patchServiceTier,
   patchSystemFingerprint,
   renderTemplate,
@@ -145,48 +144,4 @@ test("patchServiceTier leaves non-record untouched", () => {
   assert.strictEqual(patchServiceTier("raw text"), "raw text")
   assert.strictEqual(patchServiceTier(42), 42)
   assert.deepStrictEqual(patchServiceTier(null), null)
-})
-
-test("OpenRouterSttService.layer starts and method fails typed when required env is missing", async () => {
-  const originalEnv = {
-    ERG_OPENROUTER_API_KEY: process.env["ERG_OPENROUTER_API_KEY"],
-    OPENROUTER_API_KEY: process.env["OPENROUTER_API_KEY"],
-    ERG_OPENROUTER_BASE_URL: process.env["ERG_OPENROUTER_BASE_URL"],
-    OPENROUTER_BASE_URL: process.env["OPENROUTER_BASE_URL"],
-  }
-
-  delete process.env["ERG_OPENROUTER_API_KEY"]
-  delete process.env["OPENROUTER_API_KEY"]
-  delete process.env["ERG_OPENROUTER_BASE_URL"]
-  delete process.env["OPENROUTER_BASE_URL"]
-
-  try {
-    const service = await Effect.runPromise(
-      Effect.service(OpenRouterSttService).pipe(Effect.provide(OpenRouterSttService.layer)),
-    )
-
-    const exit = await Effect.runPromiseExit(
-      service.transcribe({
-        model: "test-model",
-        pcmBytes: new Uint8Array(),
-        sampleRate: 16_000,
-        language: "English",
-        promptTemplate: "Transcribe in {{language}}.",
-      }),
-    )
-
-    assert.strictEqual(Exit.isFailure(exit), true)
-    if (Exit.isFailure(exit)) {
-      assert.strictEqual(Cause.hasFails(exit.cause), true)
-      assert.strictEqual(Cause.hasDies(exit.cause), false)
-    }
-  } finally {
-    for (const [name, value] of Object.entries(originalEnv)) {
-      if (value === undefined) {
-        delete process.env[name]
-      } else {
-        process.env[name] = value
-      }
-    }
-  }
 })

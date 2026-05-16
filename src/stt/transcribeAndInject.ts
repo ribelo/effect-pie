@@ -14,25 +14,6 @@ import { promptTemplateWithFocusedWindowContext } from "./focusedWindowPrompt.js
 import { SttService, type SttServiceError } from "./service.js"
 import { isSttServiceFailure } from "./streamingError.js"
 
-type TranscribeAndInjectConfig = {
-  readonly pcmBytes: Uint8Array
-  readonly sampleRate: number
-  readonly model: string
-  readonly promptTemplate: string
-  readonly logPrefix: string
-  readonly inject?: boolean
-} & (
-  | {
-      readonly operation: "transcribe"
-      readonly language: string
-    }
-  | {
-      readonly operation: "translate"
-      readonly sourceLanguage: string
-      readonly targetLanguage: string
-    }
-)
-
 type TranscribeStreamAndInjectConfig = {
   readonly audio: Stream.Stream<Uint8Array>
   readonly sampleRate: number
@@ -50,84 +31,6 @@ type TranscribeStreamAndInjectConfig = {
       readonly sourceLanguage: string
       readonly targetLanguage: string
     }
-)
-
-export const transcribeAndInject = Effect.fn("pie/stt/transcribeAndInject.transcribeAndInject")(
-  function* (
-    config: TranscribeAndInjectConfig,
-  ): Effect.fn.Return<
-    TextInjectionResult | undefined,
-    SttServiceError | NiriError | TextInjectionError | SessionDetectionError,
-    SttService | Niri | DesktopSession | TextInjectionBackendService
-  > {
-    yield* Effect.annotateCurrentSpan({
-      "stt.model": config.model,
-      "stt.operation": config.operation,
-      "audio.bytes": config.pcmBytes.length,
-      ...(config.operation === "transcribe"
-        ? { "stt.language": config.language }
-        : {
-            "stt.sourceLanguage": config.sourceLanguage,
-            "stt.targetLanguage": config.targetLanguage,
-          }),
-    })
-
-    const stt = yield* SttService
-    const promptTemplate = yield* promptTemplateWithFocusedWindowContext(config.promptTemplate)
-    const sttStartedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis)
-    const text = yield* (
-      config.operation === "transcribe"
-        ? stt.transcribe({
-            model: config.model,
-            pcmBytes: config.pcmBytes,
-            sampleRate: config.sampleRate,
-            language: config.language,
-            promptTemplate,
-          })
-        : stt.translate({
-            model: config.model,
-            pcmBytes: config.pcmBytes,
-            sampleRate: config.sampleRate,
-            sourceLanguage: config.sourceLanguage,
-            targetLanguage: config.targetLanguage,
-            promptTemplate,
-          })
-    ).pipe(
-      Effect.tapError((cause) =>
-        Effect.logError("STT failed").pipe(Effect.annotateLogs({ "stt.error": cause.message })),
-      ),
-    )
-
-    const sttFinishedAt = yield* Effect.clockWith((clock) => clock.currentTimeMillis)
-    const latencyMs = sttFinishedAt - sttStartedAt
-
-    yield* Effect.annotateCurrentSpan({
-      "stt.streamed_chars": text.length,
-    })
-
-    yield* Effect.logInfo("STT completed").pipe(
-      Effect.annotateLogs({
-        "stt.model": config.model,
-        "stt.text_length": text.length,
-        "stt.latency_ms": latencyMs,
-      }),
-    )
-
-    const injectionConfig: {
-      text: string
-      logPrefix: string
-      inject?: boolean
-    } = {
-      text,
-      logPrefix: config.logPrefix,
-    }
-
-    if (config.inject !== undefined) {
-      injectionConfig.inject = config.inject
-    }
-
-    return yield* injectTranscript(injectionConfig)
-  },
 )
 
 export const transcribeStreamAndInject = Effect.fn(
